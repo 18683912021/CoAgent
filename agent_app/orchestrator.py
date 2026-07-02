@@ -72,8 +72,6 @@ class Orchestrator:
         self.fe = FEAgent()
         self.be = BEAgent()
         self._tasks: dict[str, TaskState] = {}
-        self._fe_tasks: dict[str, str] = {}  # chat_id → FE子任务
-        self._be_tasks: dict[str, str] = {}  # chat_id → BE子任务
 
     def _get_bot_config(self, key: str) -> dict:
         """获取 Bot 配置"""
@@ -133,41 +131,56 @@ class Orchestrator:
         task.prd = pm_result["result"]
         task.fe_task, task.be_task = self._filter_and_split(task.prd)
 
-        # 保存任务上下文，供 FE/BE 收到 @ 时获取自己的子任务
-        self._fe_tasks[chat_id] = task.fe_task
-        self._be_tasks[chat_id] = task.be_task
-
-        task.state = State.DISPATCHING
-
-        # PM 在群里 @FE_Bot 和 @BE_Bot 派发任务
-        fe_app_id = BOTS.get("fe", {}).get("app_id", "")
-        be_app_id = BOTS.get("be", {}).get("app_id", "")
-
+        # PM 在群里发通知（视觉上的 Agent @Agent）
         await self._notify(chat_id, "pm",
-            f"PRD 完成。\n@FE Bot 请完成前端任务。",
-            at_users=[fe_app_id] if fe_app_id else None,
-        )
-        await self._notify(chat_id, "pm",
-            f"@BE Bot 请完成后端任务。",
-            at_users=[be_app_id] if be_app_id else None,
+            f"PRD 完成，已拆分为前端和后端子任务。\n@FE Bot 请完成前端，@BE Bot 请完成后端。"
         )
 
+        # 内部并行执行 FE/BE（保证可靠）
         task.state = State.FE_RUNNING
+        fe_future = self._run_with_retry(self.fe, task.fe_task, "fe", task.task_id)
+        be_future = self._run_with_retry(self.be, task.be_task, "be", task.task_id)
+
+        fe_result, be_result = await asyncio.gather(fe_future, be_future)
+
+        task.fe_result = fe_result.get("result", "") if fe_result["success"] else ""
+        task.be_result = be_result.get("result", "") if be_result["success"] else ""
+
+        # FE 和 BE 各自用自己 Bot 身份在群里发言
+        if task.fe_result:
+            await self._notify(chat_id, "fe",
+                f"收到 PM 的前端任务，已完成。\n{task.fe_result[:800]}"
+                + ("..." if len(task.fe_result) > 800 else "")
+            )
+        else:
+            await self._notify(chat_id, "fe", "前端任务执行失败，请查看日志。")
+
+        if task.be_result:
+            await self._notify(chat_id, "be",
+                f"收到 PM 的后端任务，已完成。\n{task.be_result[:800]}"
+                + ("..." if len(task.be_result) > 800 else "")
+            )
+        else:
+            await self._notify(chat_id, "be", "后端任务执行失败，请查看日志。")
+
+        # 完成
+        task.state = State.COMPLETED
+        task.completed_at = datetime.now().isoformat()
         self._tasks[task.task_id] = task
 
-    # ── FE/BE 入口：处理 @mention ────────────────────────
+        await self._notify(chat_id, "pm",
+            f"任务 {task.task_id} 完成。FE/BE 代码已生成。"
+        )
+
+    # ── FE/BE 直接入口：单 Agent 任务 ────────────────────
 
     async def _route_single(self, bot_key: str, chat_id: str, command: str) -> None:
-        """FE 或 BE Bot 被 @：优先使用 PM 分配的子任务，否则处理直接指令"""
-        # 如果有 PM 预先分配的子任务，用它（Agent @Agent 模式）
-        stored = self._fe_tasks.pop(chat_id, "") if bot_key == "fe" else self._be_tasks.pop(chat_id, "")
-        task_text = stored or command
-
+        """FE 或 BE Bot 被直接 @：执行单项任务"""
         agent = self.fe if bot_key == "fe" else self.be
 
         await self._notify(chat_id, bot_key, f"收到任务，开始处理...")
 
-        result = agent.run(task_text)
+        result = agent.run(command)
 
         if result["success"]:
             await self._notify(chat_id, bot_key,
