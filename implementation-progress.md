@@ -56,4 +56,7 @@
 | 2026-07-02 10:55:38 | 步骤2: API 验证(OpenAI SDK) | 写 test_api.py，发现 base_url 不匹配(文档写 /anthropic 但用了 OpenAI SDK)，多次调试后连通但 v4-pro content 常空(推理模型问题) |
 | 2026-07-02 10:59:53 | 步骤2: SDK切换 | 用户提供 DeepSeek 官方文档：/anthropic 端点专用于 Anthropic SDK。切换为 anthropic SDK(anthropic>=0.40.0)，base_url 恢复为 https://api.deepseek.com/anthropic；requirements.txt openai→anthropic |
 | 2026-07-02 10:59:53 | 步骤2: 双模型验证 | Anthropic SDK 测试 deepseek-v4-flash 和 deepseek-v4-pro：两者均连通 OK + tool_use OK；用户要求最终用 v4-pro |
+| 2026-07-02 11:20:24 | 飞书多Bot接入 | 更新 .env 三组Bot凭证(pm/fe/be)；新增 tools/feishu_utils.py(Token缓存+消息发送+签名验证)；重写 main.py(多Bot共享webhook按app_id路由)；重写 orchestrator.py(PM/FE/BE三类入口，PM触发全链路FE/BE各自Bot发言)；修复 base.py 工具循环消息配对bug；三项多Bot测试全部通过 ✅；commit 3141f2a |
+| 2026-07-02 11:12:17 | 系统集成测试 | 写 test_system.py 四阶段测试：PM Agent 单独运行 ✅ 生成完整PRD；FE Agent 修复工具参数映射后 ✅ 生成 workspace/fe/App.tsx；BE Agent ✅ 生成 workspace/be/main.py(FastAPI+SQLAlchemy)；Orchestrator 全链路 PM→拆分→FE/BE并行→合并 ✅ 一次跑通；commit 2928d3a |
+| 2026-07-02 11:10:24 | Git提交 | commit b895293: 20 files, 2217 lines, .env 已被 .gitignore 排除 |
 | 2026-07-02 11:05:35 | 步骤3-6: 系统搭建 | 按依赖链一次性完成核心代码：agents/base.py(Anthropic SDK封装+ThinkingBlock处理+多轮工具循环+记忆持久化)；prompts/{pm,fe,be}_prompt.md(含团队认知+边界声明+输出格式)；tools/{search.py(DuckDuckGo),feishu.py(Webhook+API双模式),code_editor.py(路径隔离)}；agents/{pm,fe,be}.py(各自工具集+工作区)；orchestrator.py(状态机+信息过滤+asyncio.gather并行+指数退避重试+失败日志)；main.py(FastAPI+飞书签名验证+异步Orchestrator触发+任务查询API)；所有模块导入验证通过 |

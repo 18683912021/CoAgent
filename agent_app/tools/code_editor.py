@@ -44,12 +44,16 @@ LIST_DIR_TOOL_SPEC = {
 
 
 def _resolve(workspace: str, rel_path: str) -> Path:
-    """解析路径并验证在工作区内"""
-    base = WORKSPACE_ROOT / workspace
+    """解析路径并验证在工作区内。workspace 可以是相对名(fe/be)或绝对路径。"""
+    ws = Path(workspace)
+    if ws.is_absolute():
+        base = ws
+    else:
+        base = (WORKSPACE_ROOT / ws).resolve()
     target = (base / rel_path).resolve()
 
     # 安全检查：确保路径不逃逸工作区
-    if not str(target).startswith(str(base.resolve())):
+    if not str(target).startswith(str(base)):
         raise PermissionError(f"禁止访问工作区外的路径: {rel_path}")
 
     return target
