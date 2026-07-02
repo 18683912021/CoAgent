@@ -1,9 +1,8 @@
-"""Orchestrator —— 任务调度器，管理三 Agent 协作流程"""
+"""Orchestrator —— 多 Bot 任务调度器"""
 import asyncio
 import json
-import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
@@ -12,24 +11,19 @@ from typing import Any
 from agents.pm import PMAgent
 from agents.fe import FEAgent
 from agents.be import BEAgent
-from tools.feishu import send_feishu_message
+from tools.feishu_utils import BOTS, send_message
 
-# 日志目录
 LOGS_DIR = Path(__file__).parent / "logs"
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
 FAILED_TASKS_LOG = LOGS_DIR / "failed_tasks.jsonl"
 
 
 class State(Enum):
-    """任务状态枚举"""
     IDLE = "idle"
-    PLANNING = "planning"           # PM 分析中
-    WAITING_USER = "waiting_user"   # 需用户补充信息
-    DISPATCHING = "dispatching"     # 分发子任务
+    PLANNING = "planning"
+    DISPATCHING = "dispatching"
     FE_RUNNING = "fe_running"
     BE_RUNNING = "be_running"
-    FE_RETRYING = "fe_retrying"
-    BE_RETRYING = "be_retrying"
     MERGING = "merging"
     COMPLETED = "completed"
     FAILED = "failed"
@@ -37,11 +31,10 @@ class State(Enum):
 
 @dataclass
 class TaskState:
-    """任务实例状态"""
     task_id: str
     state: State = State.IDLE
     chat_id: str = ""
-    user_id: str = ""
+    initiator_bot: str = ""  # pm / fe / be
     command: str = ""
     prd: str = ""
     fe_task: str = ""
@@ -59,21 +52,19 @@ class TaskState:
         return {
             "task_id": self.task_id,
             "state": self.state.value,
+            "initiator": self.initiator_bot,
             "command": self.command,
             "error": self.error,
-            "created_at": self.created_at,
-            "completed_at": self.completed_at,
         }
 
 
 class Orchestrator:
-    """任务调度器。
+    """多 Bot 任务调度器。
 
-    职责：
-    1. 接收飞书命令 → PM Agent 分析需求
-    2. PM 产出 PRD → 信息过滤 → 拆分为 FE/BE 子任务
-    3. 并行派发 FE/BE Agent
-    4. 收集结果、重试、熔断、通知
+    三类入口：
+    - PM Bot 被 @  → PM分析 → 内部调用FE/BE → 各自Bot发言
+    - FE Bot 被 @  → 直接执行前端任务 → FE Bot 发言
+    - BE Bot 被 @  → 直接执行后端任务 → BE Bot 发言
     """
 
     def __init__(self):
@@ -82,201 +73,210 @@ class Orchestrator:
         self.be = BEAgent()
         self._tasks: dict[str, TaskState] = {}
 
-    # ── 入口 ────────────────────────────────────────────
+    def _get_bot_config(self, key: str) -> dict:
+        """获取 Bot 配置"""
+        return BOTS.get(key, {})
 
-    async def handle_command(self, chat_id: str, user_id: str, command: str) -> str:
-        """处理飞书命令的主入口。
+    # ── 入口：飞书消息分发 ──────────────────────────────
 
-        Returns:
-            结果消息文本（发送到飞书）
+    async def handle_command(
+        self, bot_key: str, chat_id: str, user_id: str, command: str
+    ) -> None:
+        """根据被 @ 的 Bot 分发任务。
+
+        Args:
+            bot_key: 被 @ 的 Bot (pm/fe/be)
+            chat_id: 群聊 ID
+            user_id: 发送者 ID
+            command: 去掉 @Bot 前缀后的指令文本
         """
+        if bot_key == "pm":
+            await self._route_pm(chat_id, user_id, command)
+        elif bot_key == "fe":
+            await self._route_single("fe", chat_id, command)
+        elif bot_key == "be":
+            await self._route_single("be", chat_id, command)
+        else:
+            await self._notify(chat_id, "unknown", f"未识别的 Bot: {bot_key}")
+
+    # ── PM 入口：完整协作流程 ────────────────────────────
+
+    async def _route_pm(self, chat_id: str, user_id: str, command: str) -> None:
+        """PM Bot 被 @：分析需求 → 拆分 → 并行触发 FE/BE"""
         task = TaskState(
             task_id=str(uuid.uuid4())[:8],
             state=State.PLANNING,
             chat_id=chat_id,
-            user_id=user_id,
+            initiator_bot="pm",
             command=command,
             created_at=datetime.now().isoformat(),
         )
         self._tasks[task.task_id] = task
 
-        await self._notify(chat_id, f"[任务 {task.task_id}] 收到指令：{command}\nPM Agent 正在分析需求...")
+        # PM 开始工作
+        await self._notify(chat_id, "pm",
+            f"收到需求：{command}\n正在分析并生成 PRD..."
+        )
 
-        # ── Phase 1: PM 分析 ──
-        task.state = State.PLANNING
         pm_result = self.pm.run(
-            f"用户需求：{command}\n请分析需求，按PRD格式输出。如果需要更多信息，请明确提问。"
+            f"用户需求：{command}\n请按PRD格式输出完整的需求文档。"
         )
 
         if not pm_result["success"]:
             task.state = State.FAILED
-            task.error = pm_result["error"] or "PM Agent 分析失败"
-            await self._notify(chat_id, f"[任务 {task.task_id}] PM 分析失败：{task.error}")
+            task.error = pm_result.get("error") or "PM 分析失败"
+            await self._notify(chat_id, "pm", f"PM 分析失败：{task.error}")
             self._log_failure(task)
-            return f"任务失败：{task.error}"
+            return
 
         task.prd = pm_result["result"]
-
-        # 检查是否需要追问用户
-        if self._needs_clarification(task.prd):
-            task.state = State.WAITING_USER
-            await self._notify(chat_id, f"[任务 {task.task_id}] PM 需要更多信息：\n{task.prd}")
-            return "需要用户补充信息，请查看飞书消息。"
-
-        # ── Phase 2: 信息过滤 + 任务拆分 ──
-        task.state = State.DISPATCHING
         task.fe_task, task.be_task = self._filter_and_split(task.prd)
 
-        await self._notify(chat_id, f"[任务 {task.task_id}] PRD 完成，FE/BE Agent 并行开发中...")
+        # 通知群聊：PRD 完成，开始开发
+        await self._notify(chat_id, "pm",
+            f"PRD 完成。\nFE Agent 正在开发前端...\nBE Agent 正在开发后端..."
+        )
 
-        # ── Phase 3: 并行执行 FE/BE ──
+        # 并行执行 FE/BE
         task.state = State.FE_RUNNING
-        fe_state = State.FE_RUNNING
-        be_state = State.BE_RUNNING
-
-        fe_future = self._run_with_retry(
-            self.fe, task.fe_task, "FE", task.task_id
+        fe_result, be_result = await asyncio.gather(
+            self._run_with_retry(self.fe, task.fe_task, "fe", task.task_id),
+            self._run_with_retry(self.be, task.be_task, "be", task.task_id),
         )
-        be_future = self._run_with_retry(
-            self.be, task.be_task, "BE", task.task_id
-        )
-
-        fe_result, be_result = await asyncio.gather(fe_future, be_future)
 
         task.fe_result = fe_result.get("result", "") if fe_result["success"] else ""
         task.be_result = be_result.get("result", "") if be_result["success"] else ""
 
-        # ── Phase 4: 合并 ──
-        task.state = State.MERGING
-        summary = self._build_summary(task)
+        # FE 和 BE 各自在群里发言（用各自的 Bot）
+        if task.fe_result:
+            await self._notify(chat_id, "fe",
+                f"[前端代码]\n{task.fe_result[:800]}"
+                + ("..." if len(task.fe_result) > 800 else "")
+            )
+        else:
+            await self._notify(chat_id, "fe", "前端开发失败，请查看日志。")
+
+        if task.be_result:
+            await self._notify(chat_id, "be",
+                f"[后端代码]\n{task.be_result[:800]}"
+                + ("..." if len(task.be_result) > 800 else "")
+            )
+        else:
+            await self._notify(chat_id, "be", "后端开发失败，请查看日志。")
+
+        # 完成
         task.state = State.COMPLETED
         task.completed_at = datetime.now().isoformat()
 
-        await self._notify(chat_id, summary)
-        return summary
+        await self._notify(chat_id, "pm",
+            f"任务 {task.task_id} 完成。"
+            f"FE/BE 代码已生成至 workspace/ 目录。"
+        )
+
+    # ── FE/BE 直接入口：单 Agent 任务 ────────────────────
+
+    async def _route_single(self, bot_key: str, chat_id: str, command: str) -> None:
+        """FE 或 BE Bot 被直接 @：执行单项任务"""
+        agent = self.fe if bot_key == "fe" else self.be
+        result = agent.run(command)
+
+        if result["success"]:
+            await self._notify(chat_id, bot_key,
+                result["result"][:800]
+                + ("..." if len(result["result"]) > 800 else "")
+            )
+        else:
+            await self._notify(chat_id, bot_key,
+                f"执行失败：{result.get('error', 'unknown error')}"
+            )
 
     # ── 信息过滤 ─────────────────────────────────────────
 
-    def _needs_clarification(self, prd: str) -> bool:
-        """判断 PM 输出是否需要追问用户（简单启发式）"""
-        lines = prd.strip().split("\n")
-        # 如果前几行包含问号或"请确认"/"请问"，认为需要追问
-        head = "\n".join(lines[:5])
-        return ("?" in head or "？" in head or
-                "请确认" in head or "请问" in head or
-                "需要更多" in head or "不明确" in head)
-
     def _filter_and_split(self, prd: str) -> tuple[str, str]:
-        """将 PM 的完整 PRD 拆分为 FE 子任务和 BE 子任务。
-
-        信息过滤原则：
-        - FE 收到：项目概述 + 前端任务 + API 契约（接口签名，不含实现细节）
-        - BE 收到：项目概述 + 后端任务 + API 契约（接口签名，含数据模型要求）
-        - FE/BE 不互相看到对方的任务细节
-        """
+        """PM 的 PRD → FE 子任务 + BE 子任务（信息过滤）"""
         fe_parts = [
-            "以下是你需要完成的前端子任务。你只需要关注前端部分。\n",
+            "以下是你需要完成的前端子任务（仅前端部分）：\n",
             self._extract_section(prd, ["项目概述", "功能需求"]),
             "\n--- 前端任务 ---\n",
             self._extract_section(prd, ["前端任务", "前端"]),
-            "\n--- API 接口契约（你只需要消费这些接口）---\n",
+            "\n--- API 接口契约（消费方）---\n",
             self._extract_section(prd, ["API", "接口契约", "接口"]),
         ]
-
         be_parts = [
-            "以下是你需要完成的后端子任务。你只需要关注后端部分。\n",
+            "以下是你需要完成的后端子任务（仅后端部分）：\n",
             self._extract_section(prd, ["项目概述", "功能需求"]),
             "\n--- 后端任务 ---\n",
             self._extract_section(prd, ["后端任务", "后端"]),
-            "\n--- API 接口契约（你必须实现这些接口）---\n",
+            "\n--- API 接口契约（实现方）---\n",
             self._extract_section(prd, ["API", "接口契约", "接口"]),
         ]
-
         return "\n".join(fe_parts), "\n".join(be_parts)
 
     def _extract_section(self, text: str, keywords: list[str]) -> str:
-        """从 PRD 中提取相关章节（简单实现）"""
         lines = text.split("\n")
         result = []
         capturing = False
-
         for line in lines:
             stripped = line.strip()
-            # 检测标题行（以数字或 ## 开头）
-            is_heading = (stripped.startswith("#") or
-                         (stripped and stripped[0].isdigit() and "." in stripped[:4]))
-
+            is_heading = (
+                stripped.startswith("#")
+                or (stripped and stripped[0].isdigit() and "." in stripped[:4])
+            )
             if is_heading:
                 capturing = any(kw in stripped for kw in keywords)
             if capturing:
                 result.append(line)
+        return "\n".join(result) if result else "(此部分未明确，请基于项目概述自行判断)"
 
-        return "\n".join(result) if result else "(PRD 中未明确此部分，请基于项目概述自行判断)"
-
-    # ── 重试与执行 ──────────────────────────────────────
+    # ── 重试 ─────────────────────────────────────────────
 
     async def _run_with_retry(
-        self,
-        agent: Any,
-        task_description: str,
-        agent_name: str,
-        task_id: str,
+        self, agent: Any, task: str, bot_key: str, task_id: str
     ) -> dict:
-        """执行 Agent 任务，带指数退避重试"""
-        backoff = 1  # 秒
+        """带指数退避重试的 Agent 执行"""
+        backoff = 1
+        max_retries = self._tasks[task_id].max_retries
 
-        for attempt in range(1, self._tasks[task_id].max_retries + 2):
+        for attempt in range(1, max_retries + 2):
             if attempt > 1:
                 await asyncio.sleep(backoff)
                 backoff *= 2
 
-            result = agent.run(task_description)
-
+            result = agent.run(task)
             if result["success"]:
                 return result
 
-            # 重试前记录
-            if attempt <= self._tasks[task_id].max_retries:
-                print(f"[{task_id}] {agent_name} 第 {attempt} 次失败，{backoff}s 后重试: {result.get('error')}")
+            if attempt <= max_retries:
+                print(f"[{task_id}] {bot_key} 重试 {attempt}/{max_retries}: {result.get('error')}")
 
-        # 全部失败
         self._log_failure(self._tasks[task_id])
-        return {"success": False, "result": "", "error": f"{agent_name} 重试耗尽"}
+        return {"success": False, "result": "", "error": f"{bot_key} 重试耗尽"}
 
-    # ── 结果汇总 ────────────────────────────────────────
+    # ── 消息发送 ─────────────────────────────────────────
 
-    def _build_summary(self, task: TaskState) -> str:
-        """构建任务完成摘要"""
-        lines = [
-            f"[任务 {task.task_id}] 完成",
-            f"",
-            f"--- PRD ---",
-            task.prd[:500] + ("..." if len(task.prd) > 500 else ""),
-            f"",
-            f"--- 前端产出 (workspace/fe/) ---",
-            task.fe_result[:300] + ("..." if len(task.fe_result) > 300 else "") if task.fe_result else "(无)",
-            f"",
-            f"--- 后端产出 (workspace/be/) ---",
-            task.be_result[:300] + ("..." if len(task.be_result) > 300 else "") if task.be_result else "(无)",
-        ]
-        return "\n".join(lines)
+    async def _notify(self, chat_id: str, bot_key: str, text: str) -> None:
+        """用指定 Bot 的身份向群聊发消息"""
+        bot = self._get_bot_config(bot_key)
+        if not bot.get("app_id"):
+            print(f"[orchestrator] {bot_key} Bot 未配置，模拟发送: {text[:80]}...")
+            return
 
-    # ── 辅助 ────────────────────────────────────────────
+        result = await send_message(
+            app_id=bot["app_id"],
+            app_secret=bot["app_secret"],
+            chat_id=chat_id,
+            text=text,
+        )
+        if not result["success"]:
+            print(f"[orchestrator] {bot_key} Bot 发送失败: {result['msg']}")
 
-    async def _notify(self, chat_id: str, text: str) -> None:
-        """发送飞书通知（失败不阻塞主流程）"""
-        try:
-            await send_feishu_message(chat_id, text)
-        except Exception as e:
-            print(f"[Orchestrator] 飞书通知失败: {e}")
+    # ── 日志 ─────────────────────────────────────────────
 
     def _log_failure(self, task: TaskState) -> None:
-        """失败任务写入日志"""
         FAILED_TASKS_LOG.parent.mkdir(parents=True, exist_ok=True)
         with open(FAILED_TASKS_LOG, "a", encoding="utf-8") as f:
             f.write(json.dumps(task.to_dict(), ensure_ascii=False) + "\n")
 
     def get_task_state(self, task_id: str) -> dict | None:
-        """查询任务状态"""
         task = self._tasks.get(task_id)
         return task.to_dict() if task else None

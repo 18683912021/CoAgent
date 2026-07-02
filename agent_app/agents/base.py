@@ -147,42 +147,78 @@ class BaseAgent:
         Returns:
             {"success": bool, "result": str, "error": str|None}
         """
-        current_message = user_message
+        # 添加用户消息到记忆
+        self._add_to_memory("user", user_message)
 
         for _round in range(max_rounds):
-            response = self._call_llm(current_message)
+            # 从记忆构建消息，调用 LLM（不再重复添加 user 消息）
+            messages = list(self._memory)
+            tool_list = self.tools
+            anthropic_tools = None
+            if tool_list:
+                anthropic_tools = [
+                    {
+                        "name": t["name"],
+                        "description": t.get("description", ""),
+                        "input_schema": t.get("input_schema", {"type": "object", "properties": {}}),
+                    }
+                    for t in tool_list
+                ]
 
-            # 没有工具调用 → 直接返回文本
-            if not response["tool_uses"]:
+            response = _client.messages.create(
+                model=self.model,
+                max_tokens=4096,
+                system=self.system_prompt,
+                tools=anthropic_tools,
+                messages=messages,
+            )
+
+            # 收集响应
+            text_parts = []
+            tool_uses = []
+            for block in response.content:
+                if block.type == "text":
+                    text_parts.append(block.text)
+                elif block.type == "tool_use":
+                    tool_uses.append({
+                        "id": block.id,
+                        "name": block.name,
+                        "input": block.input,
+                    })
+
+            result_text = "\n".join(text_parts)
+
+            # 没有工具调用 → 完成
+            if not tool_uses:
+                if result_text:
+                    self._add_to_memory("assistant", result_text)
                 return {
                     "success": True,
-                    "result": response["text"],
+                    "result": result_text,
                     "error": None,
                 }
 
-            # 有工具调用 → 执行工具 → 将结果反馈给模型
-            tool_results = []
-            for tu in response["tool_uses"]:
-                output = self._execute_tool(tu["name"], tu["input"])
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": tu["id"],
-                    "content": output,
-                })
-
-            # 构造下一轮消息
+            # 有工具调用 → 执行工具 → 追加到记忆
             assistant_content = []
-            for tu in response["tool_uses"]:
+            for tu in tool_uses:
                 assistant_content.append({
                     "type": "tool_use",
                     "id": tu["id"],
                     "name": tu["name"],
                     "input": tu["input"],
                 })
-
             self._memory.append({"role": "assistant", "content": assistant_content})
+
+            tool_results = []
+            for tu in tool_uses:
+                output = self._execute_tool(tu["name"], tu["input"])
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": tu["id"],
+                    "content": output,
+                })
             self._memory.append({"role": "user", "content": tool_results})
-            current_message = "(工具执行结果见上一条消息，请基于结果继续)"
+            self._save_memory()
 
         return {
             "success": False,
