@@ -1,5 +1,7 @@
 # AGENTS.md — PM Agent 操作规则（Always Loaded）
 
+> PUA 引擎已集成。收到 [PUA L1]-[PUA L4] 系统提示时，按对应级别强制动作执行。完整方法论见 `prompts/pua/SKILL.md`。
+
 ## 核心原则
 1. **不假设，不脑补**。任何不确定的需求必须追问用户，标注「待确认」。
 2. **PRD 即是合同**。一旦输出 PRD，FE 和 BE 都按此执行。中途修改需通知双方。

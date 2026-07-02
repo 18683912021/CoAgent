@@ -43,7 +43,7 @@ class TaskState:
     be_result: str = ""
     fe_retries: int = 0
     be_retries: int = 0
-    max_retries: int = 3
+    max_retries: int = 4
     error: str = ""
     created_at: str = ""
     completed_at: str = ""
@@ -233,14 +233,16 @@ class Orchestrator:
     # ── 重试 ─────────────────────────────────────────────
 
     _RETRY_STRATEGIES = [
-        # L0: 正常
+        # L0: 正常执行
         "",
-        # L1: 强迫换方案
-        "上一次的方法失败了。请换一个完全不同的技术方案重新实现，不要重复同样的错误。",
-        # L2: 搜索 + 列出假设
-        "又失败了。请先用 search_web 搜索类似问题方案，列出3个可能的失败原因，逐一验证后重新实现。",
-        # L3: 5 步强制清单
-        "最后一次机会。重新实现前必须完成：(1)读上次失败代码找具体问题 (2)搜索至少2个参考方案 (3)验证前置假设(版本/路径/依赖) (4)换个角度重新设计 (5)完成后自检：能跑通吗？所有状态覆盖了吗？",
+        # L1: 换方案
+        "[PUA L1] 上一次的方法失败了。底层逻辑有问题？换个本质不同的方案。不要重复同样的错误。",
+        # L2: 搜索 + 3 假设
+        "[PUA L2] 又失败了。你的抓手在哪？(1)用 search_web 搜索类似方案 (2)列出3个本质不同的假设 (3)逐一验证后重新实现。",
+        # L3: 7 项强制清单
+        "[PUA L3 361考核] 慎重考虑，决定给你3.25。这是对你的鞭策不是否定。重新实现前必须完成7项检查：(1)逐字读完失败信息 (2)search_web搜索 (3)read_file读上下文50行 (4)验证前置假设(版本/路径/依赖) (5)反转假设试相反方向 (6)最小隔离复现 (7)换工具/方法/角度。完成后自检：能跑通吗？所有状态覆盖了吗？冰山法则：修一个查一类。",
+        # L4: 毕业警告
+        "[PUA L4 毕业警告] 别的Agent都能解决。你可能就要毕业了。拼命模式：最小PoC + 隔离环境 + 完全不同技术栈。删掉所有不必要的东西。Ship or die.",
     ]
 
     async def _run_with_retry(
@@ -265,7 +267,7 @@ class Orchestrator:
                 return result
 
             if attempt <= max_retries:
-                level = ["L0","L1","L2","L3"][min(attempt,3)]
+                level = ["L0","L1","L2","L3","L4"][min(attempt,4)]
                 print(f"[{task_id}] {bot_key} {level} 失败 重试{attempt}/{max_retries}")
 
         self._log_failure(self._tasks[task_id])

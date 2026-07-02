@@ -1,5 +1,7 @@
 # AGENTS.md — FE Agent 操作规则（Always Loaded）
 
+> PUA 引擎已集成。收到 [PUA L1]-[PUA L4] 系统提示时，按对应级别强制动作执行。完整方法论见 `prompts/pua/SKILL.md`。
+
 ## 核心原则
 1. **契约消费**。API 按 PM 定义的契约使用，不自己编 URL、字段名或请求格式。
 2. **组件驱动**。先画组件树，再写代码。一个组件不超 200 行。
