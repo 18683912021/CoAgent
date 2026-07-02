@@ -8,3 +8,4 @@ logs/
 workspace/
 agent_app/memory/memory-*.md
 .DS_Store
+.claude

@@ -28,41 +28,99 @@ def _run_bot_process(bot_key: str, msg_queue: multiprocessing.Queue) -> None:
         try:
             msg = data.event.message
             chat_id = msg.chat_id
+            message_id = getattr(msg, "message_id", "") or ""
 
-            # ── 过滤 1：忽略 Bot 自己发的消息（防止死循环）──
+            # ── 过滤：忽略 Bot 自己发的消息（防止死循环）──
             sender_id = ""
             if data.event.sender and data.event.sender.sender_id:
                 sender_id = data.event.sender.sender_id.user_id or ""
-            # 收集所有 Bot 的 app_id
             all_bot_ids = {b["app_id"] for b in BOTS.values() if b.get("app_id")}
             if sender_id in all_bot_ids:
-                return  # 忽略来自其他 Bot 的消息
+                return
 
-            # ── 过滤 2：只处理明确 @了本 Bot 的消息 ──
+            # ── 判断是否被 @，同时提取所有被 @ 的人 ──
             mentions = getattr(msg, "mentions", []) or []
-            mentioned_ids = {m.key for m in mentions if hasattr(m, "key")}
-            if app_id not in mentioned_ids:
-                return  # 未 @本 Bot，忽略
+            mentioned_keys = {m.key for m in mentions if hasattr(m, "key")}
+            mentioned_names = {m.name for m in mentions if hasattr(m, "name")}
+            bot_name = bot.get("name", "")
+            bot_short = bot.get("short_name", "")
+            is_mentioned = (
+                app_id in mentioned_keys
+                or bot_name in mentioned_names
+                or any(bot_short in n for n in mentioned_names)
+            )
 
+            # 提取所有被 @ 的人（排除自己），用于群呼上下文
+            all_mentioned_names: list[str] = []
+            for m in mentions:
+                name = getattr(m, "name", "") if hasattr(m, "name") else ""
+                if name and name != bot_name and bot_short not in name:
+                    all_mentioned_names.append(name)
+            mentioned_others = all_mentioned_names
+
+            msg_type = getattr(msg, "msg_type", "text") or "text"
             content_str = msg.content or "{}"
             content = json.loads(content_str)
             text = content.get("text", "").strip()
             user_id = sender_id
 
-            command = text
+            # ── 解析消息内容（支持文件/文档/图片）──
+            command = ""
+            attachment_info = ""
+
+            if msg_type == "file":
+                file_name = content.get("file_name", "未知文件")
+                file_key = content.get("file_key", "")
+                attachment_info = f"[文件: {file_name}]"
+                # 把文件信息附到指令里，Agent 可以通过 file_key 读取
+                command = f"(用户发了一个文件: {file_name})"
+
+            elif msg_type == "image":
+                image_key = content.get("image_key", "")
+                attachment_info = "[图片]"
+                command = "(用户发了一张图片)"
+
+            elif msg_type == "post":
+                # 富文本消息，提取纯文本
+                post_content = content.get("content", [])
+                text_parts = []
+                for paragraph in post_content:
+                    for element in paragraph:
+                        if isinstance(element, dict) and element.get("tag") == "text":
+                            text_parts.append(element.get("text", ""))
+                        elif isinstance(element, dict) and element.get("tag") == "at":
+                            text_parts.append(f"@{element.get('user_name', '')}")
+                text = "".join(text_parts)
+                command = text
+
+            else:
+                # 普通文本消息
+                command = text
+
+            # 去掉 @Bot 前缀
             if command.startswith("@"):
                 parts = command.split(" ", 1)
                 command = parts[1] if len(parts) > 1 else ""
+            if not command and not attachment_info:
+                command = ""
 
-            if not command:
-                return
+            # 如果有附件信息，附到 command 前面
+            if attachment_info and command:
+                command = f"{attachment_info}\n{command}"
+            elif attachment_info:
+                command = attachment_info
 
-            logger.info(f"[{bot_key}] chat={chat_id} cmd={command[:80]}")
+            logger.info(f"[{bot_key}] chat={chat_id} type={msg_type} mentioned={is_mentioned} others={mentioned_others} cmd={command[:80] if command else '(empty)'}")
             msg_queue.put({
                 "bot_key": bot_key,
                 "chat_id": chat_id,
+                "message_id": message_id,
                 "user_id": user_id,
                 "command": command,
+                "is_mentioned": is_mentioned,
+                "mentioned_others": mentioned_others,
+                "msg_type": msg_type,
+                "content": content_str,
             })
         except Exception as e:
             logger.error(f"[{bot_key}] 解析失败: {e}")
@@ -106,6 +164,9 @@ def _msg_consumer(msg_queue: multiprocessing.Queue, orchestrator: Any) -> None:
                 orchestrator.handle_command(
                     msg["bot_key"], msg["chat_id"],
                     msg["user_id"], msg["command"],
+                    msg.get("is_mentioned", True),
+                    msg.get("mentioned_others", []),
+                    msg.get("message_id", ""),
                 ),
                 loop,
             )
@@ -115,6 +176,9 @@ def _msg_consumer(msg_queue: multiprocessing.Queue, orchestrator: Any) -> None:
                 orchestrator.handle_command(
                     msg["bot_key"], msg["chat_id"],
                     msg["user_id"], msg["command"],
+                    msg.get("is_mentioned", True),
+                    msg.get("mentioned_others", []),
+                    msg.get("message_id", ""),
                 )
             )
             loop.close()

@@ -16,17 +16,20 @@ BOTS = {
     "pm": {
         "app_id": os.environ.get("FEISHU_PM_APP_ID", ""),
         "app_secret": os.environ.get("FEISHU_PM_APP_SECRET", ""),
-        "name": "PM Bot",
+        "name": "AI小吴（产品经理）",
+        "short_name": "小吴",
     },
     "fe": {
         "app_id": os.environ.get("FEISHU_FE_APP_ID", ""),
         "app_secret": os.environ.get("FEISHU_FE_APP_SECRET", ""),
-        "name": "FE Bot",
+        "name": "AI小柯（前端）",
+        "short_name": "小柯",
     },
     "be": {
         "app_id": os.environ.get("FEISHU_BE_APP_ID", ""),
         "app_secret": os.environ.get("FEISHU_BE_APP_SECRET", ""),
-        "name": "BE Bot",
+        "name": "AI酱瓜（后端开发工程师）",
+        "short_name": "酱瓜",
     },
 }
 
@@ -90,20 +93,14 @@ async def send_message(
     if not token:
         return {"success": False, "msg": "获取 tenant_access_token 失败"}
 
-    # 构造消息内容，@mention 在 text 中用 <at> 标签
-    content_body = {"text": text}
-    # 生成 @mention 的 <at> 标签
-    for uid in (at_users or []):
-        # 用 <at user_id="xxx"> 格式在文本中插入 @
-        # 实际 @ 效果依赖飞书客户端渲染
-        text = text  # <at> 已在调用方拼入 text
-
-    # 如果有 at_users，通过 at 字段告知飞书这是真正的 @
+    # 构造消息内容
+    # 如果有 at_users，在 text 末尾追加 <at> 标签实现真正的 @mention
+    msg_text = text
     if at_users:
-        # 提取 text 中第一个 at_user 作为 at 目标
-        content_body = {
-            "text": text,
-        }
+        at_tags = " ".join(f'<at user_id="{uid}"></at>' for uid in at_users)
+        msg_text = f"{text} {at_tags}"
+
+    content_body = {"text": msg_text}
 
     try:
         async with httpx.AsyncClient(timeout=15) as client:
@@ -127,6 +124,104 @@ async def send_message(
             return {"success": False, "msg": f"飞书 API 返回错误: code={code} msg={data.get('msg', '')}"}
     except Exception as e:
         return {"success": False, "msg": f"发送异常: {e}"}
+
+
+async def add_reaction(app_id: str, app_secret: str, message_id: str, emoji_type: str = "WRITING_HAND") -> dict:
+    """给消息添加表情回应（用于模拟"正在输入"状态）。
+
+    Args:
+        message_id: 飞书消息 ID
+        emoji_type: 表情类型，默认 WRITING_HAND（✍️）
+
+    Returns:
+        {"success": bool, "reaction_id": str, "msg": str}
+    """
+    if not app_id or not app_secret:
+        return {"success": False, "reaction_id": "", "msg": "Bot 凭证未配置"}
+    if not message_id:
+        return {"success": False, "reaction_id": "", "msg": "message_id 为空"}
+
+    token = await get_tenant_token(app_id, app_secret)
+    if not token:
+        return {"success": False, "reaction_id": "", "msg": "获取 token 失败"}
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(
+                f"https://open.feishu.cn/open-apis/im/v1/messages/{message_id}/reactions",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                },
+                json={"reaction_type": {"emoji_type": emoji_type}},
+            )
+            data = resp.json()
+            code = data.get("code", -1)
+            if code == 0:
+                reaction_id = data.get("data", {}).get("reaction_id", "")
+                return {"success": True, "reaction_id": reaction_id, "msg": "ok"}
+            return {"success": False, "reaction_id": "", "msg": f"code={code} {data.get('msg', '')}"}
+    except Exception as e:
+        return {"success": False, "reaction_id": "", "msg": f"异常: {e}"}
+
+
+async def delete_reaction(app_id: str, app_secret: str, message_id: str, reaction_id: str) -> dict:
+    """删除消息的表情回应。
+
+    Returns:
+        {"success": bool, "msg": str}
+    """
+    if not reaction_id:
+        return {"success": False, "msg": "reaction_id 为空"}
+
+    token = await get_tenant_token(app_id, app_secret)
+    if not token:
+        return {"success": False, "msg": "获取 token 失败"}
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.delete(
+                f"https://open.feishu.cn/open-apis/im/v1/messages/{message_id}/reactions/{reaction_id}",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            data = resp.json()
+            code = data.get("code", -1)
+            if code == 0:
+                return {"success": True, "msg": "ok"}
+            return {"success": False, "msg": f"code={code} {data.get('msg', '')}"}
+    except Exception as e:
+        return {"success": False, "msg": f"异常: {e}"}
+
+
+async def download_file(app_id: str, app_secret: str, file_key: str) -> dict:
+    """下载飞书群聊中的文件内容。
+
+    Args:
+        file_key: 消息中的 file_key
+
+    Returns:
+        {"success": bool, "content": str, "file_name": str, "msg": str}
+    """
+    token = await get_tenant_token(app_id, app_secret)
+    if not token:
+        return {"success": False, "content": "", "file_name": "", "msg": "获取 token 失败"}
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(
+                f"https://open.feishu.cn/open-apis/im/v1/messages/{file_key}/resources/{file_key}?type=file",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            if resp.status_code == 200:
+                content_type = resp.headers.get("content-type", "")
+                if "text" in content_type or "json" in content_type or "xml" in content_type:
+                    return {"success": True, "content": resp.text[:5000], "file_name": "", "msg": "ok"}
+                else:
+                    return {"success": True, "content": f"[二进制文件，大小: {len(resp.content)} 字节]", "file_name": "", "msg": "ok"}
+            data = resp.json()
+            return {"success": False, "content": "", "file_name": "", "msg": f"下载失败: {data}"}
+    except Exception as e:
+        return {"success": False, "content": "", "file_name": "", "msg": f"下载异常: {e}"}
 
 
 def verify_signature(headers: dict, body: dict, app_secret: str) -> bool:

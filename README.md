@@ -4,9 +4,9 @@
 
 | Agent | 角色 | 名字 | 人格 |
 |-------|------|------|------|
-| **PM** | 产品经理 | Lin | 精准追问者，不脑补不编造 |
-| **FE** | 前端开发 | Seven | 像素强迫症，组件复用狂魔 |
-| **BE** | 后端开发 | Atlas | API 设计洁癖，数据模型信仰 |
+| **PM** | 产品经理 | 小吴 | 精准追问者，不脑补不编造 |
+| **FE** | 前端开发 | 小柯 | 像素强迫症，组件复用狂魔 |
+| **BE** | 后端开发 | 酱瓜 | API 设计洁癖，数据模型信仰 |
 
 ---
 
@@ -27,10 +27,10 @@ python main.py
 ```
 飞书群
   用户: @PM_Bot 创建 Todo 应用
-    → PM Bot (Lin): "收到。PRD 完成，@FE @BE 开始开发"
+    → PM Bot (小吴): "收到。PRD 完成，@FE @BE 开始开发"
     → 内部 asyncio.gather 并行执行:
-        ├─ FE Agent (Seven): 生成 workspace/fe/*
-        └─ BE Agent (Atlas): 生成 workspace/be/*
+        ├─ FE Agent (小柯): 生成 workspace/fe/*
+        └─ BE Agent (酱瓜): 生成 workspace/be/*
     → FE Bot: "收到 PM 前端任务，已完成。[code]"
     → BE Bot: "收到 PM 后端任务，已完成。[code]"
     → PM Bot: "任务完成。代码已生成。"
@@ -139,9 +139,9 @@ agent_app/
 │
 ├── agents/                          # [代码] Agent 实现
 │   ├── base.py                      #   基类（Anthropic SDK/记忆/工具循环）
-│   ├── pm.py                        #   PM Agent — Lin
-│   ├── fe.py                        #   FE Agent — Seven
-│   └── be.py                        #   BE Agent — Atlas
+│   ├── pm.py                        #   PM Agent — 小吴
+│   ├── fe.py                        #   FE Agent — 小柯
+│   └── be.py                        #   BE Agent — 酱瓜
 │
 ├── prompts/                         # [定义] Agent 文件集（对标 OpenMOSS）
 │   ├── pm/                          #   PM Agent 定义

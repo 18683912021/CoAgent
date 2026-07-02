@@ -35,6 +35,7 @@ class BaseAgent:
         self.workspace = Path(workspace) if workspace else None
         self.model = model or DEFAULT_MODEL
         self._memory: list[dict] = []
+        self._facts: list[str] = []
 
         # 初始化工作目录
         if self.workspace:
@@ -50,7 +51,11 @@ class BaseAgent:
         if self.memory_file.exists():
             try:
                 data = json.loads(self.memory_file.read_text(encoding="utf-8"))
-                self._memory = data if isinstance(data, list) else []
+                if isinstance(data, dict):
+                    self._memory = data.get("messages", [])
+                    self._facts = data.get("facts", [])
+                elif isinstance(data, list):
+                    self._memory = data
             except (json.JSONDecodeError, ValueError):
                 self._memory = []
 
@@ -58,7 +63,10 @@ class BaseAgent:
         """将当前上下文持久化到文件"""
         self.memory_file.parent.mkdir(parents=True, exist_ok=True)
         self.memory_file.write_text(
-            json.dumps(self._memory, ensure_ascii=False, indent=2),
+            json.dumps({
+                "messages": self._memory,
+                "facts": self._facts,
+            }, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
 
@@ -68,7 +76,33 @@ class BaseAgent:
         # 保留最近 20 轮，避免记忆膨胀
         if len(self._memory) > 20:
             self._memory = self._memory[-20:]
+        # 自动从用户消息中提取关键事实
+        if role == "user" and isinstance(content, str):
+            self._extract_facts_from(content)
         self._save_memory()
+
+    # ── Honcho 风格事实提取 ──────────────────────────
+
+    def _extract_facts_from(self, text: str) -> None:
+        """从用户消息中提取关键事实（决策/偏好/命名/需求）。"""
+        fact_signals = ["决定", "选", "偏好", "要求", "需要", "叫", "名字是", "用 ", "做", "写"]
+        for line in text.split("\n"):
+            line = line.strip()
+            if 5 < len(line) < 200 and any(s in line for s in fact_signals):
+                # 去重
+                if line not in self._facts:
+                    self._facts.append(line)
+        # 最多保留 15 条
+        if len(self._facts) > 15:
+            self._facts = self._facts[-15:]
+        self._save_memory()
+
+    def _build_facts_preamble(self) -> str:
+        """构建记忆注入：从历史事实中生成'你记得'上下文。"""
+        if not self._facts:
+            return ""
+        facts_text = "\n".join(f"- {f}" for f in self._facts[-8:])
+        return f"[长期记忆] 你记得以下关于用户和项目的事：\n{facts_text}\n"
 
     # ── LLM 调用 ───────────────────────────────────────
 
@@ -102,12 +136,16 @@ class BaseAgent:
                 for t in tool_list
             ]
 
+        # ── Honcho 风格：注入长期记忆 ──
+        facts_preamble = self._build_facts_preamble()
+        augmented_message = f"{facts_preamble}\n{user_message}" if facts_preamble else user_message
+
         response = _client.messages.create(
             model=self.model,
             max_tokens=max_tokens,
             system=self.system_prompt,
             tools=anthropic_tools,
-            messages=self._build_messages(user_message),
+            messages=self._build_messages(augmented_message),
         )
 
         self._add_to_memory("user", user_message)
@@ -137,18 +175,28 @@ class BaseAgent:
 
     # ── 工具执行循环 ──────────────────────────────────
 
-    def run(self, user_message: str, max_rounds: int = 5) -> dict:
+    def run(self, user_message: str, max_rounds: int = 5, max_tokens: int = 4096) -> dict:
         """执行一次 Agent 对话。支持多轮工具调用循环。
 
         Args:
             user_message: 用户指令
             max_rounds: 最大工具调用轮次，防止无限循环
+            max_tokens: 最大输出 token 数，闲聊用 512，工作用 4096
 
         Returns:
             {"success": bool, "result": str, "error": str|None}
         """
+        # ── Honcho 风格：注入长期记忆到用户消息前面 ──
+        facts_preamble = self._build_facts_preamble()
+        augmented_message = f"{facts_preamble}\n{user_message}" if facts_preamble else user_message
+
         # 添加用户消息到记忆
         self._add_to_memory("user", user_message)
+
+        # 系统指令追加：Chat Budget 提醒
+        budget_reminder = ""
+        if max_tokens <= 512:
+            budget_reminder = "\n\n[Chat Budget] 这是闲聊模式。回复控制在3句话以内，不要展开分析或追问需求。"
 
         for _round in range(max_rounds):
             # 从记忆构建消息，调用 LLM（不再重复添加 user 消息）
@@ -167,8 +215,8 @@ class BaseAgent:
 
             response = _client.messages.create(
                 model=self.model,
-                max_tokens=4096,
-                system=self.system_prompt,
+                max_tokens=max_tokens,
+                system=self.system_prompt + budget_reminder,
                 tools=anthropic_tools,
                 messages=messages,
             )

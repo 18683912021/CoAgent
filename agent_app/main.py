@@ -43,9 +43,11 @@ app = FastAPI(title="Multi-Agent Dev System", lifespan=lifespan)
 @app.get("/health")
 async def health():
     bots_status = {}
-    for key in ["pm", "fe", "be"]:
+    for i, key in enumerate(["pm", "fe", "be"]):
         bot = BOTS.get(key, {})
-        bots_status[key] = "configured" if bot.get("app_id") else "missing"
+        # 检查子进程是否存活
+        alive = i < len(_processes) and _processes[i].is_alive()
+        bots_status[key] = "connected" if (bot.get("app_id") and alive) else ("configured" if bot.get("app_id") else "missing")
     return {
         "status": "ok",
         "orchestrator": _orchestrator is not None,
@@ -100,7 +102,7 @@ async def feishu_event(request: Request):
 
         if command and _orchestrator:
             asyncio.create_task(
-                _orchestrator.handle_command(bot["key"], chat_id, user_id, command)
+                _orchestrator.handle_command(bot["key"], chat_id, user_id, command, mentioned_others=[], message_id="")
             )
     except Exception as e:
         logger.error(f"[webhook] 解析失败: {e}")
