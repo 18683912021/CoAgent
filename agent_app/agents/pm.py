@@ -5,7 +5,7 @@ from agents.base import BaseAgent
 from tools.search import SEARCH_TOOL_SPEC, search_web
 from tools.feishu import SEND_MESSAGE_TOOL_SPEC, send_feishu_message
 
-PROMPT_FILE = Path(__file__).parent.parent / "prompts" / "pm_prompt.md"
+PROMPT_FILE = Path(__file__).parent.parent / "prompts" / "pm" / "prompt.md"
 MEMORY_FILE = Path(__file__).parent.parent / "memory" / "memory-pm.md"
 WORKSPACE = Path(__file__).parent.parent / "workspace" / "prd"
 
@@ -14,7 +14,9 @@ class PMAgent(BaseAgent):
     """产品经理 Agent —— 需求分析、PRD 生成、任务拆分"""
 
     def __init__(self, model: str | None = None):
-        system_prompt = PROMPT_FILE.read_text(encoding="utf-8")
+        agents_md = (PROMPT_FILE.parent / "AGENTS.md").read_text(encoding="utf-8")
+        prompt_md = PROMPT_FILE.read_text(encoding="utf-8")
+        system_prompt = agents_md + "\n\n" + prompt_md
         super().__init__(
             name="PM",
             system_prompt=system_prompt,

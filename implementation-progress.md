@@ -11,10 +11,10 @@
 |------|------|------|----------|----------|
 | 1 | 初始化项目骨架 | ✅ 已完成 | 2026-07-02 10:52 | 2026-07-02 10:55 |
 | 2 | 配置模型与环境变量 | ✅ 已完成 | 2026-07-02 10:52 | 2026-07-02 11:00 |
-| 3 | 实现 Feishu 机器人接口 | ✅ 已完成 | 2026-07-02 11:05 | 2026-07-02 11:05 |
-| 4 | 实现工具函数 | ✅ 已完成 | 2026-07-02 11:05 | 2026-07-02 11:05 |
-| 5 | 开发 Agent 逻辑和提示词 | ✅ 已完成 | 2026-07-02 11:05 | 2026-07-02 11:05 |
-| 6 | 实现 Flow 控制与状态机 | ✅ 已完成 | 2026-07-02 11:05 | 2026-07-02 11:05 |
+| 3 | 实现 Feishu 机器人接口 | ✅ 已完成 | 2026-07-02 11:20 | 2026-07-02 13:53 |
+| 4 | 实现工具函数 | ✅ 已完成 | 2026-07-02 11:05 | 2026-07-02 11:20 |
+| 5 | 开发 Agent 逻辑和提示词 | ✅ 已完成 | 2026-07-02 11:05 | 2026-07-02 14:22 |
+| 6 | 实现 Flow 控制与状态机 | ✅ 已完成 | 2026-07-02 11:05 | 2026-07-02 14:14 |
 | 7 | 编写 CI/CD 与测试脚本 | 🔵 远期规划 | - | - |
 | 8 | 部署与监控 | 🔵 远期规划 | - | - |
 
@@ -56,7 +56,16 @@
 | 2026-07-02 10:55:38 | 步骤2: API 验证(OpenAI SDK) | 写 test_api.py，发现 base_url 不匹配(文档写 /anthropic 但用了 OpenAI SDK)，多次调试后连通但 v4-pro content 常空(推理模型问题) |
 | 2026-07-02 10:59:53 | 步骤2: SDK切换 | 用户提供 DeepSeek 官方文档：/anthropic 端点专用于 Anthropic SDK。切换为 anthropic SDK(anthropic>=0.40.0)，base_url 恢复为 https://api.deepseek.com/anthropic；requirements.txt openai→anthropic |
 | 2026-07-02 10:59:53 | 步骤2: 双模型验证 | Anthropic SDK 测试 deepseek-v4-flash 和 deepseek-v4-pro：两者均连通 OK + tool_use OK；用户要求最终用 v4-pro |
+| 2026-07-02 14:11:57 | Agent @Agent | PM产出PRD后不再内部调用FE/BE，改为发@mention消息到飞书群，FE/BE通过WebSocket收到@事件后各自执行——真正的飞书Agent@Agent事件驱动协作；commit d515c61 |
+| 2026-07-02 13:40:33 | WebSocket长连接 | 改用飞书官方 lark-oapi SDK WebSocket 长连接，无需公网IP。遇到线程event loop共享冲突，最终用 multiprocessing 子进程实现三Bot共存，commit e262db7 |
 | 2026-07-02 11:20:24 | 飞书多Bot接入 | 更新 .env 三组Bot凭证(pm/fe/be)；新增 tools/feishu_utils.py(Token缓存+消息发送+签名验证)；重写 main.py(多Bot共享webhook按app_id路由)；重写 orchestrator.py(PM/FE/BE三类入口，PM触发全链路FE/BE各自Bot发言)；修复 base.py 工具循环消息配对bug；三项多Bot测试全部通过 ✅；commit 3141f2a |
 | 2026-07-02 11:12:17 | 系统集成测试 | 写 test_system.py 四阶段测试：PM Agent 单独运行 ✅ 生成完整PRD；FE Agent 修复工具参数映射后 ✅ 生成 workspace/fe/App.tsx；BE Agent ✅ 生成 workspace/be/main.py(FastAPI+SQLAlchemy)；Orchestrator 全链路 PM→拆分→FE/BE并行→合并 ✅ 一次跑通；commit 2928d3a |
+| 2026-07-02 14:22:00 | Agent人格重写 | 对标OpenMOSS/OpenClaw SOUL.md七段式框架重写三个Agent：Lin(PM)精准追问者/Seven(FE)组件强迫症/Atlas(BE)API洁癖；每人含Identity/Core Mission/Expertise技能书/Communication Style/Workflow/Boundaries/Example Interaction；去机械化禁止"好的！""当然可以！"等废话开头；commit 578ec29 |
+| 2026-07-02 14:14:00 | Agent@Agent修复 | Feishu文本<at>标签不触发真正@通知，改为内部asyncio.gather并行可靠执行+群内可视@消息；commit 31f2db9 |
+| 2026-07-02 14:11:57 | Agent @Agent实现 | PM产出PRD后发@mention消息到飞书群，FE/BE通过WebSocket收到@事件后各自执行；commit d515c61 |
+| 2026-07-02 13:53:30 | 清理+README | 删除test_api.py/test_system.py/workspace产物/memory文件/node_modules；更新README项目使用说明；修workspace嵌套路径bug；修.gitignore路径；commits 2fc8a36/d1eea25/40a6868/1578217 |
+| 2026-07-02 13:40:33 | WebSocket长连接 | 用lark-oapi官方SDK替代HTTP webhook，无需公网IP。三Bot各跑在multiprocessing子进程中彻底隔离event loop，通过Queue回传消息给主进程consumer线程调度；commit e262db7 |
+| 2026-07-02 11:20:24 | 飞书多Bot接入 | .env三组Bot凭证(pm/fe/be)；新增tools/feishu_utils.py(Token缓存+消息发送+签名验证)；重写main.py(多Bot按app_id路由)；重写orchestrator.py(PM/FE/BE三入口)；修复base.py工具循环消息配对bug；commit 3141f2a |
+| 2026-07-02 11:12:17 | 系统集成测试 | test_system.py四阶段测试全部通过：PM生成PRD/FE生成App.tsx/BE生成main.py/Orchestrator全链路；commit 2928d3a |
 | 2026-07-02 11:10:24 | Git提交 | commit b895293: 20 files, 2217 lines, .env 已被 .gitignore 排除 |
 | 2026-07-02 11:05:35 | 步骤3-6: 系统搭建 | 按依赖链一次性完成核心代码：agents/base.py(Anthropic SDK封装+ThinkingBlock处理+多轮工具循环+记忆持久化)；prompts/{pm,fe,be}_prompt.md(含团队认知+边界声明+输出格式)；tools/{search.py(DuckDuckGo),feishu.py(Webhook+API双模式),code_editor.py(路径隔离)}；agents/{pm,fe,be}.py(各自工具集+工作区)；orchestrator.py(状态机+信息过滤+asyncio.gather并行+指数退避重试+失败日志)；main.py(FastAPI+飞书签名验证+异步Orchestrator触发+任务查询API)；所有模块导入验证通过 |

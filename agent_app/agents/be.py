@@ -11,7 +11,7 @@ from tools.code_editor import (
     list_dir,
 )
 
-PROMPT_FILE = Path(__file__).parent.parent / "prompts" / "be_prompt.md"
+PROMPT_FILE = Path(__file__).parent.parent / "prompts" / "be" / "prompt.md"
 MEMORY_FILE = Path(__file__).parent.parent / "memory" / "memory-be.md"
 WORKSPACE = "be"  # 相对于 WORKSPACE_ROOT 的子目录
 
@@ -20,7 +20,9 @@ class BEAgent(BaseAgent):
     """后端开发 Agent —— 生成后端代码（FastAPI + SQLAlchemy）"""
 
     def __init__(self, model: str | None = None):
-        system_prompt = PROMPT_FILE.read_text(encoding="utf-8")
+        agents_md = (PROMPT_FILE.parent / "AGENTS.md").read_text(encoding="utf-8")
+        prompt_md = PROMPT_FILE.read_text(encoding="utf-8")
+        system_prompt = agents_md + "\n\n" + prompt_md
         super().__init__(
             name="BE",
             system_prompt=system_prompt,
