@@ -33,9 +33,9 @@ class FEAgent(BaseAgent):
     def _execute_tool(self, name: str, args: dict) -> str:
         """FE Agent 的工具实现 —— 仅在 workspace/fe/ 内操作"""
         if name == "read_file":
-            return read_file(WORKSPACE, **args)
+            return read_file(WORKSPACE, args.get("path", ""))
         elif name == "write_file":
-            return write_file(WORKSPACE, **args)
+            return write_file(WORKSPACE, args.get("path", ""), args.get("content", ""))
         elif name == "list_dir":
             return list_dir(WORKSPACE, args.get("path", "."))
         return super()._execute_tool(name, args)
