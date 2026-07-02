@@ -72,6 +72,8 @@ class Orchestrator:
         self.fe = FEAgent()
         self.be = BEAgent()
         self._tasks: dict[str, TaskState] = {}
+        self._fe_tasks: dict[str, str] = {}  # chat_id → FE子任务
+        self._be_tasks: dict[str, str] = {}  # chat_id → BE子任务
 
     def _get_bot_config(self, key: str) -> dict:
         """获取 Bot 配置"""
@@ -99,10 +101,10 @@ class Orchestrator:
         else:
             await self._notify(chat_id, "unknown", f"未识别的 Bot: {bot_key}")
 
-    # ── PM 入口：完整协作流程 ────────────────────────────
+    # ── PM 入口：Agent @Agent 事件驱动 ────────────────────
 
     async def _route_pm(self, chat_id: str, user_id: str, command: str) -> None:
-        """PM Bot 被 @：分析需求 → 拆分 → 并行触发 FE/BE"""
+        """PM Bot 被 @：分析需求 → 拆分 → @FE @BE 派发任务（事件驱动）"""
         task = TaskState(
             task_id=str(uuid.uuid4())[:8],
             state=State.PLANNING,
@@ -113,7 +115,6 @@ class Orchestrator:
         )
         self._tasks[task.task_id] = task
 
-        # PM 开始工作
         await self._notify(chat_id, "pm",
             f"收到需求：{command}\n正在分析并生成 PRD..."
         )
@@ -132,53 +133,41 @@ class Orchestrator:
         task.prd = pm_result["result"]
         task.fe_task, task.be_task = self._filter_and_split(task.prd)
 
-        # 通知群聊：PRD 完成，开始开发
+        # 保存任务上下文，供 FE/BE 收到 @ 时获取自己的子任务
+        self._fe_tasks[chat_id] = task.fe_task
+        self._be_tasks[chat_id] = task.be_task
+
+        task.state = State.DISPATCHING
+
+        # PM 在群里 @FE_Bot 和 @BE_Bot 派发任务
+        fe_app_id = BOTS.get("fe", {}).get("app_id", "")
+        be_app_id = BOTS.get("be", {}).get("app_id", "")
+
         await self._notify(chat_id, "pm",
-            f"PRD 完成。\nFE Agent 正在开发前端...\nBE Agent 正在开发后端..."
+            f"PRD 完成。\n@FE Bot 请完成前端任务。",
+            at_users=[fe_app_id] if fe_app_id else None,
+        )
+        await self._notify(chat_id, "pm",
+            f"@BE Bot 请完成后端任务。",
+            at_users=[be_app_id] if be_app_id else None,
         )
 
-        # 并行执行 FE/BE
         task.state = State.FE_RUNNING
-        fe_result, be_result = await asyncio.gather(
-            self._run_with_retry(self.fe, task.fe_task, "fe", task.task_id),
-            self._run_with_retry(self.be, task.be_task, "be", task.task_id),
-        )
+        self._tasks[task.task_id] = task
 
-        task.fe_result = fe_result.get("result", "") if fe_result["success"] else ""
-        task.be_result = be_result.get("result", "") if be_result["success"] else ""
-
-        # FE 和 BE 各自在群里发言（用各自的 Bot）
-        if task.fe_result:
-            await self._notify(chat_id, "fe",
-                f"[前端代码]\n{task.fe_result[:800]}"
-                + ("..." if len(task.fe_result) > 800 else "")
-            )
-        else:
-            await self._notify(chat_id, "fe", "前端开发失败，请查看日志。")
-
-        if task.be_result:
-            await self._notify(chat_id, "be",
-                f"[后端代码]\n{task.be_result[:800]}"
-                + ("..." if len(task.be_result) > 800 else "")
-            )
-        else:
-            await self._notify(chat_id, "be", "后端开发失败，请查看日志。")
-
-        # 完成
-        task.state = State.COMPLETED
-        task.completed_at = datetime.now().isoformat()
-
-        await self._notify(chat_id, "pm",
-            f"任务 {task.task_id} 完成。"
-            f"FE/BE 代码已生成至 workspace/ 目录。"
-        )
-
-    # ── FE/BE 直接入口：单 Agent 任务 ────────────────────
+    # ── FE/BE 入口：处理 @mention ────────────────────────
 
     async def _route_single(self, bot_key: str, chat_id: str, command: str) -> None:
-        """FE 或 BE Bot 被直接 @：执行单项任务"""
+        """FE 或 BE Bot 被 @：优先使用 PM 分配的子任务，否则处理直接指令"""
+        # 如果有 PM 预先分配的子任务，用它（Agent @Agent 模式）
+        stored = self._fe_tasks.pop(chat_id, "") if bot_key == "fe" else self._be_tasks.pop(chat_id, "")
+        task_text = stored or command
+
         agent = self.fe if bot_key == "fe" else self.be
-        result = agent.run(command)
+
+        await self._notify(chat_id, bot_key, f"收到任务，开始处理...")
+
+        result = agent.run(task_text)
 
         if result["success"]:
             await self._notify(chat_id, bot_key,
@@ -254,8 +243,8 @@ class Orchestrator:
 
     # ── 消息发送 ─────────────────────────────────────────
 
-    async def _notify(self, chat_id: str, bot_key: str, text: str) -> None:
-        """用指定 Bot 的身份向群聊发消息"""
+    async def _notify(self, chat_id: str, bot_key: str, text: str, at_users: list[str] | None = None) -> None:
+        """用指定 Bot 的身份向群聊发消息。at_users 为要 @ 的用户 ID 列表。"""
         bot = self._get_bot_config(bot_key)
         if not bot.get("app_id"):
             print(f"[orchestrator] {bot_key} Bot 未配置，模拟发送: {text[:80]}...")
@@ -266,6 +255,7 @@ class Orchestrator:
             app_secret=bot["app_secret"],
             chat_id=chat_id,
             text=text,
+            at_users=at_users,
         )
         if not result["success"]:
             print(f"[orchestrator] {bot_key} Bot 发送失败: {result['msg']}")
