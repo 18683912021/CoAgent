@@ -142,7 +142,7 @@ class Orchestrator:
         await self._notify(chat_id, "pm", f"收到需求，分析中...")
 
         pm_result = self.pm.run(
-            f"用户需求：{command}\n请按PRD格式输出完整的需求文档。如果需求信息不足，直接追问用户，不要输出空模板。"
+            f"{command}\n\n[系统提示] 请先按照 AGENTS.md 的消息分类规则判断这条消息的类型。如果是需求才出 PRD，如果是闲聊或别人的工作，简短自然回复即可。"
         )
 
         if not pm_result["success"]:
@@ -222,12 +222,14 @@ class Orchestrator:
     # ── FE/BE 直接入口：单 Agent 任务 ────────────────────
 
     async def _route_single(self, bot_key: str, chat_id: str, command: str) -> None:
-        """FE 或 BE Bot 被直接 @：执行单项任务"""
+        """FE 或 BE Bot 被直接 @：Agent 自行按消息分类规则处理"""
         agent = self.fe if bot_key == "fe" else self.be
 
-        await self._notify(chat_id, bot_key, f"收到任务，开始处理...")
-
-        result = agent.run(command)
+        # 不强制加"收到任务"，让 Agent 自己判断是聊天还是工作
+        result = agent.run(
+            f"{command}\n\n[系统提示] 请先按照 AGENTS.md 的消息分类规则判断这条消息的类型。"
+            f"如果是你的开发工作才出代码，如果是闲聊或别人的工作，简短自然回复即可。"
+        )
 
         if result["success"]:
             await self._notify(chat_id, bot_key,
