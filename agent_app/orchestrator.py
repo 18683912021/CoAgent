@@ -232,10 +232,21 @@ class Orchestrator:
 
     # ── 重试 ─────────────────────────────────────────────
 
+    _RETRY_STRATEGIES = [
+        # L0: 正常
+        "",
+        # L1: 强迫换方案
+        "上一次的方法失败了。请换一个完全不同的技术方案重新实现，不要重复同样的错误。",
+        # L2: 搜索 + 列出假设
+        "又失败了。请先用 search_web 搜索类似问题方案，列出3个可能的失败原因，逐一验证后重新实现。",
+        # L3: 5 步强制清单
+        "最后一次机会。重新实现前必须完成：(1)读上次失败代码找具体问题 (2)搜索至少2个参考方案 (3)验证前置假设(版本/路径/依赖) (4)换个角度重新设计 (5)完成后自检：能跑通吗？所有状态覆盖了吗？",
+    ]
+
     async def _run_with_retry(
         self, agent: Any, task: str, bot_key: str, task_id: str
     ) -> dict:
-        """带指数退避重试的 Agent 执行"""
+        """带分级策略注入的 Agent 执行（对标 PUA L0-L3）"""
         backoff = 1
         max_retries = self._tasks[task_id].max_retries
 
@@ -244,15 +255,21 @@ class Orchestrator:
                 await asyncio.sleep(backoff)
                 backoff *= 2
 
-            result = agent.run(task)
+            # 注入对应级别的策略提示
+            si = min(attempt - 1, len(self._RETRY_STRATEGIES) - 1)
+            hint = self._RETRY_STRATEGIES[si]
+            task_with_hint = f"{task}\n\n[系统提示] {hint}" if hint else task
+
+            result = agent.run(task_with_hint)
             if result["success"]:
                 return result
 
             if attempt <= max_retries:
-                print(f"[{task_id}] {bot_key} 重试 {attempt}/{max_retries}: {result.get('error')}")
+                level = ["L0","L1","L2","L3"][min(attempt,3)]
+                print(f"[{task_id}] {bot_key} {level} 失败 重试{attempt}/{max_retries}")
 
         self._log_failure(self._tasks[task_id])
-        return {"success": False, "result": "", "error": f"{bot_key} 重试耗尽"}
+        return {"success": False, "result": "", "error": f"{bot_key} 重试耗尽(L0-L3)"}
 
     # ── 消息发送 ─────────────────────────────────────────
 
