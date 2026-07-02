@@ -1,20 +1,75 @@
 # CoAgent — 多智能体协作开发系统
 
-三人开发团队：**PM Agent**（需求分析）+ **FE Agent**（前端开发）+ **BE Agent**（后端开发），通过飞书群 @Bot 触发协作，自动完成从需求到代码的全流程。
+三人开发团队通过飞书群协同，从需求到代码全自动完成。
+
+| Agent | 角色 | 名字 | 人格 |
+|-------|------|------|------|
+| **PM** | 产品经理 | Lin | 精准追问者，不脑补不编造 |
+| **FE** | 前端开发 | Seven | 像素强迫症，组件复用狂魔 |
+| **BE** | 后端开发 | Atlas | API 设计洁癖，数据模型信仰 |
+
+---
 
 ## 架构
 
+### 系统拓扑
+
 ```
-飞书群 @PM_Bot "创建Todo应用"
-  → PM Agent 分析需求，生成 PRD
-  → FE Agent 生成前端代码（workspace/fe/）
-  → BE Agent 生成后端代码（workspace/be/）
-  → 三 Bot 各自在群内回复结果
+python main.py
+├── ws-pm 子进程 ──── wss://msg-frontier.feishu.cn  ← PM Bot WebSocket
+├── ws-fe 子进程 ──── wss://msg-frontier.feishu.cn  ← FE Bot WebSocket
+├── ws-be 子进程 ──── wss://msg-frontier.feishu.cn  ← BE Bot WebSocket
+└── msg-consumer 线程 → Queue → Orchestrator → 三 Agent 协作
 ```
 
-- 模型：DeepSeek-v4-pro（Anthropic 兼容接口）
-- 入口：飞书 WebSocket 长连接（无需公网 IP）
-- 隔离：三 Agent 独立 Prompt / 记忆 / 工作目录，团队认知但不越界
+### 协作流程
+
+```
+飞书群
+  用户: @PM_Bot 创建 Todo 应用
+    → PM Bot (Lin): "收到。PRD 完成，@FE @BE 开始开发"
+    → 内部 asyncio.gather 并行执行:
+        ├─ FE Agent (Seven): 生成 workspace/fe/*
+        └─ BE Agent (Atlas): 生成 workspace/be/*
+    → FE Bot: "收到 PM 前端任务，已完成。[code]"
+    → BE Bot: "收到 PM 后端任务，已完成。[code]"
+    → PM Bot: "任务完成。代码已生成。"
+```
+
+### Agent 文件集（对标 OpenMOSS）
+
+每个 Agent 拥有 5 个标准定义文件：
+
+```
+prompts/{agent}/
+├── AGENTS.md    ← 操作规则，Always Loaded
+├── prompt.md    ← 人格/SOUL，Always Loaded
+├── SKILL.md     ← 技能书，On-demand
+├── COMMAND.md   ← 工作流，On-demand
+└── MEMORY.md    ← 长期记忆
+```
+
+- **AGENTS.md + prompt.md** → 启动时合并注入 system prompt
+- **SKILL.md + COMMAND.md** → LLM 按需读取，不占常驻 Token
+- **MEMORY.md** → 跨会话积累的项目经验、组件库、踩坑记录
+
+### 三层隔离
+
+| 层级 | PM | FE | BE |
+|------|----|----|----|
+| Prompt | 只做需求，不写代码 | 只做 UI/组件，不碰后端 | 只做 API/模型，不写前端 |
+| 文件系统 | workspace/prd/ | workspace/fe/ | workspace/be/ |
+| 记忆 | memory/memory-pm.md | memory/memory-fe.md | memory/memory-be.md |
+
+### 技术栈
+
+- **模型**: DeepSeek-v4-pro（Anthropic SDK 兼容接口）
+- **入口**: 飞书 WebSocket 长连接（lark-oapi 官方 SDK），无需公网 IP
+- **调度**: Orchestrator + asyncio.gather 并行 + 指数退避重试
+- **通信**: 飞书 REST API 消息发送，WebSocket 事件接收
+- **隔离**: multiprocessing 子进程，每 Bot 独立 event loop
+
+---
 
 ## 环境要求
 
@@ -24,88 +79,96 @@
 ## 快速开始
 
 ```bash
-# 1. 进入目录
 cd agent_app
-
-# 2. 安装依赖
 pip install -r requirements.txt
-
-# 3. 配置环境变量
-cp .env.example .env
-# 编辑 .env，填入 DeepSeek API Key 和三组飞书 Bot 凭证
-
-# 4. 启动服务
-python main.py
+cp .env.example .env   # 编辑填入凭证
+python main.py          # 启动，三 Bot 自动连接飞书
 ```
 
-## .env 配置
+`.env` 配置：
 
 ```env
-# DeepSeek
 ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic
 ANTHROPIC_API_KEY=sk-your-key
 ANTHROPIC_MODEL=deepseek-v4-pro
 
-# PM Bot
 FEISHU_PM_APP_ID=cli_xxx
 FEISHU_PM_APP_SECRET=xxx
-
-# FE Bot
 FEISHU_FE_APP_ID=cli_xxx
 FEISHU_FE_APP_SECRET=xxx
-
-# BE Bot
 FEISHU_BE_APP_ID=cli_xxx
 FEISHU_BE_APP_SECRET=xxx
 ```
 
 ## 飞书配置
 
-每个 Bot 在飞书开放平台进行相同配置：
+每个 Bot 在 [飞书开放平台](https://open.feishu.cn) 操作：
 
 1. 创建企业自建应用 → 添加**机器人**能力
-2. 权限管理 → 开通 `im:message`、`im:message:send_as_bot`
-3. **事件与回调** → 选择「使用长连接接收事件」→ 添加 `im.message.receive_v1`
+2. 权限 → `im:message` + `im:message:send_as_bot`
+3. 事件订阅 → **使用长连接接收事件** → 添加 `im.message.receive_v1`
 4. 创建版本 → 发布
-5. 将三个 Bot 加入同一个群聊
+5. 三 Bot 加入同一群聊
 
 ## 使用
 
-在群内 @Bot 发送指令：
+```bash
+# 群内 @PM_Bot 触发完整协作：
+@PM_Bot 创建一个简单的 Todo 应用，支持添加和删除任务
 
-```
-@PM_Bot 创建一个简单的Todo应用，可以添加和删除任务
-```
-
-PM Bot 分析需求后，FE Bot 和 BE Bot 会自动在群内回复各自生成的代码。
-
-也可以直接 @FE_Bot 或 @BE_Bot 执行单项任务：
-
-```
-@FE_Bot 修改按钮颜色为蓝色
-@BE_Bot 添加一个 DELETE /api/todos/{id} 接口
-```
-
-## 项目结构
-
-```
-agent_app/
-├── main.py              # 入口，WebSocket 长连接 + FastAPI
-├── orchestrator.py      # 任务调度器（信息过滤 + 重试 + 状态机）
-├── agents/
-│   ├── base.py          # Agent 基类（Anthropic SDK + 记忆 + 工具循环）
-│   ├── pm.py            # PM Agent
-│   ├── fe.py            # FE Agent（工作区 workspace/fe/）
-│   └── be.py            # BE Agent（工作区 workspace/be/）
-├── prompts/             # 三个 Agent 的系统提示词
-├── tools/               # 工具函数（搜索/飞书消息/代码编辑）
-├── memory/              # Agent 独立记忆（运行时生成）
-├── workspace/           # Agent 代码产出（运行时生成）
-└── logs/                # 失败任务日志
+# 直接 @FE_Bot 或 @BE_Bot 执行单项任务：
+@FE_Bot 把按钮颜色改成蓝色
+@BE_Bot 添加 DELETE /api/todos/{id} 接口
 ```
 
 ## 健康检查
 
 ```bash
 curl http://localhost:8000/health
+# {"status":"ok","bots":{"pm":"configured","fe":"configured","be":"configured"}}
+```
+
+## 项目结构
+
+```
+agent_app/
+├── main.py                          # FastAPI 入口 + WebSocket 生命周期
+├── orchestrator.py                  # 调度器（状态机/信息过滤/重试/并行）
+├── requirements.txt                 # Python 依赖
+├── .env / .env.example              # 环境变量
+│
+├── agents/                          # [代码] Agent 实现
+│   ├── base.py                      #   基类（Anthropic SDK/记忆/工具循环）
+│   ├── pm.py                        #   PM Agent — Lin
+│   ├── fe.py                        #   FE Agent — Seven
+│   └── be.py                        #   BE Agent — Atlas
+│
+├── prompts/                         # [定义] Agent 文件集（对标 OpenMOSS）
+│   ├── pm/                          #   PM Agent 定义
+│   │   ├── AGENTS.md                #     操作规则 (Always)
+│   │   ├── prompt.md                #     人格 SOUL (Always)
+│   │   ├── SKILL.md                 #     技能书 (On-demand)
+│   │   ├── COMMAND.md               #     工作流 (On-demand)
+│   │   └── MEMORY.md                #     长期记忆
+│   ├── fe/                          #   FE Agent 定义（同上 5 文件）
+│   └── be/                          #   BE Agent 定义（同上 5 文件）
+│
+├── tools/                           # [工具] MCP 外部能力
+│   ├── search.py                    #   Web 搜索（DuckDuckGo）
+│   ├── feishu.py                    #   飞书消息发送（PM 调用）
+│   ├── feishu_utils.py              #   飞书 API（Token/多Bot发送）
+│   ├── feishu_ws.py                 #   WebSocket 长连接（三Bot子进程）
+│   └── code_editor.py               #   代码读写（路径隔离 + 逃逸检测）
+│
+├── memory/                          # 对话记忆 JSON（运行时生成）
+│   ├── memory-pm.md
+│   ├── memory-fe.md
+│   └── memory-be.md
+│
+├── workspace/                       # 代码产出（运行时生成）
+│   ├── prd/                         #   PM 产出 PRD
+│   ├── fe/                          #   FE 产出前端代码
+│   └── be/                          #   BE 产出后端代码
+│
+└── logs/                            # 失败任务日志
 ```
