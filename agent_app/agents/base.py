@@ -73,13 +73,45 @@ class BaseAgent:
     def _add_to_memory(self, role: str, content: str) -> None:
         """追加一条记录到记忆"""
         self._memory.append({"role": role, "content": content})
-        # 保留最近 20 轮，避免记忆膨胀
-        if len(self._memory) > 20:
-            self._memory = self._memory[-20:]
         # 自动从用户消息中提取关键事实
         if role == "user" and isinstance(content, str):
             self._extract_facts_from(content)
+        # 上下文压缩：超 20 条时压缩旧消息为摘要，而非直接丢弃
+        if len(self._memory) > 20:
+            self._compact_memory()
         self._save_memory()
+
+    def _compact_memory(self) -> None:
+        """压缩旧消息：取最旧 10 条 + 累积的 facts，生成一条摘要替代它们。
+
+        OpenClaw 风格：保留历史的"轮廓"，不丢失关键上下文。
+        """
+        old_entries = self._memory[:10]
+
+        # 收集旧消息中的关键片段
+        snippets: list[str] = []
+        for entry in old_entries:
+            c = entry.get("content", "")
+            if isinstance(c, str) and len(c.strip()) > 5:
+                # 去掉系统前缀，取前 120 字
+                clean = c.replace("[群呼上下文]", "").replace("[长期记忆]", "").replace("[系统提示]", "").strip()
+                snippets.append(clean[:120])
+
+        # 合并累积的 facts
+        all_snippets = snippets + [f for f in self._facts[-5:] if f not in snippets]
+
+        if not all_snippets:
+            self._memory = self._memory[10:]
+            return
+
+        summary_text = "；".join(all_snippets[:6])
+        compacted = {
+            "role": "system",
+            "content": f"[上下文压缩] 较早对话要点：{summary_text}",
+        }
+
+        # 保留摘要 + 最近 10 条
+        self._memory = [compacted] + self._memory[10:]
 
     # ── Honcho 风格事实提取 ──────────────────────────
 

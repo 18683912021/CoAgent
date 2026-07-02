@@ -16,6 +16,8 @@ from tools.feishu_utils import BOTS, send_message, add_reaction, delete_reaction
 LOGS_DIR = Path(__file__).parent / "logs"
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
 FAILED_TASKS_LOG = LOGS_DIR / "failed_tasks.jsonl"
+SHARED_DIR = Path(__file__).parent / "workspace" / "shared"
+SHARED_DIR.mkdir(parents=True, exist_ok=True)
 
 
 class State(Enum):
@@ -109,6 +111,62 @@ class Orchestrator:
             await self._route_single("be", chat_id, command, mentioned_others, message_id)
         else:
             await self._notify(chat_id, "unknown", f"未识别的 Bot: {bot_key}")
+
+    # ── 共享上下文 ─────────────────────────────────────
+
+    def _snapshot_workspace(self, bot_key: str) -> set[str]:
+        """拍快照：记录 workspace 当前所有文件，用于事后验证产出。"""
+        ws = Path(__file__).parent / "workspace" / bot_key
+        if not ws.exists():
+            return set()
+        return {str(p.relative_to(ws)) for p in ws.rglob("*") if p.is_file()}
+
+    def _verify_output(self, bot_key: str, before: set[str]) -> tuple[bool, list[str]]:
+        """验证产出：对比快照，返回 (是否有新文件, 新增/修改文件列表)。"""
+        ws = Path(__file__).parent / "workspace" / bot_key
+        if not ws.exists():
+            return False, []
+        after = {str(p.relative_to(ws)) for p in ws.rglob("*") if p.is_file()}
+        new_files = sorted(after - before)
+        return len(new_files) > 0, new_files
+
+    # ── 共享上下文文件操作 ─────────────────────────────
+
+    def _write_api_contract(self, prd: str) -> None:
+        """从 PRD 中提取 API 契约部分，写入共享目录。"""
+        api_section = self._extract_section(prd, ["API", "接口契约", "接口"])
+        if "此部分未明确" in api_section:
+            return  # PRD 中无 API 契约，不写
+
+        contract_path = SHARED_DIR / "API_CONTRACT.md"
+        contract_path.write_text(
+            f"# API 契约\n\n> 自动提取自 PM 的最新 PRD。FE 消费方 / BE 实现方，以此为准。\n\n{api_section}",
+            encoding="utf-8",
+        )
+
+    def _update_status(self, bot_key: str, status: str, output_summary: str = "") -> None:
+        """更新共享任务状态表。"""
+        from datetime import datetime as dt
+        status_path = SHARED_DIR / "STATUS.md"
+        label = {"pm": "PM", "fe": "FE", "be": "BE"}.get(bot_key, bot_key)
+        summary = output_summary[:80] if output_summary else "-"
+
+        status_path.write_text(
+            f"# 任务状态\n\n"
+            f"> 每个 Agent 完成后自动更新。所有人读此文件了解进度。\n\n"
+            f"| Agent | 状态 | 最近产出 | 更新时间 |\n"
+            f"|-------|------|---------|----------|\n"
+            f"| PM | {'工作中' if bot_key == 'pm' else '空闲'} | "
+            f"{summary if bot_key == 'pm' else '-'} | "
+            f"{dt.now().strftime('%H:%M') if bot_key == 'pm' else '-'} |\n"
+            f"| FE | {'工作中' if bot_key == 'fe' else '空闲'} | "
+            f"{summary if bot_key == 'fe' else '-'} | "
+            f"{dt.now().strftime('%H:%M') if bot_key == 'fe' else '-'} |\n"
+            f"| BE | {'工作中' if bot_key == 'be' else '空闲'} | "
+            f"{summary if bot_key == 'be' else '-'} | "
+            f"{dt.now().strftime('%H:%M') if bot_key == 'be' else '-'} |\n",
+            encoding="utf-8",
+        )
 
     # ── PM 入口 ─────────────────────────────────────────
 
@@ -279,10 +337,18 @@ class Orchestrator:
             self._log_failure(task)
             return
 
+        # ── 写入共享上下文：API 契约 ──
+        self._write_api_contract(task.prd)
+
         task.fe_task, task.be_task = self._filter_and_split(task.prd)
 
         # 内部并行执行 FE/BE
         task.state = State.FE_RUNNING
+
+        # ── 快照 workspace，用于验证 ──
+        fe_snapshot = self._snapshot_workspace("fe")
+        be_snapshot = self._snapshot_workspace("be")
+
         fe_future = self._run_with_retry(self.fe, task.fe_task, "fe", task.task_id)
         be_future = self._run_with_retry(self.be, task.be_task, "be", task.task_id)
 
@@ -291,12 +357,36 @@ class Orchestrator:
         task.fe_result = fe_result.get("result", "") if fe_result["success"] else ""
         task.be_result = be_result.get("result", "") if be_result["success"] else ""
 
+        # ── 产出验证：检查文件是否真正落地 ──
+        _claim_signals = ["已完成", "写好了", "创建了", "生成了", "done", "created", "完成"]
+        fe_claimed = any(s in (task.fe_result or "").lower() for s in _claim_signals)
+        be_claimed = any(s in (task.be_result or "").lower() for s in _claim_signals)
+
+        if fe_claimed:
+            fe_has, fe_new = self._verify_output("fe", fe_snapshot)
+            if not fe_has:
+                task.fe_result = (task.fe_result or "") + (
+                    "\n\n⚠️ [系统验证] workspace/fe/ 里没有新文件。write_file 可能未生效，请检查。"
+                )
+        if be_claimed:
+            be_has, be_new = self._verify_output("be", be_snapshot)
+            if not be_has:
+                task.be_result = (task.be_result or "") + (
+                    "\n\n⚠️ [系统验证] workspace/be/ 里没有新文件。write_file 可能未生效，请检查。"
+                )
+
         # ── 验证产出有效性 ──
         _empty_signals = ["此部分未明确", "工作区是空的", "我无法", "workspace is empty",
                           "没有 PRD", "没有需求", "无法自行判断", "无法凭空"]
 
         fe_valid = task.fe_result and not any(s in task.fe_result for s in _empty_signals)
         be_valid = task.be_result and not any(s in task.be_result for s in _empty_signals)
+
+        # ── 更新共享状态 ──
+        self._update_status("fe", "完成" if fe_valid else "失败",
+            task.fe_result[:80] if fe_valid else "产出无效")
+        self._update_status("be", "完成" if be_valid else "失败",
+            task.be_result[:80] if be_valid else "产出无效")
 
         # FE 和 BE 各自用自己 Bot 身份在群里发言
         if fe_valid:
@@ -347,16 +437,39 @@ class Orchestrator:
         intent = self._classify_intent(command)
         max_tokens = 512 if intent == "chat" else 4096
 
+        # ── 产出验证：工作模式下，快照 workspace ──
+        snapshot_before = self._snapshot_workspace(bot_key) if intent == "work" else set()
+
         # 不强制加"收到任务"，让 Agent 自己判断是聊天还是工作
         result = agent.run(full_command, max_tokens=max_tokens)
+
+        # ── 产出验证：检查是否真正有文件产出 ──
+        output_warning = ""
+        if intent == "work" and result["success"]:
+            has_output, new_files = self._verify_output(bot_key, snapshot_before)
+            _claim_signals = ["已完成", "写好了", "创建了", "生成了", "done", "created", "完成"]
+            agent_claimed_done = any(s in result["result"].lower() for s in _claim_signals)
+            if agent_claimed_done and not has_output:
+                output_warning = (
+                    "\n\n⚠️ [系统验证] 你说完成了但 workspace 里没有新文件。"
+                    "如果 write_file 失败了，请重试写入。"
+                )
+                # 追加警告到结果，Agent 会在下一轮看到
+                agent._add_to_memory("system", output_warning)
 
         # ── 停止打字指示器 ──
         await self._hide_typing(bot_key, message_id, typing_task, reaction_id)
 
+        # ── 更新共享状态 ──
+        self._update_status(bot_key, "完成" if result["success"] else "失败",
+            result["result"][:80] if result["success"] else result.get("error", ""))
+
         if result["success"]:
+            reply = result["result"]
+            if output_warning:
+                reply = reply + output_warning
             await self._notify(chat_id, bot_key,
-                result["result"][:800]
-                + ("..." if len(result["result"]) > 800 else "")
+                reply[:800] + ("..." if len(reply) > 800 else "")
             )
         else:
             await self._notify(chat_id, bot_key,
@@ -367,7 +480,15 @@ class Orchestrator:
 
     def _filter_and_split(self, prd: str) -> tuple[str, str]:
         """PM 的 PRD → FE 子任务 + BE 子任务（信息过滤）"""
+        shared_note = (
+            "## ⚠️ 开工前必读\n"
+            "- API 契约在 `workspace/shared/API_CONTRACT.md`，这是你和队友的接口真相源\n"
+            "- 任务状态在 `workspace/shared/STATUS.md`，看一眼队友进度\n"
+            "- 做了技术决策写到 `workspace/shared/DECISIONS.md`，让队友知道\n\n"
+            "---\n\n"
+        )
         fe_parts = [
+            shared_note,
             "以下是你需要完成的前端子任务（仅前端部分）：\n",
             self._extract_section(prd, ["项目概述", "功能需求"]),
             "\n--- 前端任务 ---\n",
@@ -376,6 +497,7 @@ class Orchestrator:
             self._extract_section(prd, ["API", "接口契约", "接口"]),
         ]
         be_parts = [
+            shared_note,
             "以下是你需要完成的后端子任务（仅后端部分）：\n",
             self._extract_section(prd, ["项目概述", "功能需求"]),
             "\n--- 后端任务 ---\n",
