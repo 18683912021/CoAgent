@@ -6,5 +6,5 @@ venv/
 node_modules/
 logs/
 workspace/
-memory/memory-*.md
+agent_app/memory/memory-*.md
 .DS_Store
