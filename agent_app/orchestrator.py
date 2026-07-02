@@ -99,10 +99,36 @@ class Orchestrator:
         else:
             await self._notify(chat_id, "unknown", f"未识别的 Bot: {bot_key}")
 
-    # ── PM 入口：Agent @Agent 事件驱动 ────────────────────
+    # ── PM 入口：指令分类 + 需求分析 ─────────────────────
+
+    # 非需求的 meta-command 关键词
+    _META_KEYWORDS = ["@一下", "@一下前端", "@一下后端", "打个招呼",
+                      "hello", "hi", "你好", "在吗", "help", "帮助"]
+
+    def _is_meta_command(self, command: str) -> bool:
+        """判断是否为 meta-command（非需求）"""
+        cmd = command.strip().lower()
+        for kw in self._META_KEYWORDS:
+            if kw in cmd:
+                return True
+        # 太短且不含实质内容 → meta
+        if len(cmd) <= 6:
+            return True
+        return False
 
     async def _route_pm(self, chat_id: str, user_id: str, command: str) -> None:
-        """PM Bot 被 @：分析需求 → 拆分 → @FE @BE 派发任务（事件驱动）"""
+        """PM Bot 被 @"""
+
+        # ── Meta-command：非需求，直接处理 ──
+        if self._is_meta_command(command):
+            await self._notify(chat_id, "pm",
+                f"收到。我是产品经理 Lin，负责需求分析和任务拆分。\n"
+                f"直接告诉我你想做什么产品，比如「创建一个 Todo 应用」。\n"
+                f"需要叫前端 Seven 或后端 Atlas 的话，直接 @他们。"
+            )
+            return
+
+        # ── 真实需求：走 PRD 流程 ──
         task = TaskState(
             task_id=str(uuid.uuid4())[:8],
             state=State.PLANNING,
@@ -113,22 +139,32 @@ class Orchestrator:
         )
         self._tasks[task.task_id] = task
 
-        await self._notify(chat_id, "pm",
-            f"收到需求：{command}\n正在分析并生成 PRD..."
-        )
+        await self._notify(chat_id, "pm", f"收到需求，分析中...")
 
         pm_result = self.pm.run(
-            f"用户需求：{command}\n请按PRD格式输出完整的需求文档。"
+            f"用户需求：{command}\n请按PRD格式输出完整的需求文档。如果需求信息不足，直接追问用户，不要输出空模板。"
         )
 
         if not pm_result["success"]:
             task.state = State.FAILED
             task.error = pm_result.get("error") or "PM 分析失败"
-            await self._notify(chat_id, "pm", f"PM 分析失败：{task.error}")
+            await self._notify(chat_id, "pm", f"分析失败：{task.error}")
             self._log_failure(task)
             return
 
         task.prd = pm_result["result"]
+
+        # 验证 PRD 有效性：含"此部分未明确"说明没分析出实质内容
+        if "此部分未明确" in task.prd and "项目概述" not in task.prd[:100]:
+            await self._notify(chat_id, "pm",
+                f"需求信息不够，我需要更多细节才能出 PRD。\n"
+                f"请告诉我：你想做什么产品？有哪些核心功能？"
+            )
+            task.state = State.FAILED
+            task.error = "PRD 为空（需求信息不足）"
+            self._log_failure(task)
+            return
+
         task.fe_task, task.be_task = self._filter_and_split(task.prd)
 
         # PM 在群里发通知（视觉上的 Agent @Agent）
@@ -146,22 +182,33 @@ class Orchestrator:
         task.fe_result = fe_result.get("result", "") if fe_result["success"] else ""
         task.be_result = be_result.get("result", "") if be_result["success"] else ""
 
+        # ── 验证产出有效性 ──
+        _empty_signals = ["此部分未明确", "工作区是空的", "我无法", "workspace is empty",
+                          "没有 PRD", "没有需求", "无法自行判断", "无法凭空"]
+
+        fe_valid = task.fe_result and not any(s in task.fe_result for s in _empty_signals)
+        be_valid = task.be_result and not any(s in task.be_result for s in _empty_signals)
+
         # FE 和 BE 各自用自己 Bot 身份在群里发言
-        if task.fe_result:
+        if fe_valid:
             await self._notify(chat_id, "fe",
                 f"收到 PM 的前端任务，已完成。\n{task.fe_result[:800]}"
                 + ("..." if len(task.fe_result) > 800 else "")
             )
         else:
-            await self._notify(chat_id, "fe", "前端任务执行失败，请查看日志。")
+            await self._notify(chat_id, "fe",
+                "PM 分配的前端任务信息不足，无法开始开发。请 PM 提供具体的功能描述。"
+            )
 
-        if task.be_result:
+        if be_valid:
             await self._notify(chat_id, "be",
                 f"收到 PM 的后端任务，已完成。\n{task.be_result[:800]}"
                 + ("..." if len(task.be_result) > 800 else "")
             )
         else:
-            await self._notify(chat_id, "be", "后端任务执行失败，请查看日志。")
+            await self._notify(chat_id, "be",
+                "PM 分配的后端任务信息不足，无法开始开发。请 PM 提供具体的功能描述。"
+            )
 
         # 完成
         task.state = State.COMPLETED

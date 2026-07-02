@@ -28,12 +28,26 @@ def _run_bot_process(bot_key: str, msg_queue: multiprocessing.Queue) -> None:
         try:
             msg = data.event.message
             chat_id = msg.chat_id
+
+            # ── 过滤 1：忽略 Bot 自己发的消息（防止死循环）──
+            sender_id = ""
+            if data.event.sender and data.event.sender.sender_id:
+                sender_id = data.event.sender.sender_id.user_id or ""
+            # 收集所有 Bot 的 app_id
+            all_bot_ids = {b["app_id"] for b in BOTS.values() if b.get("app_id")}
+            if sender_id in all_bot_ids:
+                return  # 忽略来自其他 Bot 的消息
+
+            # ── 过滤 2：只处理明确 @了本 Bot 的消息 ──
+            mentions = getattr(msg, "mentions", []) or []
+            mentioned_ids = {m.key for m in mentions if hasattr(m, "key")}
+            if app_id not in mentioned_ids:
+                return  # 未 @本 Bot，忽略
+
             content_str = msg.content or "{}"
             content = json.loads(content_str)
             text = content.get("text", "").strip()
-            user_id = (data.event.sender.sender_id.user_id
-                       if data.event.sender and data.event.sender.sender_id
-                       else "")
+            user_id = sender_id
 
             command = text
             if command.startswith("@"):
