@@ -1,14 +1,15 @@
 """后端开发 Agent"""
+import asyncio
 from pathlib import Path
 
 from agents.base import BaseAgent
 from tools.code_editor import (
-    READ_FILE_TOOL_SPEC,
-    WRITE_FILE_TOOL_SPEC,
-    LIST_DIR_TOOL_SPEC,
-    read_file,
-    write_file,
-    list_dir,
+    READ_FILE_TOOL_SPEC, WRITE_FILE_TOOL_SPEC, LIST_DIR_TOOL_SPEC,
+    read_file, write_file, list_dir,
+)
+from tools.feishu_docs import (
+    READ_DOC_TOOL_SPEC, READ_BITABLE_TOOL_SPEC, SEARCH_WIKI_TOOL_SPEC, READ_WIKI_TOOL_SPEC,
+    read_feishu_doc, read_feishu_bitable, search_feishu_wiki, read_feishu_wiki,
 )
 
 PROMPT_FILE = Path(__file__).parent.parent / "prompts" / "be" / "prompt.md"
@@ -27,7 +28,9 @@ class BEAgent(BaseAgent):
             name="BE",
             system_prompt=system_prompt,
             memory_file=str(MEMORY_FILE),
-            tools=[READ_FILE_TOOL_SPEC, WRITE_FILE_TOOL_SPEC, LIST_DIR_TOOL_SPEC],
+            tools=[READ_FILE_TOOL_SPEC, WRITE_FILE_TOOL_SPEC, LIST_DIR_TOOL_SPEC,
+                   READ_DOC_TOOL_SPEC, READ_BITABLE_TOOL_SPEC, SEARCH_WIKI_TOOL_SPEC,
+                   READ_WIKI_TOOL_SPEC],
             workspace=str(Path(__file__).parent.parent / "workspace" / "be"),
             model=model,
         )
@@ -40,4 +43,12 @@ class BEAgent(BaseAgent):
             return write_file(WORKSPACE, args.get("path", ""), args.get("content", ""))
         elif name == "list_dir":
             return list_dir(WORKSPACE, args.get("path", "."))
+        elif name == "read_feishu_doc":
+            return asyncio.run(read_feishu_doc(**args))
+        elif name == "read_feishu_bitable":
+            return asyncio.run(read_feishu_bitable(**args))
+        elif name == "search_feishu_wiki":
+            return asyncio.run(search_feishu_wiki(**args))
+        elif name == "read_feishu_wiki":
+            return asyncio.run(read_feishu_wiki(**args))
         return super()._execute_tool(name, args)

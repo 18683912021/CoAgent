@@ -30,11 +30,34 @@ _RETRY_STRATEGIES = [
     "[PUA L4 毕业警告] 别的Agent都能解决。你可能就要毕业了。拼命模式：最小PoC + 隔离环境 + 完全不同技术栈。删掉所有不必要的东西。Ship or die.",
 ]
 
-_SPINNING_SIGNALS = ["重试", "retry", "再次尝试", "同一方法", "same approach"]
-_BLAMING_SIGNALS = ["环境问题", "可能是", "environment", "maybe", "perhaps"]
-_CLAIM_SIGNALS = ["已完成", "写好了", "创建了", "生成了", "done", "created", "完成"]
-_EMPTY_SIGNALS = ["此部分未明确", "工作区是空的", "我无法", "workspace is empty",
-                  "没有 PRD", "没有需求", "无法自行判断", "无法凭空"]
+_SPINNING_SIGNALS = [
+    "重试", "retry", "再次尝试", "同一方法", "same approach",
+    "换一种方式", "再来一次", "又试了一次", "同样的问题", "又失败了",
+    "trying again", "still failing", "same error", "stuck",
+]
+_BLAMING_SIGNALS = [
+    "环境问题", "可能是", "environment", "maybe", "perhaps",
+    "应该是", "估计是", "不确定是不是", "好像是", "可能是由于",
+    "probably", "likely", "seems like", "might be due to",
+]
+_CLAIM_SIGNALS = [
+    "已完成", "写好了", "创建了", "生成了", "done", "created", "完成",
+    "finished", "completed", "ready", "好了", "搞定了", "弄好了",
+    "写完了", "已写入", "已创建", "已生成", "已部署", "搞定",
+]
+_EMPTY_SIGNALS = [
+    "此部分未明确", "工作区是空的", "我无法", "workspace is empty",
+    "没有 PRD", "没有需求", "无法自行判断", "无法凭空",
+    "不知道", "不确定", "需要更多信息", "信息不足", "无法完成",
+    "做不到", "不在能力范围",
+    "can't", "cannot", "unable", "don't know", "not sure",
+    "no idea", "insufficient", "impossible",
+]
+_HOLLOW_SIGNALS = [
+    "已完成", "完成了", "done", "fixed", "已修复",
+    "没问题了", "搞定了", "好了", "finished", "resolved",
+    "没有报错", "通过了", "测试通过", "可以用了",
+]
 
 
 class TaskRunner:

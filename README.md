@@ -1,12 +1,12 @@
 # CoAgent — 多智能体协作开发系统
 
-三人开发团队通过飞书群协同，从需求到代码全自动完成。
+三人 P8 级开发团队通过飞书群协同，从需求到代码全自动完成。
 
-| Agent | 角色 | 名字 | 人格 |
-|-------|------|------|------|
-| **PM** | 产品经理 | 小吴 | 精准追问者，不脑补不编造 |
-| **FE** | 前端开发 | 小柯 | 像素强迫症，组件复用狂魔 |
-| **BE** | 后端开发 | 酱瓜 | API 设计洁癖，数据模型信仰 |
+| Agent | 角色 | 名字 | 级别 | 核心能力 |
+|-------|------|------|------|---------|
+| **PM** | 产品总监 | 小吴 | P8 | 调研/竞品分析/产品设计/PRD/路线图/AI产品 |
+| **FE** | 前端架构师 | 小柯 | P8 | React/Vue/RN/Flutter/小程序/Electron/可视化 |
+| **BE** | 后端架构师 | 酱瓜 | P8 | FastAPI/Go/Spring/数据库/消息队列/云原生 |
 
 ---
 
@@ -16,142 +16,165 @@
 
 ```
 python main.py
-├── ws-pm 子进程 ──── wss://msg-frontier.feishu.cn  ← PM Bot WebSocket
-├── ws-fe 子进程 ──── wss://msg-frontier.feishu.cn  ← FE Bot WebSocket
-├── ws-be 子进程 ──── wss://msg-frontier.feishu.cn  ← BE Bot WebSocket
-└── msg-consumer 线程 → Queue → Orchestrator → 三 Agent 协作
+├── ws-pm 子进程 ──── wss://open.feishu.cn  ← PM Bot WebSocket
+├── ws-fe 子进程 ──── wss://open.feishu.cn  ← FE Bot WebSocket
+├── ws-be 子进程 ──── wss://open.feishu.cn  ← BE Bot WebSocket
+└── msg-consumer 线程 → Queue → Orchestrator → 三 Agent 并行协作
 ```
 
 ### 协作流程
 
 ```
 飞书群
-  用户: "@小吴 @小柯 @酱瓜 做个 Todo 应用"
+  用户: "@小吴 做个企业知识库，参考这个 Wiki 文档"
 
   ┌─ 意图预分类 ─────────────────────────────────────┐
-  │ "做个 Todo 应用" → 命中工作关键词 → work 模式      │
+  │ "做个企业知识库" → 命中工作关键词 → work 模式      │
   └──────────────────────────────────────────────────┘
 
   ┌─ 打字指示器 ─────────────────────────────────────┐
-  │ 用户消息下出现 ✍️ Reaction，每 6s 刷新             │
+  │ 用户消息下 ✍️ Reaction（每6s刷新），无 message_id 时发 "正在输入..." │
   └──────────────────────────────────────────────────┘
 
   ┌─ PM (小吴) ──────────────────────────────────────┐
-  │ 分析需求 → 输出 PRD                              │
+  │ search_web 竞品调研 → read_feishu_wiki 读文档    │
+  │ → 分析需求 → 输出 PRD                            │
   │ → API 契约自动写入 workspace/shared/API_CONTRACT.md │
+  │ → 进度通知: "需求分析完成，前后端并行开发..."       │
   └──────────────────────────────────────────────────┘
 
-  ┌─ 并行执行 ───────────────────────────────────────┐
-  │ asyncio.gather:                                  │
-  │  ├─ FE (小柯): 读 API_CONTRACT → 写前端代码        │
-  │  │    → 产出验证: workspace/fe/ 有新文件 ✓           │
-  │  └─ BE (酱瓜): 读 API_CONTRACT → 写后端代码        │
-  │       → 产出验证: workspace/be/ 有新文件 ✓           │
+  ┌─ 并行执行 FE/BE ─────────────────────────────────┐
+  │ asyncio.gather (带超时 + 重试):                   │
+  │  ├─ FE (小柯): 读 API_CONTRACT → 代码              │
+  │  │    → AST/结构验证 → 产出文件 ✓                   │
+  │  └─ BE (酱瓜): 读 API_CONTRACT → 代码              │
+  │       → Python 编译检查 → 产出文件 ✓                │
   └──────────────────────────────────────────────────┘
 
   ┌─ 共享状态更新 ───────────────────────────────────┐
-  │ workspace/shared/STATUS.md ← FE ✓  BE ✓           │
+  │ STATUS.md ← FE ✓ BE ✓   DECISIONS.md ← 技术决策  │
   └──────────────────────────────────────────────────┘
 
-  → FE Bot: "收到，登录页面已生成。[3 个文件]"
-  → BE Bot: "收到，API 已实现。[2 个文件]"
+  → FE Bot: "中后台已生成，Ant Design + React。[5 个文件]"
+  → BE Bot: "API 已实现。[3 个文件]"
 ```
 
-### 闲聊流程（群呼模式）
+### 群呼闲聊
 
 ```
-飞书群
-  用户: "洋洋得意" + @小吴 @小柯 @酱瓜
-
-  ┌─ 意图预分类 ────────────────────────────────────┐
-  │ "洋洋得意" → 无工作关键词 → chat 模式             │
-  │ max_tokens=512, Chat Budget: ≤3句话              │
-  └──────────────────────────────────────────────────┘
-
-  ┌─ 群呼上下文注入 ─────────────────────────────────┐
-  │ "用户同时 @了你和小柯、酱瓜——这不是派活"            │
-  │ "你只代表你自己，不替别人回答"                      │
-  └──────────────────────────────────────────────────┘
-
-  → 小柯: "哈哈，今天心情不错啊～"
-  → 酱瓜: "在呢"
-  → 小吴: "有啥好事？"
-  （各说各的，不替别人回答，不追要需求）
+用户: "早上好" + @小吴 @小柯 @酱瓜
+  → 意图预分类: "chat"
+  → 群呼上下文注入: "不是派活，各回各的"
+  → 三 Agent 并行思考+回复（不再串行等待）
+  → 小柯: "早～"  酱瓜: "在呢"  小吴: "早！"
 ```
-
-### Agent 文件集（对标 OpenMOSS + OpenClaw）
-
-每个 Agent 拥有 5 个标准定义文件：
-
-```
-prompts/{agent}/
-├── AGENTS.md    ← 操作规则（铁律/Chat Budget），Always Loaded
-├── prompt.md    ← 人格/SOUL，Always Loaded
-├── SKILL.md     ← 技能书，On-demand
-├── COMMAND.md   ← 工作流，On-demand
-└── MEMORY.md    ← 长期记忆
-```
-
-- **AGENTS.md + prompt.md** → 启动时合并注入 system prompt
-- **SKILL.md + COMMAND.md** → LLM 按需读取，不占常驻 Token
-- **MEMORY.md** → 跨会话积累的项目经验、组件库、踩坑记录
-
-### 三层隔离
-
-| 层级 | PM | FE | BE |
-|------|----|----|----|
-| Prompt | 只做需求，不写代码 | 只做 UI/组件，不碰后端 | 只做 API/模型，不写前端 |
-| 文件系统 | workspace/prd/ | workspace/fe/ | workspace/be/ |
-| 记忆 | memory/memory-pm.md | memory/memory-fe.md | memory/memory-be.md |
-
-### 共享上下文（借鉴 OpenClaw shared-context/）
-
-```
-workspace/shared/
-├── API_CONTRACT.md   ← PM 出 PRD 后自动写入，FE/BE 以此为准
-├── STATUS.md         ← 各 Agent 完成后自动更新进度
-└── DECISIONS.md      ← 技术决策日志（影响队友的决策写这里）
-```
-
-FE 和 BE 开工前先读共享目录，避免各自发明接口。
 
 ---
 
 ## 核心机制
 
+### 执行引擎
+
+| 机制 | 说明 |
+|------|------|
+| **三 Agent 并行** | `run_coroutine_threadsafe` 同时调度，LLM 在线程池并行执行 |
+| **4 层超时保护** | HTTP(90s) → Agent(chat 15s/work 60s) → 重试(90s) → 总超时 |
+| **PUA 分级重试** | L0-L4 五级压力升级 + 失败模式检测（打转/甩锅/空壳） |
+| **TaskRunner 独立** | 超时/重试/验证/编译检查一体化，与 Orchestrator 解耦 |
+| **状态机** | IDLE → PLANNING → DISPATCHING → FE/BE_RUNNING → COMPLETED/FAILED |
+
 ### 社交智能
 
 | 机制 | 说明 |
 |------|------|
-| **群呼上下文** | 用户 @多人时，Agent 知道这是社交招呼而非工作指派 |
-| **铁律：只代表自己** | 不替队友说"XX也在"——他们是活人，自己会说话 |
-| **Chat Budget** | 闲聊 ≤3 句话，工作才展开。省 Token + 自然交互 |
-| **意图预分类** | 关键词匹配分流 chat/work，chat→max_tokens=512，work→4096 |
+| **群呼上下文** | 用户 @多人时，Agent 知道是社交招呼 |
+| **铁律：只代表自己** | 不替队友说话 |
+| **Chat Budget** | 闲聊 ≤3 句，省 Token + 自然交互 |
+| **意图预分类** | 58 个关键词分流 chat/work，chat→512 tokens，work→4096 |
+| **Agent 间委派** | FE 说 "@酱瓜 加个接口" → 自动委派，38 个委派关键词 |
+| **名字智能映射** | @前端/@后端/@产品经理 都能正确路由 |
 
-### 体验增强（借鉴 OpenClaw）
+### 飞书深度集成
 
-| 机制 | 说明 |
+| 能力 | API |
+|------|-----|
+| ✍️ 打字指示器 | Reaction API + 文字兜底 |
+| 📖 读文档 | `read_feishu_doc` — docx |
+| 📖 读 Wiki | `read_feishu_wiki` — feishu.cn/wiki/XXX |
+| 📊 读多维表格 | `read_feishu_bitable` — Bitable |
+| 🔍 搜知识库 | `search_feishu_wiki` |
+| 👤 解析用户 | `get_user_info` — ID → 姓名 |
+| 👥 群成员 | `get_chat_members` |
+| 📎 发文件 | `send_file_message` — 突破 800 字截断 |
+| 💬 线程回复 | `reply_message` — 不刷屏 |
+| 📥 下载附件 | `download_file` |
+| @自动转换 | `@小柯` → `<at user_id>` |
+
+### 代码质量
+
+| 机制 | BE | FE |
+|------|----|----|
+| 编译检查 | `ast.parse` Python 语法 | 括号平衡/import/export 结构 |
+| 产出验证 | workspace 快照对比，无新文件 → 警告 |
+| 空壳检测 | 42 个空壳信号词识别"嘴上说说" |
+
+### 记忆系统
+
+| 层级 | 说明 |
 |------|------|
-| **✍️ Reaction 打字指示器** | LLM 思考时在用户消息上加 ✍️ 表情回应，每 6s 刷新 |
-| **@队友自动转换** | 回复中写 `@小柯` `@酱瓜` 自动转为飞书 `<at>` 标签 |
-| **即时确认** | 被 @ 时先应一声（空消息→"嗯？"），不沉默 |
+| **个人记忆** | 每个 Agent 独立，自动提取关键事实（35 个触发词） |
+| **共享记忆** | `shared-memory.md`，全局性事实自动同步 |
+| **上下文压缩** | 超 20 条时压缩为摘要而非丢弃 |
 
-### 可靠性
+### 可观测性
 
-| 机制 | 说明 |
+| 能力 | 说明 |
 |------|------|
-| **产出验证** | Agent 声称"完成了"但 workspace 无新文件 → 自动注入警告 |
-| **Honcho 风格长期记忆** | 自动提取关键事实（决策/偏好），每次 LLM 调用前注入 |
-| **上下文压缩** | 对话超 20 条时压缩旧消息为摘要，而非直接丢弃 |
-| **PUA 分级重试** | L0-L4 五级，含失败模式检测（打转/甩锅/空壳） |
+| **53 个单元测试** | pytest，覆盖 TaskRunner/Orchestrator/BaseAgent 纯函数 |
+| **Metrics** | 任务计数/成功率/响应时间/Agent 维度 |
+| **结构化日志** | `[时间] LEVEL event key=value` |
+| **健康检查** | `GET /health` → `{status, bots, metrics}` |
 
-### 技术栈
+---
 
-- **模型**: DeepSeek-v4-pro（Anthropic SDK 兼容接口）
-- **入口**: 飞书 WebSocket 长连接（lark-oapi 官方 SDK），无需公网 IP
-- **调度**: Orchestrator + asyncio.gather 并行 + 指数退避重试
-- **通信**: 飞书 REST API 消息发送 + Reaction API 打字指示器
-- **隔离**: multiprocessing 子进程，每 Bot 独立 event loop
+## Agent 技能矩阵
+
+### 小吴 (PM) — P8 产品总监
+
+| 领域 | 技能 |
+|------|------|
+| 用户研究 | 用户访谈/Persona/旅程地图/可用性测试 |
+| 竞品分析 | 功能矩阵/定价对比/差异化定位 |
+| 产品设计 | 信息架构/交互流程/功能优先级(RICE/MoSCoW)/MVP 裁剪 |
+| 商业策略 | 商业模式/增长(AARRR)/定价/路线图/OKR |
+| 技术理解 | API 设计原则/技术边界速查/AI 产品设计(Prompt/RAG) |
+| 工具 | search_web / read_feishu_doc / read_feishu_wiki / search_feishu_wiki |
+
+### 小柯 (FE) — P8 前端架构师
+
+| 领域 | 技能 |
+|------|------|
+| 框架 | React 19/Next.js 15、Vue 3/Nuxt 3、Vue 2 存量迁移 |
+| 跨端 | React Native、Flutter、Electron、uni-app、Taro、原生小程序 |
+| 组件库 | Ant Design 5、Element Plus、shadcn/ui、Naive UI、TDesign、Vant 4 |
+| 可视化 | ECharts 5、AntV(G2/G6/L7)、Three.js |
+| CSS | Tailwind/UnoCSS/styled-components/CSS Modules/Sass |
+| 工程化 | Vite/Webpack/Turbopack/pnpm monorepo/模块联邦 |
+| Node.js | Express/Nest.js/Next.js API Routes/tRPC/GraphQL |
+| 测试 | Vitest/Playwright/Cypress/Storybook |
+
+### 酱瓜 (BE) — P8 后端架构师
+
+| 领域 | 技能 |
+|------|------|
+| 语言 | Python(FastAPI/Django/Flask)、Go(Gin/Fiber/gRPC)、Java(Spring Boot 3/Cloud)、Node(Nest.js) |
+| 数据库 | PostgreSQL/MySQL/MongoDB/Redis/ES/ClickHouse/TiDB/TimescaleDB/Neo4j |
+| 消息 | Kafka/RabbitMQ/RocketMQ/Pulsar/Redis Streams/Celery |
+| 架构 | 微服务/DDD/CQRS/Event Sourcing/Saga/六边形架构 |
+| 云 | AWS(ECS/RDS/S3/Lambda)、阿里云、腾讯云 |
+| DevOps | Docker/K8s/Terraform/Helm/GitHub Actions |
+| 监控 | Prometheus/Grafana/OpenTelemetry/Sentry/ELK |
+| 安全 | OAuth2/JWT/RBAC/Rate Limiting/加密/SQL注入防护 |
 
 ---
 
@@ -165,8 +188,8 @@ FE 和 BE 开工前先读共享目录，避免各自发明接口。
 ```bash
 cd agent_app
 pip install -r requirements.txt
-cp .env.example .env   # 编辑填入凭证
-python main.py          # 启动，三 Bot 自动连接飞书
+cp .env.example .env
+python main.py
 ```
 
 `.env` 配置：
@@ -189,39 +212,61 @@ FEISHU_BE_APP_SECRET=xxx
 每个 Bot 在 [飞书开放平台](https://open.feishu.cn) 操作：
 
 1. 创建企业自建应用 → 添加**机器人**能力
-2. 权限 → `im:message` + `im:message:send_as_bot` + `im:message:reaction`（打字指示器需要）
+2. 权限管理 → 添加所需权限：
+```json
+{
+  "scopes": {
+    "tenant": [
+      "im:message", "im:message:send_as_bot", "im:message:readonly",
+      "im:message.group_at_msg:readonly", "im:chat:readonly",
+      "im:chat.members:bot_access", "im:resource",
+      "contact:user.base:readonly",
+      "docx:document:readonly", "bitable:app:readonly", "wiki:wiki:readonly"
+    ]
+  }
+}
+```
 3. 事件订阅 → **使用长连接接收事件** → 添加 `im.message.receive_v1`
 4. 创建版本 → 发布
 5. 三 Bot 加入同一群聊
 
 ## 使用
 
-### 完整协作（@PM）
-
 ```bash
-# 群内 @小吴 触发完整 PRD → FE/BE 并行开发：
-@小吴 创建一个简单的 Todo 应用，支持添加和删除任务
-```
+# 完整协作（@PM）
+@小吴 创建一个 Todo 应用，支持添加和删除任务
 
-### 单独调用
+# 引用文档
+@小吴 参考这个 Wiki 文档做需求分析
+[发送 feishu.cn/wiki/XXX 链接]
 
-```bash
-@小柯 把按钮颜色改成蓝色
-@酱瓜 添加 DELETE /api/todos/{id} 接口
-```
+# 单独调用
+@小柯 搭建一个 React Native 企业级 App Shell
+@酱瓜 设计一个订单系统的数据模型
 
-### 闲聊
+# 队友委派
+@小柯 写个登录页。@酱瓜 把登录接口补上
 
-```bash
+# 闲聊
 @小吴 @小柯 @酱瓜 早上好
-# 三人各自回应，不追要需求，不替别人说话
+```
+
+## 测试
+
+```bash
+cd agent_app
+python -m pytest tests/ -v
+# 53 passed
 ```
 
 ## 健康检查
 
 ```bash
 curl http://localhost:8000/health
-# {"status":"ok","bots":{"pm":"configured","fe":"configured","be":"configured"}}
+# {"status":"ok","bots":{"pm":"connected","fe":"connected","be":"connected"},"metrics":{"tasks":{"total":42,...}}}
+
+curl http://localhost:8000/task/{task_id}
+# {"task_id":"a1b2c3d4","state":"completed","initiator":"pm","command":"...","error":""}
 ```
 
 ## 项目结构
@@ -229,46 +274,45 @@ curl http://localhost:8000/health
 ```
 agent_app/
 ├── main.py                          # FastAPI 入口 + WebSocket 生命周期
-├── orchestrator.py                  # 调度器（状态机/意图分类/信息过滤/重试/并行/验证）
-├── requirements.txt                 # Python 依赖
-├── .env / .env.example              # 环境变量
+├── orchestrator.py                  # 调度器（路由/意图分类/社交上下文/委派/消息）
+├── task_runner.py                   # 执行器（超时/重试/验证/编译检查）
+├── monitor.py                       # 指标收集 + 结构化日志
+├── requirements.txt
+├── .env / .env.example
 │
-├── agents/                          # [代码] Agent 实现
-│   ├── base.py                      #   基类（Anthropic SDK/记忆/事实提取/压缩）
-│   ├── pm.py                        #   PM Agent — 小吴
-│   ├── fe.py                        #   FE Agent — 小柯
-│   └── be.py                        #   BE Agent — 酱瓜
+├── agents/                          # Agent 实现
+│   ├── base.py                      #   基类（SDK/记忆/事实提取/共享记忆/压缩）
+│   ├── pm.py                        #   PM — 小吴 (P8 产品总监)
+│   ├── fe.py                        #   FE — 小柯 (P8 前端架构师)
+│   └── be.py                        #   BE — 酱瓜 (P8 后端架构师)
 │
-├── prompts/                         # [定义] Agent 文件集
-│   ├── pua/SKILL.md                 #   PUA 引擎方法论（共享）
-│   ├── pm/                          #   PM Agent 定义
-│   │   ├── AGENTS.md                #     操作规则（铁律/Chat Budget/聊天示例）
-│   │   ├── prompt.md                #     人格 SOUL
-│   │   ├── COMMAND.md               #     工作流
-│   │   └── MEMORY.md                #     长期记忆
-│   ├── fe/                          #   FE Agent 定义
-│   └── be/                          #   BE Agent 定义
+├── prompts/                         # Agent 定义文件
+│   ├── pua/SKILL.md                 #   PUA 引擎方法论
+│   ├── pm/                          #   PM: prompt/SKILL/AGENTS/COMMAND
+│   ├── fe/                          #   FE: prompt/SKILL/AGENTS/COMMAND
+│   └── be/                          #   BE: prompt/SKILL/AGENTS/COMMAND
 │
-├── tools/                           # [工具] MCP 外部能力
-│   ├── search.py                    #   Web 搜索（DuckDuckGo）
-│   ├── feishu.py                    #   飞书消息发送（PM 调用）
-│   ├── feishu_utils.py              #   飞书 API（Token/多Bot发送/Reaction）
-│   ├── feishu_ws.py                 #   WebSocket 长连接（三Bot子进程/群呼检测）
-│   └── code_editor.py               #   代码读写（路径隔离 + 逃逸检测）
+├── tools/                           # 工具集
+│   ├── search.py                    #   Web 搜索
+│   ├── feishu.py                    #   飞书消息发送
+│   ├── feishu_utils.py              #   飞书 API（Token/消息/文档/Wiki/文件/用户/群组）
+│   ├── feishu_docs.py               #   飞书云文档工具（Agent 可调用）
+│   ├── feishu_ws.py                 #   WebSocket 长连接
+│   └── code_editor.py               #   代码读写（隔离+逃逸检测）
 │
-├── memory/                          # 对话记忆（{messages, facts} JSON，运行时生成）
-│   ├── memory-pm.md
-│   ├── memory-fe.md
-│   └── memory-be.md
+├── tests/                           # 单元测试 (53 个)
+│   ├── conftest.py
+│   ├── test_base.py
+│   ├── test_orchestrator.py
+│   └── test_task_runner.py
+│
+├── memory/                          # 记忆（运行时）
+│   ├── memory-pm.md / fe.md / be.md   # 个人记忆
+│   └── shared-memory.md               # 团队共享记忆
 │
 ├── workspace/                       # 代码产出
-│   ├── shared/                      #   共享上下文（API契约/状态/决策日志）
-│   │   ├── API_CONTRACT.md
-│   │   ├── STATUS.md
-│   │   └── DECISIONS.md
-│   ├── prd/                         #   PM 产出 PRD
-│   ├── fe/                          #   FE 产出前端代码
-│   └── be/                          #   BE 产出后端代码
+│   ├── shared/                      #   共享上下文
+│   ├── prd/ / fe/ / be/
 │
 └── logs/                            # 失败任务日志
 ```

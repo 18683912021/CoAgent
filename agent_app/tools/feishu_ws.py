@@ -156,8 +156,12 @@ def _run_bot_process(bot_key: str, msg_queue: multiprocessing.Queue) -> None:
             delay = min(delay * 2, 60)
 
 
-def _msg_consumer(msg_queue: multiprocessing.Queue, orchestrator: Any) -> None:
-    """主进程中消费队列消息，转交 Orchestrator"""
+def _msg_consumer(msg_queue: multiprocessing.Queue, orchestrator: Any, main_loop: Any) -> None:
+    """主进程中消费队列消息，转交 Orchestrator。
+
+    使用 run_coroutine_threadsafe 将协程调度到主 event loop，
+    多个消息的 handle_command 可在主 loop 上并发执行。
+    """
     import asyncio as _asyncio
 
     while True:
@@ -166,31 +170,17 @@ def _msg_consumer(msg_queue: multiprocessing.Queue, orchestrator: Any) -> None:
         except Exception:
             continue
 
-        # 跨线程安全调度 async 任务
-        try:
-            loop = _asyncio.get_running_loop()
-            _asyncio.run_coroutine_threadsafe(
-                orchestrator.handle_command(
-                    msg["bot_key"], msg["chat_id"],
-                    msg["user_id"], msg["command"],
-                    msg.get("is_mentioned", True),
-                    msg.get("mentioned_others", []),
-                    msg.get("message_id", ""),
-                ),
-                loop,
-            )
-        except RuntimeError:
-            loop = _asyncio.new_event_loop()
-            loop.run_until_complete(
-                orchestrator.handle_command(
-                    msg["bot_key"], msg["chat_id"],
-                    msg["user_id"], msg["command"],
-                    msg.get("is_mentioned", True),
-                    msg.get("mentioned_others", []),
-                    msg.get("message_id", ""),
-                )
-            )
-            loop.close()
+        # 调度到主 event loop，非阻塞——三条消息同时入队，三个协程并发执行
+        _asyncio.run_coroutine_threadsafe(
+            orchestrator.handle_command(
+                msg["bot_key"], msg["chat_id"],
+                msg["user_id"], msg["command"],
+                msg.get("is_mentioned", True),
+                msg.get("mentioned_others", []),
+                msg.get("message_id", ""),
+            ),
+            main_loop,
+        )
 
 
 def start_all_bots(orchestrator: Any) -> tuple[multiprocessing.Queue, list[multiprocessing.Process]]:
@@ -201,11 +191,15 @@ def start_all_bots(orchestrator: Any) -> tuple[multiprocessing.Queue, list[multi
     """
     msg_queue = multiprocessing.Queue()
 
+    # 获取主 event loop（调用方处于 async 上下文中）
+    import asyncio as _asyncio
+    main_loop = _asyncio.get_running_loop()
+
     # 消息消费线程（在主进程中，直接访问 Orchestrator）
     import threading
     consumer = threading.Thread(
         target=_msg_consumer,
-        args=(msg_queue, orchestrator),
+        args=(msg_queue, orchestrator, main_loop),
         name="msg-consumer",
         daemon=True,
     )

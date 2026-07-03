@@ -123,9 +123,17 @@ class BaseAgent:
 
     def _extract_facts_from(self, text: str) -> None:
         """从用户消息中提取关键事实（决策/偏好/命名/需求）。"""
-        _skip_prefixes = ["[群呼上下文]", "[长期记忆]", "[系统提示]", "[团队共享记忆]",
-                          "[个人记忆]", "[Chat Budget]", "[上下文压缩]"]
-        fact_signals = ["决定", "选", "偏好", "要求", "需要", "叫", "名字是", "用 ", "做", "写"]
+        _skip_prefixes = [
+            "[群呼上下文]", "[长期记忆]", "[系统提示]", "[团队共享记忆]",
+            "[个人记忆]", "[Chat Budget]", "[上下文压缩]", "[来自",
+            "[系统验证]", "[编译检查]", "[结构检查]",
+        ]
+        fact_signals = [
+            "决定", "选", "偏好", "要求", "需要", "叫", "名字是",
+            "用 ", "做", "写", "改用", "换成", "确认", "约定",
+            "规定", "规范", "标准", "习惯", "喜欢", "不喜欢",
+            "改成", "修改为", "命名为", "定义为",
+        ]
         for line in text.split("\n"):
             line = line.strip()
             if any(line.startswith(p) for p in _skip_prefixes):
@@ -138,7 +146,11 @@ class BaseAgent:
             self._facts = self._facts[-15:]
 
         # 全局性事实同步到共享记忆
-        _global_signals = ["项目", "技术栈", "偏好", "框架", "数据库", "部署", "用 ", "选型"]
+        _global_signals = [
+            "项目", "技术栈", "偏好", "框架", "数据库", "部署", "用 ", "选型",
+            "架构", "语言", "环境", "规范", "流程", "方案", "策略", "原则",
+            "团队", "公司", "产品", "用户", "客户", "需求", "目标",
+        ]
         if any(s in text for s in _global_signals):
             self._add_shared_fact(text)
 
