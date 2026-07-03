@@ -1,10 +1,10 @@
 /**
  * 监控模块 — Sentry 初始化 + 性能追踪
  *
- * 集成 @sentry/react-native，覆盖：
+ * 集成 @sentry/react-native v6，覆盖：
  * - JS 异常自动捕获
  * - Native 崩溃上报
- * - 性能追踪（路由切换、HTTP 请求、用户交互）
+ * - 性能追踪
  * - 自定义 Breadcrumb
  */
 
@@ -13,8 +13,6 @@ import { env, isDev } from '@core/config';
 import { createLogger } from '@core/logger';
 
 const logger = createLogger('Monitoring');
-
-const routingInstrumentation = new Sentry.ReactNavigationInstrumentation();
 
 /**
  * 初始化 Sentry
@@ -35,17 +33,13 @@ export function initMonitoring(): void {
     tracesSampleRate: isDev ? 1.0 : 0.2,
     profilesSampleRate: isDev ? 1.0 : 0.1,
 
-    // 路由变化自动创建 Transaction
+    // v6 API: 原生追踪集成
     integrations: [
-      new Sentry.ReactNativeTracing({
-        routingInstrumentation,
-        tracingOrigins: ['localhost', env.API_BASE_URL],
-      }),
+      Sentry.reactNativeTracingIntegration(),
     ],
 
     // 过滤不需要上报的数据
     beforeSend(event) {
-      // 开发环境不上报
       if (isDev) return null;
       return event;
     },
@@ -53,7 +47,6 @@ export function initMonitoring(): void {
     // PII 脱敏
     beforeBreadcrumb(breadcrumb) {
       if (breadcrumb.category === 'http') {
-        // 过滤敏感 header
         if (breadcrumb.data?.url) {
           breadcrumb.data.url = breadcrumb.data.url.replace(/token=[^&]+/, 'token=***');
         }
@@ -61,7 +54,6 @@ export function initMonitoring(): void {
       return breadcrumb;
     },
 
-    // 最大 Breadcrumb 数量
     maxBreadcrumbs: 100,
   });
 
@@ -123,6 +115,4 @@ export function clearUser(): void {
   Sentry.setUser(null);
 }
 
-// 导出 Sentry 原生 API 和路由 Instrumentation
-export { Sentry, routingInstrumentation };
-export { withProfiler, withErrorBoundary } from '@sentry/react-native';
+export { Sentry };

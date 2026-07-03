@@ -2,9 +2,8 @@
  * Storybook Preview — 全局 decorator 和参数
  */
 
-import { Preview } from '@storybook/react-native';
-import { useAppTheme, Theme } from '../src/design-system/theme';
-import { View, Text } from 'react-native';
+import { useAppTheme } from '../src/design-system/theme';
+import { View } from 'react-native';
 import React from 'react';
 
 // 用 ThemeProvider 包裹所有 Story
@@ -17,9 +16,9 @@ function ThemeWrapper({ children }: { children: React.ReactNode }) {
   );
 }
 
-const preview: Preview = {
+const preview = {
   decorators: [
-    (Story) => (
+    (Story: React.ComponentType) => (
       <ThemeWrapper>
         <Story />
       </ThemeWrapper>
