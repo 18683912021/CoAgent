@@ -2,6 +2,7 @@
 import asyncio
 import ast
 import json
+import queue
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -15,10 +16,10 @@ FAILED_TASKS_LOG = LOGS_DIR / "failed_tasks.jsonl"
 
 # ── 超时常量 ──────────────────────────────────────────
 
-CHAT_TIMEOUT = 60       # 闲聊：60 秒（含工具调用）
-WORK_TIMEOUT = 180      # 单个 Agent 工作：3 分钟（复杂任务+工具链）
-PM_TIMEOUT = 120        # PM 分析+调研：2 分钟
-RETRY_TIMEOUT = 300     # 重试总超时：5 分钟
+CHAT_TIMEOUT = 120      # 闲聊：2 分钟
+WORK_TIMEOUT = 360      # 单个 Agent 工作：6 分钟
+PM_TIMEOUT = 240        # PM 分析+调研：4 分钟
+RETRY_TIMEOUT = 600     # 重试总超时：10 分钟
 
 # ── 重试策略 ──────────────────────────────────────────
 
@@ -100,7 +101,8 @@ class TaskRunner:
 
     async def run_with_timeout(
         self, agent: Any, command: str, max_tokens: int = 4096,
-        timeout: int = WORK_TIMEOUT,
+        timeout: int = WORK_TIMEOUT, max_rounds: int = 15,
+        intent: str = "work",
     ) -> dict:
         """在超时保护下执行 Agent。超时返回 error 而非挂死。
 
@@ -109,6 +111,8 @@ class TaskRunner:
             command: 用户指令
             max_tokens: 最大输出 token
             timeout: 超时秒数
+            max_rounds: 最大工具调用轮次
+            intent: 意图类型 (chat/read/plan/work)
 
         Returns:
             {"success": bool, "result": str, "error": str|None, "timed_out": bool}
@@ -116,7 +120,7 @@ class TaskRunner:
         loop = asyncio.get_running_loop()
         try:
             result = await asyncio.wait_for(
-                loop.run_in_executor(None, agent.run, command, 5, max_tokens),
+                loop.run_in_executor(None, agent.run, command, max_rounds, max_tokens, None, intent),
                 timeout=timeout,
             )
             result["timed_out"] = False
@@ -129,11 +133,59 @@ class TaskRunner:
                 "timed_out": True,
             }
 
+    async def run_with_progress(
+        self, agent: Any, command: str, max_tokens: int = 4096,
+        timeout: int = WORK_TIMEOUT, max_rounds: int = 15,
+        intent: str = "work",
+    ) -> tuple["asyncio.Future[dict]", "queue.Queue[dict]"]:
+        """带进度流式输出的 Agent 执行。启动后立即返回，进度通过 Queue 获取。
+
+        进度事件格式：{"type": "tool_start"|"tool_end"|"thinking",
+                       "tool": str, "detail": str}
+        Queue 在 Agent 完成（成功/超时/异常）时收到 None 哨兵。
+
+        Returns:
+            (result_future, progress_queue)
+        """
+        q: queue.Queue = queue.Queue()
+        loop = asyncio.get_running_loop()
+
+        def _run() -> dict:
+            try:
+                return agent.run(command, max_rounds, max_tokens,
+                    on_progress=lambda etype, tool, detail: q.put({
+                        "type": etype, "tool": tool, "detail": detail,
+                    }),
+                    intent=intent)
+            except Exception as e:
+                return {"success": False, "result": "", "error": str(e), "timed_out": False}
+            finally:
+                q.put(None)  # 哨兵：Agent 结束
+
+        async def _run_with_timeout() -> dict:
+            try:
+                result = await asyncio.wait_for(
+                    loop.run_in_executor(None, _run),
+                    timeout=timeout,
+                )
+                result["timed_out"] = False
+                return result
+            except asyncio.TimeoutError:
+                # _run 的 finally 会推哨兵 None；这里不重复推
+                return {
+                    "success": False, "result": "",
+                    "error": f"Agent 执行超时（{timeout}s），已中断。请简化任务或拆分为更小的步骤。",
+                    "timed_out": True,
+                }
+
+        result_task = asyncio.ensure_future(_run_with_timeout())
+        return result_task, q
+
     # ── 带重试执行 ───────────────────────────────────
 
     async def run_with_retry(
         self, agent: Any, task: str, bot_key: str, task_id: str,
-        max_retries: int = 4,
+        max_retries: int = 4, intent: str = "work",
     ) -> dict:
         """带分级策略注入 + 失败模式检测 + 超时保护的 Agent 执行。"""
         backoff = 1
@@ -159,7 +211,7 @@ class TaskRunner:
             task_with_hint = f"{task}\n\n[系统提示] {full_hint}" if full_hint else task
 
             # 超时执行
-            result = await self.run_with_timeout(agent, task_with_hint, timeout=RETRY_TIMEOUT)
+            result = await self.run_with_timeout(agent, task_with_hint, timeout=RETRY_TIMEOUT, intent=intent)
 
             if result["success"]:
                 if attempt >= 3:

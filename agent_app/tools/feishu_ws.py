@@ -26,110 +26,41 @@ def _run_bot_process(bot_key: str, msg_queue: multiprocessing.Queue) -> None:
 
     def handle_message(data: P2ImMessageReceiveV1) -> None:
         try:
-            msg = data.event.message
-            chat_id = msg.chat_id
-            message_id = getattr(msg, "message_id", "") or ""
+            from tools.message_normalizer import normalize_feishu_message
 
-            # ── 过滤：忽略 Bot 自己发的消息（防止死循环）──
-            sender_id = ""
-            if data.event.sender and data.event.sender.sender_id:
-                sender_id = data.event.sender.sender_id.user_id or ""
             all_bot_ids = {b["app_id"] for b in BOTS.values() if b.get("app_id")}
-            if sender_id in all_bot_ids:
-                return
-
-            # ── 判断是否被 @，同时提取所有被 @ 的人 ──
-            mentions = getattr(msg, "mentions", []) or []
-            mentioned_keys = {m.key for m in mentions if hasattr(m, "key")}
-            mentioned_names = {m.name for m in mentions if hasattr(m, "name")}
             bot_name = bot.get("name", "")
             bot_short = bot.get("short_name", "")
-            is_mentioned = (
-                app_id in mentioned_keys
-                or bot_name in mentioned_names
-                or any(bot_short in n for n in mentioned_names)
+
+            nm = normalize_feishu_message(
+                bot_key=bot_key,
+                bot_app_id=app_id,
+                bot_name=bot_name,
+                bot_short_name=bot_short,
+                all_bot_app_ids=all_bot_ids,
+                raw_event=data,
             )
 
-            # 提取所有被 @ 的人（排除自己），用于群呼上下文
-            # 同时建立 内部ID → 显示名 映射，用于替换 command 中的 @_user_X
-            all_mentioned_names: list[str] = []
-            id_to_name: dict[str, str] = {}
-            for m in mentions:
-                key = getattr(m, "key", "") if hasattr(m, "key") else ""
-                name = getattr(m, "name", "") if hasattr(m, "name") else ""
-                if key and name:
-                    id_to_name[key] = name
-                if name and name != bot_name and bot_short not in name:
-                    all_mentioned_names.append(name)
-            mentioned_others = all_mentioned_names
+            # 过滤：Bot 自己的消息（text 为空表示应跳过）
+            if not nm.text and not nm.attachment_info:
+                return
 
-            msg_type = getattr(msg, "msg_type", "text") or "text"
-            content_str = msg.content or "{}"
-            content = json.loads(content_str)
-            text = content.get("text", "").strip()
-            user_id = sender_id
+            logger.info(
+                f"[{bot_key}] chat={nm.chat_id} msg_id={nm.message_id[:16] if nm.message_id else 'EMPTY'} "
+                f"type={nm.msg_type} mentioned={nm.is_mentioned} others={nm.mentioned_names} "
+                f"cmd={nm.text[:80] if nm.text else '(empty)'}"
+            )
 
-            # ── 解析消息内容（支持文件/文档/图片）──
-            command = ""
-            attachment_info = ""
-
-            if msg_type == "file":
-                file_name = content.get("file_name", "未知文件")
-                file_key = content.get("file_key", "")
-                attachment_info = f"[文件: {file_name}]"
-                # 把文件信息附到指令里，Agent 可以通过 file_key 读取
-                command = f"(用户发了一个文件: {file_name})"
-
-            elif msg_type == "image":
-                image_key = content.get("image_key", "")
-                attachment_info = "[图片]"
-                command = "(用户发了一张图片)"
-
-            elif msg_type == "post":
-                # 富文本消息，提取纯文本
-                post_content = content.get("content", [])
-                text_parts = []
-                for paragraph in post_content:
-                    for element in paragraph:
-                        if isinstance(element, dict) and element.get("tag") == "text":
-                            text_parts.append(element.get("text", ""))
-                        elif isinstance(element, dict) and element.get("tag") == "at":
-                            text_parts.append(f"@{element.get('user_name', '')}")
-                text = "".join(text_parts)
-                command = text
-
-            else:
-                # 普通文本消息
-                command = text
-
-            # 去掉 @Bot 前缀
-            if command.startswith("@"):
-                parts = command.split(" ", 1)
-                command = parts[1] if len(parts) > 1 else ""
-            if not command and not attachment_info:
-                command = ""
-
-            # 如果有附件信息，附到 command 前面
-            if attachment_info and command:
-                command = f"{attachment_info}\n{command}"
-            elif attachment_info:
-                command = attachment_info
-
-            # ── 替换 command 中的内部 ID（@_user_X → @Agent名字）──
-            for uid, name in id_to_name.items():
-                command = command.replace(f"@{uid}", f"@{name}")
-
-            logger.info(f"[{bot_key}] chat={chat_id} type={msg_type} mentioned={is_mentioned} others={mentioned_others} cmd={command[:80] if command else '(empty)'}")
             msg_queue.put({
                 "bot_key": bot_key,
-                "chat_id": chat_id,
-                "message_id": message_id,
-                "user_id": user_id,
-                "command": command,
-                "is_mentioned": is_mentioned,
-                "mentioned_others": mentioned_others,
-                "msg_type": msg_type,
-                "content": content_str,
+                "chat_id": nm.chat_id,
+                "message_id": nm.message_id,
+                "user_id": nm.sender_id,
+                "command": nm.text,
+                "is_mentioned": nm.is_mentioned,
+                "mentioned_others": nm.mentioned_names,
+                "msg_type": nm.msg_type,
+                "content": nm.raw.get("content_str", "{}"),
             })
         except Exception as e:
             logger.error(f"[{bot_key}] 解析失败: {e}")
@@ -147,7 +78,7 @@ def _run_bot_process(bot_key: str, msg_queue: multiprocessing.Queue) -> None:
             cli = lark.ws.Client(
                 app_id, app_secret,
                 event_handler=handler,
-                log_level=lark.LogLevel.INFO,
+                log_level=lark.LogLevel.ERROR,
             )
             cli.start()
         except Exception as e:

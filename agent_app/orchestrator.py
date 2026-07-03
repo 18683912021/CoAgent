@@ -1,5 +1,7 @@
 """Orchestrator —— 多 Bot 任务调度器（路由/社交上下文/共享状态/消息发送）"""
 import asyncio
+import queue
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -16,7 +18,7 @@ from task_runner import (
 )
 from monitor import metrics, log_event
 
-from tools.feishu_utils import BOTS, send_message, add_reaction, delete_reaction
+from tools.feishu_utils import BOTS, send_message, edit_message, add_reaction, delete_reaction
 
 SHARED_DIR = Path(__file__).parent / "workspace" / "shared"
 SHARED_DIR.mkdir(parents=True, exist_ok=True)
@@ -45,6 +47,8 @@ class TaskState:
     be_task: str = ""
     fe_result: str = ""
     be_result: str = ""
+    checklist: str = ""       # PM 输出的验收 checklist（Markdown - [ ] 格式）
+    review_result: str = ""   # PM Light Review 结果
     fe_retries: int = 0
     be_retries: int = 0
     max_retries: int = 4
@@ -62,6 +66,48 @@ class TaskState:
         }
 
 
+@dataclass
+class TaskSession:
+    """OpenClaw 风格：跨消息的任务会话。让 Agent 知道"这条消息是刚才那个任务的延续"。
+
+    飞书群聊没有原生 thread/session 概念，用 chat_id + 时间窗口模拟。
+    """
+    session_id: str          # "session-{chat_id}-{timestamp}"
+    chat_id: str
+    task_id: str             # 最近一次 task_id
+    bot_key: str             # 发起者
+    project_name: str = ""   # 自动从 Agent 回复中提取
+    files_created: list[str] = None  # 最近创建的文件
+    command: str = ""        # 原始指令
+    created_at: str = ""
+    last_active: str = ""
+
+    def is_expired(self) -> bool:
+        """30 分钟无活动自动过期。"""
+        if not self.last_active:
+            return False
+        try:
+            last = datetime.fromisoformat(self.last_active)
+            return (datetime.now() - last).total_seconds() > 1800
+        except Exception:
+            return True
+
+    def touch(self) -> None:
+        self.last_active = datetime.now().isoformat()
+
+    def context_preamble(self) -> str:
+        """生成注入给 Agent 的上下文前缀。"""
+        parts = [f"[任务延续] 你的上一个任务是「{self.command[:60]}」"]
+        if self.project_name:
+            parts.append(f"项目: {self.project_name}")
+        if self.files_created:
+            file_list = "\n".join(f"  - {f}" for f in self.files_created[:8])
+            parts.append(f"上次创建的文件:\n{file_list}")
+            if len(self.files_created) > 8:
+                parts.append(f"  ... 等共 {len(self.files_created)} 个文件")
+        return "\n".join(parts) + "\n\n如果用户的新指令与这个项目相关，在上面文件的基础上直接修改，不需要重新创建项目。"
+
+
 class Orchestrator:
     """多 Bot 任务调度器。
 
@@ -77,6 +123,13 @@ class Orchestrator:
         self.be = BEAgent()
         self.runner = TaskRunner()
         self._tasks: dict[str, TaskState] = {}
+        self._sessions: dict[str, TaskSession] = {}  # chat_id → session
+        self._bot_status: dict[str, dict] = {
+            "pm": {"status": "空闲", "summary": "-", "time": "-"},
+            "fe": {"status": "空闲", "summary": "-", "time": "-"},
+            "be": {"status": "空闲", "summary": "-", "time": "-"},
+        }
+        self._agent_locks = {k: asyncio.Lock() for k in ("pm", "fe", "be")}
 
     def _get_bot_config(self, key: str) -> dict:
         """获取 Bot 配置"""
@@ -130,28 +183,26 @@ class Orchestrator:
         )
 
     def _update_status(self, bot_key: str, status: str, output_summary: str = "") -> None:
-        """更新共享任务状态表。"""
+        """更新共享任务状态表。保留其他 Bot 的状态，不覆盖。"""
         from datetime import datetime as dt
-        status_path = SHARED_DIR / "STATUS.md"
-        label = {"pm": "PM", "fe": "FE", "be": "BE"}.get(bot_key, bot_key)
+        now = dt.now().strftime("%H:%M")
         summary = output_summary[:80] if output_summary else "-"
+        self._bot_status[bot_key] = {"status": status, "summary": summary, "time": now}
 
-        status_path.write_text(
-            f"# 任务状态\n\n"
-            f"> 每个 Agent 完成后自动更新。所有人读此文件了解进度。\n\n"
-            f"| Agent | 状态 | 最近产出 | 更新时间 |\n"
-            f"|-------|------|---------|----------|\n"
-            f"| PM | {'工作中' if bot_key == 'pm' else '空闲'} | "
-            f"{summary if bot_key == 'pm' else '-'} | "
-            f"{dt.now().strftime('%H:%M') if bot_key == 'pm' else '-'} |\n"
-            f"| FE | {'工作中' if bot_key == 'fe' else '空闲'} | "
-            f"{summary if bot_key == 'fe' else '-'} | "
-            f"{dt.now().strftime('%H:%M') if bot_key == 'fe' else '-'} |\n"
-            f"| BE | {'工作中' if bot_key == 'be' else '空闲'} | "
-            f"{summary if bot_key == 'be' else '-'} | "
-            f"{dt.now().strftime('%H:%M') if bot_key == 'be' else '-'} |\n",
-            encoding="utf-8",
-        )
+        status_path = SHARED_DIR / "STATUS.md"
+        lines = [
+            "# 任务状态",
+            "",
+            "> 每个 Agent 完成后自动更新。所有人读此文件了解进度。",
+            "",
+            "| Agent | 状态 | 最近产出 | 更新时间 |",
+            "|-------|------|---------|----------|",
+        ]
+        for key, label in [("pm", "PM"), ("fe", "FE"), ("be", "BE")]:
+            s = self._bot_status[key]
+            lines.append(f"| {label} | {s['status']} | {s['summary']} | {s['time']} |")
+
+        status_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     # ── PM 入口 ─────────────────────────────────────────
 
@@ -237,6 +288,64 @@ class Orchestrator:
                     mentioned_others=[], message_id=message_id, allow_handoff=False)
             )
 
+    # ── 任务会话管理（OpenClaw 风格 thread binding）─────
+
+    def _get_or_create_session(self, chat_id: str, bot_key: str, command: str,
+                                intent: str) -> TaskSession | None:
+        """获取活跃会话或创建新会话。会话让 Agent 知道消息间的延续关系。"""
+        # 清理过期会话
+        expired = [cid for cid, s in self._sessions.items() if s.is_expired()]
+        for cid in expired:
+            del self._sessions[cid]
+
+        existing = self._sessions.get(chat_id)
+
+        # 延续信号 → 复用现有会话
+        is_continuation = any(kw in command.lower() for kw in self._CONTINUE_KEYWORDS)
+        if existing and not existing.is_expired() and is_continuation:
+            existing.touch()
+            return existing
+
+        # 新的工作/plan 任务 → 创建新会话
+        if intent in ("work", "plan") and len(command) > 5:
+            session = TaskSession(
+                session_id=f"session-{chat_id}-{datetime.now().strftime('%H%M%S')}",
+                chat_id=chat_id,
+                task_id="",
+                bot_key=bot_key,
+                command=command,
+                created_at=datetime.now().isoformat(),
+                last_active=datetime.now().isoformat(),
+            )
+            self._sessions[chat_id] = session
+            return session
+
+        return None
+
+    def _update_session_after_task(self, chat_id: str, task_id: str,
+                                     reply_text: str, new_files: list[str] | None = None) -> None:
+        """任务完成后更新会话上下文：记录产出文件、提取项目名。"""
+        session = self._sessions.get(chat_id)
+        if not session:
+            return
+        session.task_id = task_id
+        session.touch()
+        if new_files:
+            session.files_created = list(set((session.files_created or []) + new_files))[:20]
+        # 尝试从回复中提取项目名
+        for line in reply_text.split("\n")[:10]:
+            line = line.strip()
+            if line.startswith("#") and len(line) > 2 and not session.project_name:
+                session.project_name = line.lstrip("#").strip()[:50]
+                break
+
+    def _inject_session_context(self, command: str, session: TaskSession | None) -> str:
+        """如果存在活跃会话，将项目上下文注入到指令中。"""
+        if not session:
+            return command
+        ctx = session.context_preamble()
+        return f"{ctx}\n\n---\n用户指令: {command}"
+
     # ── 意图预分类 ─────────────────────────────────────
 
     _WORK_KEYWORDS = [
@@ -260,16 +369,94 @@ class Orchestrator:
         "remove", "enhance", "upgrade", "refactor",
     ]
 
-    def _classify_intent(self, command: str) -> str:
-        """轻量级意图分类：chat 还是 work。省 token，避免闲聊跑完整 pipeline。"""
-        cmd = command.lower()
-        # 太短的消息默认为闲聊
-        if len(command.strip()) < 6:
+    _CONTINUE_KEYWORDS = [
+        "继续", "接着", "然后", "下一步", "再试试", "再来",
+        "继续吧", "接着说", "然后呢", "接下来", "下一步呢",
+        "go on", "continue", "next", "proceed",
+    ]
+
+    _PLAN_KEYWORDS = [
+        "方案", "怎么设计", "怎么实现", "你觉得", "建议",
+        "分析一下", "评估", "怎么看", "有什么思路", "怎么规划",
+        "plan", "design", "analyze", "evaluate",
+    ]
+
+    _READ_KEYWORDS = [
+        "看看", "看一下", "读一下", "读读", "查阅", "了解",
+        "查一下", "搜一下", "找一下", "有没有",
+    ]
+
+    @staticmethod
+    def _has_document_link(command: str) -> bool:
+        """检测消息中是否包含飞书文档/Wiki/多维表格链接。"""
+        return any(pat in command for pat in [
+            "feishu.cn/wiki/", "feishu.cn/docx/", "feishu.cn/base/",
+            "feishu.cn/sheets/", "feishu.cn/mindnotes/",
+        ])
+
+    # 强工作信号——文档链接时只有这些词能覆盖 read 意图
+    _STRONG_WORK_KEYWORDS = [
+        "写个", "做个", "开发个", "实现个", "创建", "生成",
+        "搭建", "新建", "初始化", "构建", "配置", "安装", "集成",
+        "脚手架", "模板", "部署", "发布",
+        "build", "create", "develop", "implement",
+        "setup", "scaffold", "init", "deploy",
+    ]
+
+    def _classify_intent(self, command: str, bot_key: str = "") -> str:
+        """意图分类：chat / read / plan / work。
+
+        灵活规则：
+        - 发文档链接 + "写个API" → work（文档是输入，工作是目标）
+        - 发文档链接 + "帮我看一下" → read（只是了解，不是干活）
+        - "看一下"/"了解一下" 明确是了解意图 → read
+        """
+        cmd = command.lower().strip()
+        has_doc = self._has_document_link(command)
+        has_work = any(kw in cmd for kw in self._WORK_KEYWORDS)
+
+        # 延续关键词 → work
+        if any(kw in cmd for kw in self._CONTINUE_KEYWORDS):
+            return "work"
+
+        # 方案/咨询关键词 → plan
+        if any(kw in cmd for kw in self._PLAN_KEYWORDS):
+            return "plan"
+
+        # ── 文档链接 → read，除非有强工作信号 ──
+        if has_doc:
+            if any(kw in cmd for kw in self._STRONG_WORK_KEYWORDS):
+                return "work"   # "参考这个文档写个API"
+            return "read"       # 只是分享文档给你看
+
+        # ── 了解意图 → read（没有工作要求时）──
+        if any(kw in cmd for kw in self._READ_KEYWORDS) and not has_work:
+            return "read"
+
+        # 太短 → 闲聊
+        if len(cmd) < 6:
             return "chat"
-        # 检查工作关键词
-        for kw in self._WORK_KEYWORDS:
-            if kw in cmd:
-                return "work"
+
+        # 工作关键词 → work
+        if has_work:
+            return "work"
+
+        # 包含链接但没有工作关键词 → read（兜底）
+        if "http" in cmd or "feishu.cn" in cmd:
+            return "read"
+
+        # 上下文感知：检查该 Agent 最近是否在做任务
+        if bot_key:
+            agent = {"pm": self.pm, "fe": self.fe, "be": self.be}.get(bot_key)
+            if agent and agent._memory:
+                recent = agent._memory[-5:]
+                for m in recent:
+                    content = m.get("content", "")
+                    if isinstance(content, list):
+                        return "work"
+                    if isinstance(content, str) and len(content) > 200:
+                        return "work"
+
         return "chat"
 
     # ── 进度通知 ───────────────────────────────────────
@@ -292,22 +479,29 @@ class Orchestrator:
         app_id = bot.get("app_id", "")
         app_secret = bot.get("app_secret", "")
 
-        # ── 兜底：没有 message_id 时，发文字"正在输入..." ──
+        # ── 没有 message_id：直接文字兜底 ──
         if not message_id or not app_id:
             if chat_id:
+                print(f"[typing] {bot_key}: message_id 为空，发文字兜底")
                 await self._notify(chat_id, bot_key, "正在输入...")
             return None, ""
 
         # ── 正常路径：Reaction ✍️ ──
+        print(f"[typing] {bot_key}: 添加 ✍️ Reaction → msg={message_id[:20]}...")
         result = await add_reaction(app_id, app_secret, message_id, "WRITING_HAND")
         if not result["success"]:
+            # Reaction 失败（权限不足/API 变更等）→ 回退到文字兜底
+            print(f"[typing] {bot_key}: ✍️ Reaction 失败 → {result['msg']}（回退文字兜底）")
+            if chat_id:
+                await self._notify(chat_id, bot_key, "正在输入...")
             return None, ""
+        print(f"[typing] {bot_key}: ✍️ Reaction 成功 ✓")
 
-        reaction_id = result["reaction_id"]
+        # 用可变容器共享 reaction_id，避免竞态：refresh loop 更新后 _hide_typing 拿旧值删错
+        state = {"reaction_id": result["reaction_id"]}
         stop_event = asyncio.Event()
 
         async def refresh_loop():
-            nonlocal reaction_id
             while not stop_event.is_set():
                 try:
                     await asyncio.wait_for(stop_event.wait(), timeout=6)
@@ -315,17 +509,17 @@ class Orchestrator:
                     pass
                 if stop_event.is_set():
                     break
-                if reaction_id:
-                    await delete_reaction(app_id, app_secret, message_id, reaction_id)
+                if state["reaction_id"]:
+                    await delete_reaction(app_id, app_secret, message_id, state["reaction_id"])
                 r = await add_reaction(app_id, app_secret, message_id, "WRITING_HAND")
                 if r["success"]:
-                    reaction_id = r["reaction_id"]
+                    state["reaction_id"] = r["reaction_id"]
 
         typing_task = asyncio.create_task(refresh_loop())
-        return typing_task, reaction_id
+        return typing_task, state
 
     async def _hide_typing(self, bot_key: str, message_id: str,
-                           typing_task: asyncio.Task | None, reaction_id: str) -> None:
+                           typing_task: asyncio.Task | None, state: dict | None) -> None:
         """停止 typing indicator：取消刷新循环并删除最后的 reaction。"""
         if typing_task and not typing_task.done():
             typing_task.cancel()
@@ -334,10 +528,131 @@ class Orchestrator:
             except asyncio.CancelledError:
                 pass
 
+        reaction_id = state.get("reaction_id", "") if state else ""
         if reaction_id and message_id:
             bot = self._get_bot_config(bot_key)
+            print(f"[typing] {bot_key}: 摘除 ✍️ Reaction")
             await delete_reaction(bot.get("app_id", ""), bot.get("app_secret", ""),
                                   message_id, reaction_id)
+
+    # ── 流式执行（✍️ + 进度消息）────────────────────────
+
+    async def _send_progress(self, chat_id: str, bot_key: str, text: str,
+                             existing_msg_id: str = "") -> str:
+        """发送/编辑进度消息。首次发新消息，后续原地编辑同一条（不刷屏）。
+        编辑失败时回退到发新消息。"""
+        bot = self._get_bot_config(bot_key)
+        app_id = bot.get("app_id", "")
+        app_secret = bot.get("app_secret", "")
+
+        if not app_id:
+            return ""
+
+        if not existing_msg_id:
+            # 首次：发送新消息，记下 message_id
+            result = await send_message(app_id, app_secret, chat_id, text)
+            return result.get("message_id", "")
+
+        # 已有消息 → 原地编辑
+        edit_result = await edit_message(app_id, app_secret, existing_msg_id, text)
+        if edit_result["success"]:
+            return existing_msg_id
+
+        # 编辑失败（超时/权限）→ 回退发新消息
+        fallback = await send_message(app_id, app_secret, chat_id, text)
+        return fallback.get("message_id", "")
+
+    @staticmethod
+    def _progress_label(event: dict) -> str:
+        """将进度事件翻译为用户可读的标签。空字符串表示不值得展示。"""
+        etype = event.get("type", "")
+        tool = event.get("tool", "")
+        detail = event.get("detail", "")
+
+        if etype == "thinking":
+            return ""  # 不向用户展示"第N轮思考"
+
+        _TOOL_LABELS: dict[str, str] = {
+            "search_web":        "搜索网页",
+            "read_feishu_doc":   "读飞书文档",
+            "read_feishu_wiki":  "读知识库",
+            "search_feishu_wiki":"搜索知识库",
+            "read_feishu_bitable":"读多维表格",
+            "write_file":        "写代码",
+            "read_file":         "读代码",
+            "list_dir":          "列目录",
+            "send_feishu_message":"发消息",
+        }
+
+        label = _TOOL_LABELS.get(tool, tool)
+
+        if etype == "tool_start":
+            if detail:
+                return f"{label}: {detail[:40]}"
+            return label
+        elif etype == "tool_end":
+            if tool == "write_file":
+                return f"{label} ✓"
+            return ""  # 读操作不报完成
+
+        return ""
+
+    async def _run_agent_streaming(
+        self, bot_key: str, chat_id: str, message_id: str,
+        agent, command: str, max_tokens: int, timeout: int, max_rounds: int,
+        intent: str = "work",
+    ) -> dict:
+        """执行 Agent，同时维护 ✍️ Reaction + 发送进度消息。"""
+        # ── ✍️ 打字指示器 ──
+        typing_task, typing_state = await self._show_typing(bot_key, message_id, chat_id)
+
+        # ── 启动 Agent（带进度队列）──
+        result_future, progress_q = await self.runner.run_with_progress(
+            agent, command, max_tokens=max_tokens, timeout=timeout, max_rounds=max_rounds,
+            intent=intent,
+        )
+
+        last_label = ""
+        progress_msg_id = ""        # 进度消息 ID（用于原地编辑，不刷屏）
+        silent_rounds = 0           # Patrol: 连续无进度的轮次
+        silence_notified = False
+        try:
+            while True:
+                # 等待 Agent 完成或 6s 间隔（匹配 ✍️ 刷新周期）
+                done, _ = await asyncio.wait([result_future], timeout=6.0)
+
+                # ── 排空进度队列（非阻塞、线程安全）──
+                had_progress = False
+                while True:
+                    try:
+                        event = progress_q.get_nowait()
+                    except queue.Empty:
+                        break
+                    if event is None:
+                        break
+                    label = self._progress_label(event)
+                    if label and label != last_label:
+                        progress_msg_id = await self._send_progress(
+                            chat_id, bot_key, f"🔄 {label}", progress_msg_id)
+                        last_label = label
+                        had_progress = True
+
+                # ── Patrol 沉默检测：48s 无进度 → 提醒用户 ──
+                if had_progress:
+                    silent_rounds = 0
+                else:
+                    silent_rounds += 1
+                if silent_rounds >= 8 and not silence_notified:
+                    silence_msg = "⏳ 仍在工作中（暂无新的进度更新）。复杂任务可能需要更长时间…"
+                    await self._send_progress(chat_id, bot_key, silence_msg, progress_msg_id)
+                    silence_notified = True
+
+                if result_future.done():
+                    break
+
+            return await result_future
+        finally:
+            await self._hide_typing(bot_key, message_id, typing_task, typing_state)
 
     async def _route_pm(self, chat_id: str, user_id: str, command: str,
                         mentioned_others: list[str] | None = None,
@@ -350,16 +665,23 @@ class Orchestrator:
             await self._notify(chat_id, "pm", "嗯？")
             return
 
-        # ── 打字指示器：在用户消息上加 ✍️ Reaction，每 6s 刷新 ──
-        typing_task, reaction_id = await self._show_typing("pm", message_id, chat_id)
-
         # 注入群呼上下文
         full_command = self._build_social_context(command, mentioned_others)
 
         # ── 意图预分类：闲聊用短 token，工作用完整 pipeline ──
-        intent = self._classify_intent(command)
-        max_tokens = 512 if intent == "chat" else 4096
-        timeout = CHAT_TIMEOUT if intent == "chat" else PM_TIMEOUT
+        intent = self._classify_intent(command, "pm")
+        if intent == "chat":
+            max_tokens, max_rounds, timeout = 1024, 3, CHAT_TIMEOUT
+        elif intent == "read":
+            max_tokens, max_rounds, timeout = 4096, 30, 180     # 读文档+摘要
+        elif intent == "plan":
+            max_tokens, max_rounds, timeout = 4096, 30, PM_TIMEOUT
+        else:
+            max_tokens, max_rounds, timeout = 8192, 30, PM_TIMEOUT
+
+        # ── 会话管理：让 Agent 知道任务间的延续关系 ──
+        session = self._get_or_create_session(chat_id, "pm", command, intent)
+        full_command = self._inject_session_context(full_command, session)
 
         # ── 状态机检查 ──
         task = TaskState(
@@ -374,13 +696,13 @@ class Orchestrator:
         metrics.task_started()
         start_ts = datetime.now()
 
-        # ── LLM 调用（带超时保护）──
-        pm_result = await self.runner.run_with_timeout(
-            self.pm, full_command, max_tokens=max_tokens, timeout=timeout,
-        )
-
-        # ── 停止打字指示器 ──
-        await self._hide_typing("pm", message_id, typing_task, reaction_id)
+        # ── LLM 调用（✍️ Reaction + 进度消息内置于 _run_agent_streaming）──
+        async with self._agent_locks["pm"]:
+            pm_result = await self._run_agent_streaming(
+                "pm", chat_id, message_id, self.pm, full_command,
+                max_tokens=max_tokens, timeout=timeout, max_rounds=max_rounds,
+                intent=intent,
+            )
 
         if not pm_result["success"]:
             task.state = State.FAILED
@@ -397,6 +719,7 @@ class Orchestrator:
 
         # PM 的回复先发到群里（聊天回复 or PRD）
         await self._notify(chat_id, "pm", task.prd)
+        self._sync_to_teammates("pm", command, task.prd)
 
         # 如果 PM 回复是聊天（短回复，不含 PRD 结构），不触发 FE/BE
         if len(task.prd) < 200 and "##" not in task.prd:
@@ -422,9 +745,10 @@ class Orchestrator:
             self.runner._log_failure(task.task_id, "pm", task.error)
             return
 
-        # ── 写入共享上下文 + 拆分任务 ──
+        # ── 写入共享上下文 + 拆分任务 + 提取 Checklist ──
         self._write_api_contract(task.prd)
         task.fe_task, task.be_task = self._filter_and_split(task.prd)
+        task.checklist = self._extract_checklist(task.prd)
 
         # ── 状态转换：PLANNING → DISPATCHING → FE/BE_RUNNING ──
         task.state = State.DISPATCHING
@@ -446,6 +770,48 @@ class Orchestrator:
         task.fe_result, fe_valid = self.runner.validate_output("fe", fe_result, fe_snapshot)
         task.be_result, be_valid = self.runner.validate_output("be", be_result, be_snapshot)
 
+        # ── PM Light Review（OpenMOSS 风格审查闭环）──
+        review: dict[str, Any] = {}
+        if fe_valid and be_valid:
+            review = await self._pm_review(task, task.fe_result, task.be_result)
+            task.review_result = review["review_text"]
+
+            # FE 返工
+            if not review["fe_pass"]:
+                fb = review.get("fe_feedback", "未通过 PM 审查")
+                fe_rework = f"{task.fe_task}\n\n[PM Review] {fb}\n请根据反馈修改代码，只修改被指出的问题。"
+                fe_redo = await self.runner.run_with_retry(
+                    self.fe, fe_rework, "fe", task.task_id, max_retries=1)
+                task.fe_result, fe_valid = self.runner.validate_output("fe", fe_redo, fe_snapshot)
+                if fe_valid:
+                    review["checked_items"] += "\n🔄 FE 返工后通过"
+
+            # BE 返工
+            if not review["be_pass"]:
+                fb = review.get("be_feedback", "未通过 PM 审查")
+                be_rework = f"{task.be_task}\n\n[PM Review] {fb}\n请根据反馈修改代码，只修改被指出的问题。"
+                be_redo = await self.runner.run_with_retry(
+                    self.be, be_rework, "be", task.task_id, max_retries=1)
+                task.be_result, be_valid = self.runner.validate_output("be", be_redo, be_snapshot)
+                if be_valid:
+                    review["checked_items"] += "\n🔄 BE 返工后通过"
+
+        # ── 产出文件列表附加到回复 ──
+        for bot_key, result_text, snapshot in [
+            ("fe", task.fe_result, fe_snapshot),
+            ("be", task.be_result, be_snapshot),
+        ]:
+            if snapshot:
+                _, new_files = self.runner.verify_output(bot_key, snapshot)
+                if new_files:
+                    file_list = "\n".join(f"  📄 {f}" for f in new_files[:6])
+                    ws_name = {"fe": "workspace/fe", "be": "workspace/be"}[bot_key]
+                    suffix = f"\n\n📁 `{ws_name}/` 新增 {len(new_files)} 个文件：\n{file_list}"
+                    if bot_key == "fe":
+                        task.fe_result += suffix
+                    else:
+                        task.be_result += suffix
+
         # 进度通知
         status_parts = []
         if fe_valid: status_parts.append("前端✅")
@@ -462,7 +828,13 @@ class Orchestrator:
 
         # FE 和 BE 各自用自己 Bot 身份在群里发言
         if fe_valid:
-            await self._notify(chat_id, "fe", task.fe_result)
+            # 附上 checklist 勾选状态
+            review_note = ""
+            if review.get("checked_items"):
+                review_note = f"\n\n📋 验收进度：\n{review['checked_items']}"
+            elif task.checklist:
+                review_note = f"\n\n📋 验收 Checklist：\n{task.checklist}"
+            await self._notify(chat_id, "fe", task.fe_result + review_note)
         else:
             await self._notify(chat_id, "fe",
                 "PRD 信息不够，写不了代码。让小吴补充一下具体功能。"
@@ -486,6 +858,19 @@ class Orchestrator:
         self._tasks[task.task_id] = task
         metrics.task_succeeded()
         metrics.record_response_time((datetime.now() - start_ts).total_seconds())
+
+        # ── 更新会话：记录产出，让后续消息知道项目上下文 ──
+        all_new_files = []
+        for bot_key, result_text, snapshot in [
+            ("fe", task.fe_result, fe_snapshot),
+            ("be", task.be_result, be_snapshot),
+        ]:
+            if snapshot:
+                _, new_files = self.runner.verify_output(bot_key, snapshot)
+                all_new_files.extend(new_files)
+        self._update_session_after_task(chat_id, task.task_id,
+            task.prd, all_new_files)
+
         log_event("INFO", "pm_task_complete",
             task_id=task.task_id, intent=intent,
             fe_valid=fe_valid, be_valid=be_valid)
@@ -503,42 +888,54 @@ class Orchestrator:
             await self._notify(chat_id, bot_key, "嗯？")
             return
 
-        # ── 打字指示器 ──
-        typing_task, reaction_id = await self._show_typing(bot_key, message_id, chat_id)
-
         agent = self.fe if bot_key == "fe" else self.be
 
         # 注入群呼上下文
         full_command = self._build_social_context(command, mentioned_others)
 
         # ── 意图预分类 ──
-        intent = self._classify_intent(command)
-        max_tokens = 512 if intent == "chat" else 4096
-        timeout = CHAT_TIMEOUT if intent == "chat" else WORK_TIMEOUT
+        intent = self._classify_intent(command, bot_key)
+        if intent == "chat":
+            max_tokens, max_rounds, timeout = 1024, 3, CHAT_TIMEOUT
+        elif intent == "read":
+            max_tokens, max_rounds, timeout = 4096, 30, 180     # 读文档+摘要
+        elif intent == "plan":
+            max_tokens, max_rounds, timeout = 4096, 30, WORK_TIMEOUT
+        else:
+            max_tokens, max_rounds, timeout = 8192, 30, WORK_TIMEOUT
+
+        # ── 会话管理：如果有活跃会话，注入项目上下文 ──
+        session = self._get_or_create_session(chat_id, bot_key, command, intent)
+        full_command = self._inject_session_context(full_command, session)
 
         # ── 快照 workspace（工作模式）──
         snapshot_before = self.runner.snapshot_workspace(bot_key) if intent == "work" else set()
 
-        # ── 进度通知（工作模式）──
-        if intent == "work":
-            label = {"fe": "小柯", "be": "酱瓜"}.get(bot_key, bot_key)
-            await self._notify_progress(chat_id, bot_key, f"{label} 正在生成代码...")
-
-        # ── LLM 调用（带超时保护）──
+        # ── LLM 调用（✍️ Reaction + 进度消息内置于 _run_agent_streaming）──
         metrics.task_started()
         metrics.agent_request(bot_key)
         start_ts = datetime.now()
 
-        result = await self.runner.run_with_timeout(
-            agent, full_command, max_tokens=max_tokens, timeout=timeout,
-        )
+        async with self._agent_locks[bot_key]:
+            result = await self._run_agent_streaming(
+                bot_key, chat_id, message_id, agent, full_command,
+                max_tokens=max_tokens, timeout=timeout, max_rounds=max_rounds,
+                intent=intent,
+            )
         metrics.record_response_time((datetime.now() - start_ts).total_seconds())
-
-        # ── 停止打字指示器 ──
-        await self._hide_typing(bot_key, message_id, typing_task, reaction_id)
 
         # ── 产出验证 ──
         reply, is_valid = self.runner.validate_output(bot_key, result, snapshot_before)
+
+        # ── 产出文件列表（用户不用猜代码在哪）──
+        if is_valid and snapshot_before:
+            _, new_files = self.runner.verify_output(bot_key, snapshot_before)
+            if new_files:
+                file_list = "\n".join(f"  📄 {f}" for f in new_files[:8])
+                ws_name = {"fe": "workspace/fe", "be": "workspace/be"}.get(bot_key, bot_key)
+                reply += f"\n\n📁 `{ws_name}/` 新增 {len(new_files)} 个文件：\n{file_list}"
+                if len(new_files) > 8:
+                    reply += f"\n  ... 等共 {len(new_files)} 个"
 
         # ── 更新共享状态 ──
         self._update_status(bot_key, "完成" if is_valid else "失败",
@@ -547,6 +944,12 @@ class Orchestrator:
         if is_valid:
             metrics.task_succeeded()
             await self._notify(chat_id, bot_key, reply)
+            # ── 更新会话：记录产出文件 ──
+            if snapshot_before:
+                _, created = self.runner.verify_output(bot_key, snapshot_before)
+                self._update_session_after_task(chat_id, "", reply, created)
+            # ── 同步到队友记忆 ──
+            self._sync_to_teammates(bot_key, command, reply)
             # ── 跨 Agent 委派：检测回复中的 @队友+行动词 ──
             if allow_handoff:
                 await self._dispatch_handoffs(chat_id, reply, bot_key, message_id)
@@ -566,7 +969,7 @@ class Orchestrator:
             "## ⚠️ 开工前必读\n"
             "- API 契约在 `workspace/shared/API_CONTRACT.md`，这是你和队友的接口真相源\n"
             "- 任务状态在 `workspace/shared/STATUS.md`，看一眼队友进度\n"
-            "- 做了技术决策写到 `workspace/shared/DECISIONS.md`，让队友知道\n\n"
+            "- 做了技术决策直接在回复里 @队友 说明，系统会自动同步\n\n"
             "---\n\n"
         )
         fe_parts = [
@@ -605,46 +1008,204 @@ class Orchestrator:
                 result.append(line)
         return "\n".join(result) if result else "(此部分未明确，请基于项目概述自行判断)"
 
-    # ── 消息发送 ─────────────────────────────────────────
+    # ── OpenMOSS 风格：Review + Checklist ───────────────
+
+    @staticmethod
+    def _extract_checklist(prd: str) -> str:
+        """从 PRD 中提取验收 Checklist（- [ ] 格式的行）。"""
+        lines: list[str] = []
+        in_checklist = False
+        for line in prd.split("\n"):
+            stripped = line.strip()
+            if re.search(r"验收\s*[Cc]hecklist|检查清单|功能清单", stripped):
+                in_checklist = True
+                continue
+            if in_checklist:
+                if stripped.startswith("- [") or stripped.startswith("* ["):
+                    lines.append(stripped)
+                elif stripped.startswith("#") or (stripped and not stripped.startswith("-")):
+                    break  # 遇到新章节，结束
+        return "\n".join(lines) if lines else ""
+
+    async def _pm_review(self, task: TaskState, fe_text: str, be_text: str) -> dict:
+        """PM Light Review：对照 PRD 验收标准快速审查 FE/BE 产出。
+
+        返回 {"fe_pass": bool, "be_pass": bool, "fe_feedback": str, "be_feedback": str,
+               "review_text": str, "checked_items": str}
+        """
+        import re as _re
+
+        acceptance = self._extract_section(task.prd, ["验收标准", "验收", "Acceptance"])
+        api_text = ""
+        api_path = SHARED_DIR / "API_CONTRACT.md"
+        if api_path.exists():
+            api_text = api_path.read_text(encoding="utf-8")[:800]
+
+        checklist = task.checklist or self._extract_checklist(task.prd)
+
+        review_prompt = (
+            f"[Light Review] 对照你 PRD 的验收标准，快速审查 FE 和 BE 的产出。2-3句话即可。\n\n"
+            f"验收标准：\n{acceptance}\n\n"
+            f"{'API 契约：\n' + api_text + '\n\n' if api_text else ''}"
+            f"{'验收 Checklist：\n' + checklist + '\n\n' if checklist else ''}"
+            f"FE 产出（前600字）：\n{fe_text[:600]}\n\n"
+            f"BE 产出（前600字）：\n{be_text[:600]}\n\n"
+            f"逐项判断。回复格式（严格）：\n"
+            f"FE: PASS 或 FAIL — 原因（一句话）\n"
+            f"BE: PASS 或 FAIL — 原因（一句话）\n"
+            f"{'如果 Checklist 中有已完成项，用 ✅ 标注：' + chr(10) + checklist if checklist else ''}"
+        )
+
+        result = await self.runner.run_with_timeout(
+            self.pm, review_prompt, max_tokens=1024, timeout=60, max_rounds=3, intent="plan",
+        )
+
+        review_text = result.get("result", "") if result["success"] else ""
+        fe_pass = bool(_re.search(r'FE\s*:\s*PASS', review_text, _re.IGNORECASE))
+        be_pass = bool(_re.search(r'BE\s*:\s*PASS', review_text, _re.IGNORECASE))
+
+        # 提取反馈
+        fe_fb = ""
+        be_fb = ""
+        for line in review_text.split("\n"):
+            if line.strip().upper().startswith("FE:") and not fe_pass:
+                fe_fb = line.strip()
+            if line.strip().upper().startswith("BE:") and not be_pass:
+                be_fb = line.strip()
+
+        # 提取勾选后的 checklist
+        checked = ""
+        for line in review_text.split("\n"):
+            if "✅" in line and ("- [" in line or "* [" in line):
+                checked += line.strip() + "\n"
+
+        return {
+            "fe_pass": fe_pass,
+            "be_pass": be_pass,
+            "fe_feedback": fe_fb,
+            "be_feedback": be_fb,
+            "review_text": review_text,
+            "checked_items": checked.strip(),
+        }
+
+    # ── 跨 Agent 对话同步 ──────────────────────────────
+
+    def _sync_to_teammates(self, source_key: str, user_msg: str, reply: str) -> None:
+        """将当前 Agent 与用户的对话摘要同步到队友记忆中。
+
+        不传完整对话——只传一句话摘要，让队友知道"刚才发生了什么"。
+        比共享文件更可靠：不需要 Agent 主动读文件，下次调用自动注入。
+        """
+        if len(reply) < 50:
+            return  # 太短的不值得同步（闲聊/嗯/在的）
+
+        agents = {"pm": self.pm, "fe": self.fe, "be": self.be}
+        source_name = {"pm": "小吴", "fe": "小柯", "be": "酱瓜"}.get(source_key, source_key)
+
+        # 摘要：用户说了什么 + Agent 做了什么
+        user_brief = user_msg[:60].replace("\n", " ")
+        reply_brief = reply[:80].replace("\n", " ")
+        summary = f"[队友动态] 用户对{source_name}说：「{user_brief}」→ {source_name}回复：「{reply_brief}」"
+
+        for key, agent in agents.items():
+            if key != source_key:
+                agent._add_to_memory("system", summary)
+
+    # ── 消息发送（OpenClaw 风格）─────────────────────────
 
     @staticmethod
     def _md_to_plain(text: str) -> str:
-        """将 Markdown 转为飞书可读的纯文本。"""
+        """将 Markdown 转为飞书可读的纯文本。保留结构感。"""
         import re
-        # 去粗体/斜体标记
+        # 粗体 → 保留文字
         text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
         text = re.sub(r'\*(.+?)\*', r'\1', text)
-        # 去行内代码标记
+        # 行内代码
         text = re.sub(r'`([^`]+)`', r'\1', text)
-        # 表格分隔线 → 保留为分隔线
-        text = re.sub(r'^\|[-:\|\s]+\|$', '---', text, flags=re.MULTILINE)
+        # 表格分隔线 → 短横线
+        text = re.sub(r'^\|[-:\|\s]+\|$', '', text, flags=re.MULTILINE)
         # 表格行 → 空格分隔
         text = re.sub(r'^\|(.+)\|$', lambda m: '  ' + ' | '.join(c.strip() for c in m.group(1).split('|')), text, flags=re.MULTILINE)
-        # 标题 → 加粗
-        text = re.sub(r'^### (.+)$', r'【\1】', text, flags=re.MULTILINE)
-        text = re.sub(r'^## (.+)$', r'【\1】', text, flags=re.MULTILINE)
-        text = re.sub(r'^# (.+)$', r'【\1】', text, flags=re.MULTILINE)
-        # 代码块标记 → 删除
+        # 标题 → 【】
+        text = re.sub(r'^####? (.+)$', r'【\1】', text, flags=re.MULTILINE)
+        text = re.sub(r'^## (.+)$', r'\n【\1】', text, flags=re.MULTILINE)
+        text = re.sub(r'^# (.+)$', r'\n【\1】', text, flags=re.MULTILINE)
+        # 代码块 → 保留缩进风格
         text = re.sub(r'```[a-z]*\n', '', text)
         text = text.replace('```', '')
         # 水平线
         text = re.sub(r'^---+$', '—————————————', text, flags=re.MULTILINE)
-        # 多余空行
-        text = re.sub(r'\n{3,}', '\n\n', text)
+        # 多余空行压缩
+        text = re.sub(r'\n{4,}', '\n\n\n', text)
         return text.strip()
+
+    @staticmethod
+    def _smart_split(text: str, max_len: int = 1800) -> list[str]:
+        """OpenClaw 风格智能分片：优先在标题/空行处断开，绝不拆代码块。
+
+        断点优先级: ## 标题 > 空行 > 列表项 > 句号 > 逗号 > 硬截断
+        """
+        if len(text) <= max_len:
+            return [text]
+
+        lines = text.split("\n")
+        chunks: list[str] = []
+        current: list[str] = []
+        in_code_block = False
+
+        for line in lines:
+            # 追踪代码块边界
+            if line.strip().startswith("```"):
+                in_code_block = not in_code_block
+
+            tentative = "\n".join(current + [line]) if current else line
+
+            if len(tentative) <= max_len:
+                current.append(line)
+            else:
+                # 需要断开——但不在代码块内部硬断
+                if in_code_block:
+                    # 代码块内：尽量留着，实在放不下才断
+                    if current:
+                        chunks.append("\n".join(current))
+                    current = [line]
+                elif current:
+                    chunks.append("\n".join(current))
+                    current = [line]
+                else:
+                    # 单行就超长（极端情况），硬断
+                    chunks.append(line[:max_len])
+                    current = [line[max_len:]] if len(line) > max_len else []
+
+        if current:
+            chunks.append("\n".join(current))
+
+        # ── 合并过短的 chunk（coalesce）──
+        merged: list[str] = []
+        for chunk in chunks:
+            if merged and len(chunk) < 200 and len(merged[-1]) + len(chunk) < max_len:
+                merged[-1] = merged[-1] + "\n" + chunk
+            else:
+                merged.append(chunk)
+
+        return merged
 
     async def _send_long_message(self, chat_id: str, bot_key: str, text: str,
                                   at_users: list[str] | None = None) -> None:
-        """发送消息，长内容自动分片（每片 ≤ 2000 字），Markdown 转纯文本。"""
+        """OpenClaw 风格发送：Markdown→纯文本 → 智能分片 → 人味延迟。"""
+        import random as _random
+
         # Markdown → 纯文本
         text = self._md_to_plain(text)
+        if not text.strip():
+            return
 
         bot = self._get_bot_config(bot_key)
         if not bot.get("app_id"):
             print(f"[orchestrator] {bot_key} Bot 未配置，模拟发送: {text[:80]}...")
             return
 
-        # ── 自动检测文本中的 @队友名 ──
+        # ── 自动检测 @队友名 ──
         _NAME_TO_BOT_KEY = {
             "小柯": "fe", "柯": "fe", "前端": "fe",
             "酱瓜": "be", "瓜": "be", "后端": "be",
@@ -658,42 +1219,30 @@ class Orchestrator:
                 if target_id and target_id not in auto_at:
                     auto_at.append(target_id)
 
-        # ── 分片发送 ──
-        max_len = 2000
-        if len(text) <= max_len:
-            result = await send_message(
-                app_id=bot["app_id"], app_secret=bot["app_secret"],
-                chat_id=chat_id, text=text,
-                at_users=auto_at if auto_at else None,
-            )
-            if not result["success"]:
-                print(f"[orchestrator] {bot_key} Bot 发送失败: {result['msg']}")
-            return
-
-        # 按段落分片
-        paragraphs = text.split("\n")
-        chunks: list[str] = []
-        current = ""
-        for p in paragraphs:
-            if len(current) + len(p) + 1 <= max_len:
-                current = (current + "\n" + p).strip()
-            else:
-                if current:
-                    chunks.append(current)
-                current = p if len(p) <= max_len else p[:max_len]
-        if current:
-            chunks.append(current)
-
+        # ── 智能分片 ──
+        chunks = self._smart_split(text, max_len=1800)
         total = len(chunks)
-        for i, chunk in enumerate(chunks, 1):
-            prefix = f"({i}/{total})\n" if total > 1 else ""
+
+        for i, chunk in enumerate(chunks):
+            # 多片时加标记（首片加概要提示，末片不加）
+            if total > 1:
+                if i == 0:
+                    chunk = chunk + f"\n\n(共 {total} 条消息，正在发送…)"
+                else:
+                    chunk = f"({i + 1}/{total})\n" + chunk.strip()
+
             result = await send_message(
                 app_id=bot["app_id"], app_secret=bot["app_secret"],
-                chat_id=chat_id, text=prefix + chunk,
-                at_users=auto_at if i == 1 and auto_at else None,
+                chat_id=chat_id, text=chunk,
+                at_users=auto_at if i == 0 and auto_at else None,
             )
             if not result["success"]:
-                print(f"[orchestrator] {bot_key} Bot 分片{i}发送失败: {result['msg']}")
+                print(f"[orchestrator] {bot_key} Bot 分片{i+1}发送失败: {result['msg']}")
+
+            # ── OpenClaw 风格人味延迟：片间随机停顿 1-2.5 秒 ──
+            if i < total - 1:
+                delay = _random.uniform(1.0, 2.5)
+                await asyncio.sleep(delay)
 
     async def _notify(self, chat_id: str, bot_key: str, text: str, at_users: list[str] | None = None) -> None:
         """用指定 Bot 的身份向群聊发消息。长消息自动分片，Markdown 自动转纯文本。"""

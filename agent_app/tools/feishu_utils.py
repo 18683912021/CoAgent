@@ -121,10 +121,54 @@ async def send_message(
             data = resp.json()
             code = data.get("code", -1)
             if code == 0:
-                return {"success": True, "msg": "发送成功"}
-            return {"success": False, "msg": f"飞书 API 返回错误: code={code} msg={data.get('msg', '')}"}
+                msg_id = data.get("data", {}).get("message_id", "")
+                return {"success": True, "message_id": msg_id, "msg": "发送成功"}
+            return {"success": False, "message_id": "", "msg": f"飞书 API 返回错误: code={code} msg={data.get('msg', '')}"}
     except Exception as e:
         return {"success": False, "msg": f"发送异常: {e}"}
+
+
+async def edit_message(app_id: str, app_secret: str, message_id: str, text: str) -> dict:
+    """原地编辑 Bot 已发送的消息。用于进度消息更新，避免刷屏。
+
+    Args:
+        message_id: 要编辑的消息 ID（必须是本 Bot 发送的 text 消息）
+        text: 新文本内容
+
+    Returns:
+        {"success": bool, "msg": str, "message_id": str}
+        编辑失败时 message_id 为空字符串。
+    """
+    if not app_id or not app_secret:
+        return {"success": False, "message_id": "", "msg": "Bot 凭证未配置"}
+    if not message_id:
+        return {"success": False, "message_id": "", "msg": "message_id 为空"}
+
+    token = await get_tenant_token(app_id, app_secret)
+    if not token:
+        return {"success": False, "message_id": "", "msg": "获取 token 失败"}
+
+    content_body = {"text": text}
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.put(
+                f"https://open.feishu.cn/open-apis/im/v1/messages/{message_id}",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "content": json.dumps(content_body),
+                    "msg_type": "text",
+                },
+            )
+            data = resp.json()
+            code = data.get("code", -1)
+            if code == 0:
+                return {"success": True, "message_id": message_id, "msg": "ok"}
+            return {"success": False, "message_id": "", "msg": f"code={code} {data.get('msg', '')}"}
+    except Exception as e:
+        return {"success": False, "message_id": "", "msg": f"异常: {e}"}
 
 
 async def add_reaction(app_id: str, app_secret: str, message_id: str, emoji_type: str = "WRITING_HAND") -> dict:
