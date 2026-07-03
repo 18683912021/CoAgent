@@ -12,11 +12,11 @@ load_dotenv()
 _client = Anthropic(
     base_url=os.environ["ANTHROPIC_BASE_URL"],
     api_key=os.environ["ANTHROPIC_API_KEY"],
-    timeout=90.0,       # 单次 HTTP 请求超时
-    max_retries=1,       # SDK 层重试 1 次
+    timeout=180.0,      # 单次 HTTP 请求超时：3 分钟
+    max_retries=2,       # SDK 层重试 2 次
 )
 DEFAULT_MODEL = os.environ.get("ANTHROPIC_MODEL", "deepseek-v4-pro")
-AGENT_TIMEOUT = 60       # Agent 整体执行超时（秒），chat 模式减半
+AGENT_TIMEOUT = 180      # Agent 整体执行超时（秒）
 SHARED_MEMORY_FILE = Path(__file__).parent.parent / "memory" / "shared-memory.md"
 
 

@@ -15,10 +15,10 @@ FAILED_TASKS_LOG = LOGS_DIR / "failed_tasks.jsonl"
 
 # ── 超时常量 ──────────────────────────────────────────
 
-CHAT_TIMEOUT = 15       # 闲聊：15 秒
-WORK_TIMEOUT = 60       # 单个 Agent 工作：60 秒
-PM_TIMEOUT = 45         # PM 分析：45 秒
-RETRY_TIMEOUT = 90      # 重试总超时：90 秒
+CHAT_TIMEOUT = 60       # 闲聊：60 秒（含工具调用）
+WORK_TIMEOUT = 180      # 单个 Agent 工作：3 分钟（复杂任务+工具链）
+PM_TIMEOUT = 120        # PM 分析+调研：2 分钟
+RETRY_TIMEOUT = 300     # 重试总超时：5 分钟
 
 # ── 重试策略 ──────────────────────────────────────────
 

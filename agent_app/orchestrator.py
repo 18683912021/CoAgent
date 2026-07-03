@@ -396,7 +396,7 @@ class Orchestrator:
         task.prd = pm_result["result"]
 
         # PM 的回复先发到群里（聊天回复 or PRD）
-        await self._notify(chat_id, "pm", task.prd[:800] + ("..." if len(task.prd) > 800 else ""))
+        await self._notify(chat_id, "pm", task.prd)
 
         # 如果 PM 回复是聊天（短回复，不含 PRD 结构），不触发 FE/BE
         if len(task.prd) < 200 and "##" not in task.prd:
@@ -462,18 +462,14 @@ class Orchestrator:
 
         # FE 和 BE 各自用自己 Bot 身份在群里发言
         if fe_valid:
-            await self._notify(chat_id, "fe",
-                task.fe_result[:800] + ("..." if len(task.fe_result) > 800 else "")
-            )
+            await self._notify(chat_id, "fe", task.fe_result)
         else:
             await self._notify(chat_id, "fe",
                 "PRD 信息不够，写不了代码。让小吴补充一下具体功能。"
             )
 
         if be_valid:
-            await self._notify(chat_id, "be",
-                task.be_result[:800] + ("..." if len(task.be_result) > 800 else "")
-            )
+            await self._notify(chat_id, "be", task.be_result)
         else:
             await self._notify(chat_id, "be",
                 "PM 分配的后端任务信息不足，无法开始开发。请 PM 提供具体的功能描述。"
@@ -550,9 +546,7 @@ class Orchestrator:
 
         if is_valid:
             metrics.task_succeeded()
-            await self._notify(chat_id, bot_key,
-                reply[:800] + ("..." if len(reply) > 800 else "")
-            )
+            await self._notify(chat_id, bot_key, reply)
             # ── 跨 Agent 委派：检测回复中的 @队友+行动词 ──
             if allow_handoff:
                 await self._dispatch_handoffs(chat_id, reply, bot_key, message_id)
@@ -613,17 +607,44 @@ class Orchestrator:
 
     # ── 消息发送 ─────────────────────────────────────────
 
-    async def _notify(self, chat_id: str, bot_key: str, text: str, at_users: list[str] | None = None) -> None:
-        """用指定 Bot 的身份向群聊发消息。at_users 为要 @ 的用户 ID 列表。
+    @staticmethod
+    def _md_to_plain(text: str) -> str:
+        """将 Markdown 转为飞书可读的纯文本。"""
+        import re
+        # 去粗体/斜体标记
+        text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
+        text = re.sub(r'\*(.+?)\*', r'\1', text)
+        # 去行内代码标记
+        text = re.sub(r'`([^`]+)`', r'\1', text)
+        # 表格分隔线 → 保留为分隔线
+        text = re.sub(r'^\|[-:\|\s]+\|$', '---', text, flags=re.MULTILINE)
+        # 表格行 → 空格分隔
+        text = re.sub(r'^\|(.+)\|$', lambda m: '  ' + ' | '.join(c.strip() for c in m.group(1).split('|')), text, flags=re.MULTILINE)
+        # 标题 → 加粗
+        text = re.sub(r'^### (.+)$', r'【\1】', text, flags=re.MULTILINE)
+        text = re.sub(r'^## (.+)$', r'【\1】', text, flags=re.MULTILINE)
+        text = re.sub(r'^# (.+)$', r'【\1】', text, flags=re.MULTILINE)
+        # 代码块标记 → 删除
+        text = re.sub(r'```[a-z]*\n', '', text)
+        text = text.replace('```', '')
+        # 水平线
+        text = re.sub(r'^---+$', '—————————————', text, flags=re.MULTILINE)
+        # 多余空行
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        return text.strip()
 
-        自动检测文本中的 @队友名（小柯/酱瓜/小吴）并转换为飞书 <at> 标签。
-        """
+    async def _send_long_message(self, chat_id: str, bot_key: str, text: str,
+                                  at_users: list[str] | None = None) -> None:
+        """发送消息，长内容自动分片（每片 ≤ 2000 字），Markdown 转纯文本。"""
+        # Markdown → 纯文本
+        text = self._md_to_plain(text)
+
         bot = self._get_bot_config(bot_key)
         if not bot.get("app_id"):
             print(f"[orchestrator] {bot_key} Bot 未配置，模拟发送: {text[:80]}...")
             return
 
-        # ── 自动检测文本中的 @队友名，转为真正的 @mention ──
+        # ── 自动检测文本中的 @队友名 ──
         _NAME_TO_BOT_KEY = {
             "小柯": "fe", "柯": "fe", "前端": "fe",
             "酱瓜": "be", "瓜": "be", "后端": "be",
@@ -631,21 +652,52 @@ class Orchestrator:
         }
         auto_at = list(at_users) if at_users else []
         for name, key in _NAME_TO_BOT_KEY.items():
-            if f"@{name}" in text and key != bot_key:  # 不 @自己
+            if f"@{name}" in text and key != bot_key:
                 target_bot = BOTS.get(key, {})
                 target_id = target_bot.get("app_id", "")
                 if target_id and target_id not in auto_at:
                     auto_at.append(target_id)
 
-        result = await send_message(
-            app_id=bot["app_id"],
-            app_secret=bot["app_secret"],
-            chat_id=chat_id,
-            text=text,
-            at_users=auto_at if auto_at else None,
-        )
-        if not result["success"]:
-            print(f"[orchestrator] {bot_key} Bot 发送失败: {result['msg']}")
+        # ── 分片发送 ──
+        max_len = 2000
+        if len(text) <= max_len:
+            result = await send_message(
+                app_id=bot["app_id"], app_secret=bot["app_secret"],
+                chat_id=chat_id, text=text,
+                at_users=auto_at if auto_at else None,
+            )
+            if not result["success"]:
+                print(f"[orchestrator] {bot_key} Bot 发送失败: {result['msg']}")
+            return
+
+        # 按段落分片
+        paragraphs = text.split("\n")
+        chunks: list[str] = []
+        current = ""
+        for p in paragraphs:
+            if len(current) + len(p) + 1 <= max_len:
+                current = (current + "\n" + p).strip()
+            else:
+                if current:
+                    chunks.append(current)
+                current = p if len(p) <= max_len else p[:max_len]
+        if current:
+            chunks.append(current)
+
+        total = len(chunks)
+        for i, chunk in enumerate(chunks, 1):
+            prefix = f"({i}/{total})\n" if total > 1 else ""
+            result = await send_message(
+                app_id=bot["app_id"], app_secret=bot["app_secret"],
+                chat_id=chat_id, text=prefix + chunk,
+                at_users=auto_at if i == 1 and auto_at else None,
+            )
+            if not result["success"]:
+                print(f"[orchestrator] {bot_key} Bot 分片{i}发送失败: {result['msg']}")
+
+    async def _notify(self, chat_id: str, bot_key: str, text: str, at_users: list[str] | None = None) -> None:
+        """用指定 Bot 的身份向群聊发消息。长消息自动分片，Markdown 自动转纯文本。"""
+        await self._send_long_message(chat_id, bot_key, text, at_users)
 
     def get_task_state(self, task_id: str) -> dict | None:
         task = self._tasks.get(task_id)
