@@ -1,0 +1,42 @@
+{
+  "common": {
+    "ok": "OK",
+    "cancel": "Cancel",
+    "confirm": "Confirm",
+    "save": "Save",
+    "delete": "Delete",
+    "edit": "Edit",
+    "add": "Add",
+    "search": "Search",
+    "reset": "Reset",
+    "submit": "Submit",
+    "back": "Back",
+    "retry": "Retry",
+    "refresh": "Refresh",
+    "loading": "Loading...",
+    "noData": "No Data",
+    "networkError": "Network Error",
+    "serverError": "Server Error",
+    "unknownError": "Unknown Error",
+    "logout": "Logout",
+    "logoutConfirm": "Are you sure to logout?"
+  },
+  "auth": {
+    "login": "Login",
+    "username": "Username",
+    "password": "Password",
+    "phoneLogin": "Phone Login",
+    "forgotPassword": "Forgot Password",
+    "usernamePlaceholder": "Please enter username",
+    "passwordPlaceholder": "Please enter password",
+    "loginSuccess": "Login successful",
+    "loginFailed": "Login failed"
+  },
+  "permission": {
+    "camera": "Camera Permission",
+    "photo": "Photo Permission",
+    "location": "Location Permission",
+    "notification": "Notification Permission",
+    "denied": "Permission Denied"
+  }
+}

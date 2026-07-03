@@ -1,0 +1,30 @@
+# Maestro E2E — 登录流程
+# 运行: maestro test .maestro/login.yaml
+
+appId: com.company.appshell
+
+---
+# 1. 启动应用 → 应跳转登录页
+- launchApp
+- assertVisible: "手机号登录"
+- assertVisible: "请输入手机号"
+
+# 2. 输入手机号
+- tapOn: "请输入手机号"
+- inputText: "13800138000"
+
+# 3. 点击获取验证码
+- tapOn: "获取验证码"
+
+# 4. 输入验证码（测试环境固定 666666）
+- tapOn: "请输入验证码"
+- inputText: "666666"
+
+# 5. 同意协议
+- tapOn: "已阅读并同意"
+
+# 6. 点击登录
+- tapOn: "登录"
+
+# 7. 验证跳转到首页
+- assertVisible: "首页"

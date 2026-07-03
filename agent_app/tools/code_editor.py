@@ -19,7 +19,7 @@ READ_FILE_TOOL_SPEC = {
 
 WRITE_FILE_TOOL_SPEC = {
     "name": "write_file",
-    "description": "在工作区内创建或覆盖文件",
+    "description": "在工作区内创建或覆盖文件。路径相对于工作区根目录，直接写项目名即可（如 rn-app-shell/package.json），不要加 workspace/fe/ 前缀。",
     "input_schema": {
         "type": "object",
         "properties": {
@@ -50,6 +50,14 @@ def _resolve(workspace: str, rel_path: str) -> Path:
         base = ws
     else:
         base = (WORKSPACE_ROOT / ws).resolve()
+
+    # ── 防嵌套：如果 Agent 误写了 workspace/fe/xxx，自动去掉冗余前缀 ──
+    workspace_name = ws.name if not ws.is_absolute() else ws.parts[-1]
+    redundant = f"workspace/{workspace_name}/"
+    while redundant in rel_path:
+        idx = rel_path.index(redundant)
+        rel_path = rel_path[:idx] + rel_path[idx + len(redundant):]
+
     target = (base / rel_path).resolve()
 
     # 安全检查：确保路径不逃逸工作区

@@ -8,6 +8,5 @@ logs/
 workspace/*
 !workspace/shared/
 agent_app/memory/memory-*.md
-agent_app/memory/shared-memory.md
 .DS_Store
 .claude

@@ -1,11 +1,52 @@
 """飞书云文档工具 —— 让 Agent 能读飞书文档/表格/知识库"""
 
+import os
+
 from tools.feishu_utils import (
     get_doc_content,
     get_bitable_records,
     search_wiki,
     get_wiki_node_content,
 )
+
+
+def _get_credentials() -> list[tuple[str, str, str]]:
+    """返回所有已配置的 Bot 凭证列表 [(app_id, app_secret, label), ...]"""
+    result = []
+    for prefix, label in [("FEISHU_PM", "PM应用"), ("FEISHU_FE", "FE应用"), ("FEISHU_BE", "BE应用")]:
+        aid = os.environ.get(f"{prefix}_APP_ID", "")
+        secret = os.environ.get(f"{prefix}_APP_SECRET", "")
+        if aid and secret:
+            result.append((aid, secret, label))
+    return result
+
+async def _try_all_apps(action_name: str, api_call) -> str:
+    """用所有已配置应用的凭证依次尝试调用 API。
+
+    权限错误自动换下一个应用，其他错误直接返回。
+    全部失败时给出明确的排查建议。
+    """
+    creds = _get_credentials()
+    if not creds:
+        return f"[{action_name}] 飞书凭证未配置，无法执行"
+
+    permission_fails = []
+    for app_id, app_secret, label in creds:
+        result = await api_call(app_id, app_secret)
+        if result["success"]:
+            return result  # 成功，由外层函数继续处理
+
+        msg = result.get("msg", "")
+        if "Access denied" in msg or "permission" in msg.lower() or "scope" in msg.lower():
+            permission_fails.append(f"  ❌ {label} — 未开通所需权限")
+        else:
+            return f"[{action_name}] 失败: {result['msg']}"  # 非权限错误，直接返回
+
+    # 全部权限不足
+    lines = [f"[{action_name}] 所有应用均无此权限："]
+    lines.extend(permission_fails)
+    lines.append("请在飞书开放平台 → 应用 → 权限管理 → 搜索对应权限 → 勾选 → 创建版本发布")
+    return "\n".join(lines)
 
 # ── Tool Specs ─────────────────────────────────────────
 
@@ -79,61 +120,54 @@ READ_WIKI_TOOL_SPEC = {
 
 
 async def read_feishu_doc(doc_id: str) -> str:
-    """Agent 可调用的飞书文档读取工具。"""
-    import os
-    app_id = os.environ.get("FEISHU_PM_APP_ID", "")
-    app_secret = os.environ.get("FEISHU_PM_APP_SECRET", "")
-    if not app_id:
-        return "[read_feishu_doc] 飞书凭证未配置"
-
-    # 如果传入的是完整 URL，提取 doc_id
+    """Agent 可调用的飞书文档读取工具。自动轮询三个应用凭证。"""
     if "/" in doc_id:
         doc_id = doc_id.rstrip("/").split("/")[-1]
 
-    result = await get_doc_content(app_id, app_secret, doc_id)
+    async def try_call(aid, sec):
+        return await get_doc_content(aid, sec, doc_id)
+
+    result = await _try_all_apps("read_feishu_doc", try_call)
+    if isinstance(result, str):
+        return result
     if result["success"]:
-        title = result["title"]
-        content = result["content"]
-        return f"文档《{title}》：\n{content}"
-    return f"[read_feishu_doc] 读取失败: {result['msg']}"
+        return f"文档《{result['title']}》：\n{result['content']}"
+    return f"[read_feishu_doc] 失败: {result['msg']}"
 
 
 async def read_feishu_bitable(app_token: str, table_id: str) -> str:
-    """Agent 可调用的飞书多维表格读取工具。"""
-    import os
-    app_id = os.environ.get("FEISHU_PM_APP_ID", "")
-    app_secret = os.environ.get("FEISHU_PM_APP_SECRET", "")
-    if not app_id:
-        return "[read_feishu_bitable] 飞书凭证未配置"
-
-    # 如果传入的是完整 URL，提取参数
+    """Agent 可调用的飞书多维表格读取工具。自动轮询三个应用凭证。"""
     if "/" in app_token:
         parts = app_token.rstrip("/").split("/")
-        # URL 格式: .../base/XXX?table=YYY
         for i, p in enumerate(parts):
             if p == "base" and i + 1 < len(parts):
                 app_token = parts[i + 1].split("?")[0]
                 break
 
-    result = await get_bitable_records(app_id, app_secret, app_token, table_id)
+    async def try_call(aid, sec):
+        return await get_bitable_records(aid, sec, app_token, table_id)
+
+    result = await _try_all_apps("read_feishu_bitable", try_call)
+    if isinstance(result, str):
+        return result
     if result["success"]:
         records = result["records"]
         lines = [f"多维表格记录（{len(records)} 条）："]
         for r in records[:20]:
             lines.append(f"  - {r['fields']}")
         return "\n".join(lines)
-    return f"[read_feishu_bitable] 读取失败: {result['msg']}"
+    return f"[read_feishu_bitable] 失败: {result['msg']}"
 
 
 async def search_feishu_wiki(query: str) -> str:
-    """Agent 可调用的飞书知识库搜索工具。"""
-    import os
-    app_id = os.environ.get("FEISHU_PM_APP_ID", "")
-    app_secret = os.environ.get("FEISHU_PM_APP_SECRET", "")
-    if not app_id:
-        return "[search_feishu_wiki] 飞书凭证未配置"
+    """Agent 可调用的飞书知识库搜索工具。自动轮询三个应用凭证。"""
 
-    result = await search_wiki(app_id, app_secret, query)
+    async def try_call(aid, sec):
+        return await search_wiki(aid, sec, query)
+
+    result = await _try_all_apps("search_feishu_wiki", try_call)
+    if isinstance(result, str):
+        return result
     if result["success"]:
         items = result["results"]
         if not items:
@@ -143,28 +177,20 @@ async def search_feishu_wiki(query: str) -> str:
             lines.append(f"  - 《{item['title']}》")
             lines.append(f"    {item['snippet'][:120]}")
         return "\n".join(lines)
-    return f"[search_feishu_wiki] 搜索失败: {result['msg']}"
+    return f"[search_feishu_wiki] 失败: {result['msg']}"
 
 
 async def read_feishu_wiki(wiki_token: str) -> str:
-    """Agent 可调用的飞书 Wiki 文档读取工具。
-
-    自动识别 docx 文档、多维表格等节点类型并读取内容。
-    用户分享 feishu.cn/wiki/XXX 链接时使用此工具。
-    """
-    import os
-    app_id = os.environ.get("FEISHU_PM_APP_ID", "")
-    app_secret = os.environ.get("FEISHU_PM_APP_SECRET", "")
-    if not app_id:
-        return "[read_feishu_wiki] 飞书凭证未配置"
-
-    # 如果传入完整 URL，提取 node_token
+    """Agent 可调用的飞书 Wiki 文档读取工具。自动轮询三个应用凭证。"""
     if "/" in wiki_token or "feishu" in wiki_token:
         wiki_token = wiki_token.rstrip("/").split("/")[-1].split("?")[0]
 
-    result = await get_wiki_node_content(app_id, app_secret, wiki_token)
+    async def try_call(aid, sec):
+        return await get_wiki_node_content(aid, sec, wiki_token)
+
+    result = await _try_all_apps("read_feishu_wiki", try_call)
+    if isinstance(result, str):
+        return result
     if result["success"]:
-        title = result["title"]
-        content = result["content"]
-        return f"Wiki《{title}》：\n{content}"
-    return f"[read_feishu_wiki] 读取失败: {result['msg']}"
+        return f"Wiki《{result['title']}》：\n{result['content']}"
+    return f"[read_feishu_wiki] 失败: {result['msg']}"
