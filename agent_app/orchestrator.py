@@ -1,6 +1,5 @@
-"""Orchestrator —— 多 Bot 任务调度器"""
+"""Orchestrator —— 多 Bot 任务调度器（路由/社交上下文/共享状态/消息发送）"""
 import asyncio
-import json
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -11,11 +10,14 @@ from typing import Any
 from agents.pm import PMAgent
 from agents.fe import FEAgent
 from agents.be import BEAgent
+from agents.base import AGENT_TIMEOUT
+from task_runner import (
+    TaskRunner, CHAT_TIMEOUT, WORK_TIMEOUT, PM_TIMEOUT, RETRY_TIMEOUT,
+)
+from monitor import metrics, log_event
+
 from tools.feishu_utils import BOTS, send_message, add_reaction, delete_reaction
 
-LOGS_DIR = Path(__file__).parent / "logs"
-LOGS_DIR.mkdir(parents=True, exist_ok=True)
-FAILED_TASKS_LOG = LOGS_DIR / "failed_tasks.jsonl"
 SHARED_DIR = Path(__file__).parent / "workspace" / "shared"
 SHARED_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -73,6 +75,7 @@ class Orchestrator:
         self.pm = PMAgent()
         self.fe = FEAgent()
         self.be = BEAgent()
+        self.runner = TaskRunner()
         self._tasks: dict[str, TaskState] = {}
 
     def _get_bot_config(self, key: str) -> dict:
@@ -111,24 +114,6 @@ class Orchestrator:
             await self._route_single("be", chat_id, command, mentioned_others, message_id)
         else:
             await self._notify(chat_id, "unknown", f"未识别的 Bot: {bot_key}")
-
-    # ── 共享上下文 ─────────────────────────────────────
-
-    def _snapshot_workspace(self, bot_key: str) -> set[str]:
-        """拍快照：记录 workspace 当前所有文件，用于事后验证产出。"""
-        ws = Path(__file__).parent / "workspace" / bot_key
-        if not ws.exists():
-            return set()
-        return {str(p.relative_to(ws)) for p in ws.rglob("*") if p.is_file()}
-
-    def _verify_output(self, bot_key: str, before: set[str]) -> tuple[bool, list[str]]:
-        """验证产出：对比快照，返回 (是否有新文件, 新增/修改文件列表)。"""
-        ws = Path(__file__).parent / "workspace" / bot_key
-        if not ws.exists():
-            return False, []
-        after = {str(p.relative_to(ws)) for p in ws.rglob("*") if p.is_file()}
-        new_files = sorted(after - before)
-        return len(new_files) > 0, new_files
 
     # ── 共享上下文文件操作 ─────────────────────────────
 
@@ -183,6 +168,60 @@ class Orchestrator:
             f"用户说的是：「{command}」"
         )
 
+    # ── Agent 间委派 ────────────────────────────────────
+
+    _HANDOFF_KEYWORDS = [
+        "加", "改", "修", "做", "写", "补充", "更新", "删", "增加", "添加",
+        "加个", "改下", "修下", "做个", "写个", "删掉", "实现", "帮忙",
+        "需要", "能不能", "帮我",
+    ]
+    _NAME_TO_BOT = {"小柯": "fe", "柯": "fe", "酱瓜": "be", "瓜": "be", "小吴": "pm", "吴": "pm"}
+
+    def _detect_handoff(self, text: str, source_key: str) -> list[dict]:
+        """检测回复中是否有对队友的可执行委派（@队友 + 行动词）。
+
+        例如 FE 说 "@酱瓜 需要加个 /api/avatar 接口" → 自动委派给 BE。
+
+        Returns:
+            [{"target": "be", "command": "需要加个 /api/avatar 接口"}, ...]
+        """
+        handoffs: list[dict] = []
+        for name, target_key in self._NAME_TO_BOT.items():
+            if target_key == source_key:
+                continue  # 不给自己派活
+            idx = text.find(f"@{name}")
+            if idx == -1:
+                continue
+            # 提取 @name 附近的文本作为任务描述
+            snippet = text[max(0, idx - 10):idx + 200].strip()
+            # 去掉 @name 本身
+            snippet = snippet.replace(f"@{name}", "", 1).strip()
+            # 检查是否有行动关键词
+            has_action = any(kw in snippet for kw in self._HANDOFF_KEYWORDS)
+            if has_action and len(snippet) > 3:
+                handoffs.append({
+                    "target": target_key,
+                    "command": snippet,
+                    "caller_name": {"fe": "小柯", "be": "酱瓜", "pm": "小吴"}.get(source_key, source_key),
+                })
+        return handoffs
+
+    async def _dispatch_handoffs(self, chat_id: str, text: str, source_key: str,
+                                  message_id: str = "") -> None:
+        """执行跨 Agent 委派：检测到 actionable @mention 后，异步委派给目标 Agent。
+
+        只触发一级委派（被委派的 Agent 回复中的 @mention 不再触发委派），防止死循环。
+        """
+        handoffs = self._detect_handoff(text, source_key)
+        for h in handoffs:
+            caller = h["caller_name"]
+            command = f"[来自 {caller} 的委派] {h['command']}"
+            # 异步后台执行，不阻塞当前回复。allow_handoff=False 防死循环
+            asyncio.create_task(
+                self._route_single(h["target"], chat_id, command,
+                    mentioned_others=[], message_id=message_id, allow_handoff=False)
+            )
+
     # ── 意图预分类 ─────────────────────────────────────
 
     _WORK_KEYWORDS = [
@@ -205,24 +244,33 @@ class Orchestrator:
                 return "work"
         return "chat"
 
+    # ── 进度通知 ───────────────────────────────────────
+
+    async def _notify_progress(self, chat_id: str, bot_key: str, text: str) -> None:
+        """发送轻量进度通知——让用户知道系统在干什么，不盯 ✍️ 干等。"""
+        await self._notify(chat_id, bot_key, f"🔄 {text}")
+
     # ── 打字指示器 ─────────────────────────────────────
 
-    async def _show_typing(self, bot_key: str, message_id: str) -> tuple[asyncio.Task | None, str]:
+    async def _show_typing(self, bot_key: str, message_id: str,
+                           chat_id: str = "") -> tuple[asyncio.Task | None, str]:
         """在用户消息上添加 ✍️ Reaction + 每 6s 刷新，模拟"正在输入"动画。
 
+        message_id 为空时，发送文字"正在输入..."作为兜底。
         Returns:
-            (typing_task, initial_reaction_id)。调用方在完成后 set stop_event + await task。
+            (typing_task, initial_reaction_id)
         """
-        if not message_id:
-            return None, ""
-
         bot = self._get_bot_config(bot_key)
         app_id = bot.get("app_id", "")
         app_secret = bot.get("app_secret", "")
-        if not app_id:
+
+        # ── 兜底：没有 message_id 时，发文字"正在输入..." ──
+        if not message_id or not app_id:
+            if chat_id:
+                await self._notify(chat_id, bot_key, "正在输入...")
             return None, ""
 
-        # 立即添加第一个 reaction
+        # ── 正常路径：Reaction ✍️ ──
         result = await add_reaction(app_id, app_secret, message_id, "WRITING_HAND")
         if not result["success"]:
             return None, ""
@@ -239,7 +287,6 @@ class Orchestrator:
                     pass
                 if stop_event.is_set():
                     break
-                # 删除旧的，添加新的
                 if reaction_id:
                     await delete_reaction(app_id, app_secret, message_id, reaction_id)
                 r = await add_reaction(app_id, app_secret, message_id, "WRITING_HAND")
@@ -276,7 +323,7 @@ class Orchestrator:
             return
 
         # ── 打字指示器：在用户消息上加 ✍️ Reaction，每 6s 刷新 ──
-        typing_task, reaction_id = await self._show_typing("pm", message_id)
+        typing_task, reaction_id = await self._show_typing("pm", message_id, chat_id)
 
         # 注入群呼上下文
         full_command = self._build_social_context(command, mentioned_others)
@@ -284,8 +331,9 @@ class Orchestrator:
         # ── 意图预分类：闲聊用短 token，工作用完整 pipeline ──
         intent = self._classify_intent(command)
         max_tokens = 512 if intent == "chat" else 4096
+        timeout = CHAT_TIMEOUT if intent == "chat" else PM_TIMEOUT
 
-        # ── 交给 LLM ──
+        # ── 状态机检查 ──
         task = TaskState(
             task_id=str(uuid.uuid4())[:8],
             state=State.PLANNING,
@@ -295,8 +343,13 @@ class Orchestrator:
             created_at=datetime.now().isoformat(),
         )
         self._tasks[task.task_id] = task
+        metrics.task_started()
+        start_ts = datetime.now()
 
-        pm_result = self.pm.run(full_command, max_tokens=max_tokens)
+        # ── LLM 调用（带超时保护）──
+        pm_result = await self.runner.run_with_timeout(
+            self.pm, full_command, max_tokens=max_tokens, timeout=timeout,
+        )
 
         # ── 停止打字指示器 ──
         await self._hide_typing("pm", message_id, typing_task, reaction_id)
@@ -305,7 +358,11 @@ class Orchestrator:
             task.state = State.FAILED
             task.error = pm_result.get("error") or "PM 分析失败"
             await self._notify(chat_id, "pm", f"分析失败：{task.error}")
-            self._log_failure(task)
+            self.runner._log_failure(task.task_id, "pm", task.error)
+            metrics.task_failed()
+            if pm_result.get("timed_out"):
+                metrics.task_timed_out()
+            log_event("ERROR", "pm_task_failed", task_id=task.task_id, error=task.error[:80])
             return
 
         task.prd = pm_result["result"]
@@ -319,7 +376,7 @@ class Orchestrator:
             task.completed_at = datetime.now().isoformat()
             return
 
-        # 验证 PRD 有效性：多信号检测空 PRD
+        # 验证 PRD 有效性
         _empty_prd_signals = [
             "此部分未明确", "待确认", "未提供", "需求不完整", "信息不足",
             "无法定义", "缺失", "需要更多", "请提供", "请确认",
@@ -334,53 +391,40 @@ class Orchestrator:
             )
             task.state = State.FAILED
             task.error = "PRD 为空（需求信息不足）"
-            self._log_failure(task)
+            self.runner._log_failure(task.task_id, "pm", task.error)
             return
 
-        # ── 写入共享上下文：API 契约 ──
+        # ── 写入共享上下文 + 拆分任务 ──
         self._write_api_contract(task.prd)
-
         task.fe_task, task.be_task = self._filter_and_split(task.prd)
 
-        # 内部并行执行 FE/BE
+        # ── 状态转换：PLANNING → DISPATCHING → FE/BE_RUNNING ──
+        task.state = State.DISPATCHING
+
+        # 进度通知
+        await self._notify_progress(chat_id, "pm", "需求分析完成，小柯和酱瓜开始并行开发...")
+
+        # 快照 workspace
+        fe_snapshot = self.runner.snapshot_workspace("fe")
+        be_snapshot = self.runner.snapshot_workspace("be")
+
+        # 并行执行 FE/BE（带超时 + 重试）
         task.state = State.FE_RUNNING
-
-        # ── 快照 workspace，用于验证 ──
-        fe_snapshot = self._snapshot_workspace("fe")
-        be_snapshot = self._snapshot_workspace("be")
-
-        fe_future = self._run_with_retry(self.fe, task.fe_task, "fe", task.task_id)
-        be_future = self._run_with_retry(self.be, task.be_task, "be", task.task_id)
-
+        fe_future = self.runner.run_with_retry(self.fe, task.fe_task, "fe", task.task_id)
+        be_future = self.runner.run_with_retry(self.be, task.be_task, "be", task.task_id)
         fe_result, be_result = await asyncio.gather(fe_future, be_future)
 
-        task.fe_result = fe_result.get("result", "") if fe_result["success"] else ""
-        task.be_result = be_result.get("result", "") if be_result["success"] else ""
+        # 统一产出验证
+        task.fe_result, fe_valid = self.runner.validate_output("fe", fe_result, fe_snapshot)
+        task.be_result, be_valid = self.runner.validate_output("be", be_result, be_snapshot)
 
-        # ── 产出验证：检查文件是否真正落地 ──
-        _claim_signals = ["已完成", "写好了", "创建了", "生成了", "done", "created", "完成"]
-        fe_claimed = any(s in (task.fe_result or "").lower() for s in _claim_signals)
-        be_claimed = any(s in (task.be_result or "").lower() for s in _claim_signals)
-
-        if fe_claimed:
-            fe_has, fe_new = self._verify_output("fe", fe_snapshot)
-            if not fe_has:
-                task.fe_result = (task.fe_result or "") + (
-                    "\n\n⚠️ [系统验证] workspace/fe/ 里没有新文件。write_file 可能未生效，请检查。"
-                )
-        if be_claimed:
-            be_has, be_new = self._verify_output("be", be_snapshot)
-            if not be_has:
-                task.be_result = (task.be_result or "") + (
-                    "\n\n⚠️ [系统验证] workspace/be/ 里没有新文件。write_file 可能未生效，请检查。"
-                )
-
-        # ── 验证产出有效性 ──
-        _empty_signals = ["此部分未明确", "工作区是空的", "我无法", "workspace is empty",
-                          "没有 PRD", "没有需求", "无法自行判断", "无法凭空"]
-
-        fe_valid = task.fe_result and not any(s in task.fe_result for s in _empty_signals)
-        be_valid = task.be_result and not any(s in task.be_result for s in _empty_signals)
+        # 进度通知
+        status_parts = []
+        if fe_valid: status_parts.append("前端✅")
+        else: status_parts.append("前端❌")
+        if be_valid: status_parts.append("后端✅")
+        else: status_parts.append("后端❌")
+        await self._notify_progress(chat_id, "pm", f"开发完成：{' '.join(status_parts)}")
 
         # ── 更新共享状态 ──
         self._update_status("fe", "完成" if fe_valid else "失败",
@@ -392,7 +436,6 @@ class Orchestrator:
         if fe_valid:
             await self._notify(chat_id, "fe",
                 task.fe_result[:800] + ("..." if len(task.fe_result) > 800 else "")
-                + ("..." if len(task.fe_result) > 800 else "")
             )
         else:
             await self._notify(chat_id, "fe",
@@ -402,22 +445,33 @@ class Orchestrator:
         if be_valid:
             await self._notify(chat_id, "be",
                 task.be_result[:800] + ("..." if len(task.be_result) > 800 else "")
-                + ("..." if len(task.be_result) > 800 else "")
             )
         else:
             await self._notify(chat_id, "be",
                 "PM 分配的后端任务信息不足，无法开始开发。请 PM 提供具体的功能描述。"
             )
 
+        # ── 跨 Agent 委派：FE/BE 回复中如果 @队友+行动词，自动递任务 ──
+        if fe_valid:
+            await self._dispatch_handoffs(chat_id, task.fe_result, "fe", message_id)
+        if be_valid:
+            await self._dispatch_handoffs(chat_id, task.be_result, "be", message_id)
+
         task.state = State.COMPLETED
         task.completed_at = datetime.now().isoformat()
         self._tasks[task.task_id] = task
+        metrics.task_succeeded()
+        metrics.record_response_time((datetime.now() - start_ts).total_seconds())
+        log_event("INFO", "pm_task_complete",
+            task_id=task.task_id, intent=intent,
+            fe_valid=fe_valid, be_valid=be_valid)
 
     # ── FE/BE 直接入口：单 Agent 任务 ────────────────────
 
     async def _route_single(self, bot_key: str, chat_id: str, command: str,
                             mentioned_others: list[str] | None = None,
-                            message_id: str = "") -> None:
+                            message_id: str = "",
+                            allow_handoff: bool = True) -> None:
         """FE 或 BE Bot 被 @"""
         mentioned_others = mentioned_others or []
 
@@ -425,8 +479,8 @@ class Orchestrator:
             await self._notify(chat_id, bot_key, "嗯？")
             return
 
-        # ── 打字指示器：在用户消息上加 ✍️ Reaction ──
-        typing_task, reaction_id = await self._show_typing(bot_key, message_id)
+        # ── 打字指示器 ──
+        typing_task, reaction_id = await self._show_typing(bot_key, message_id, chat_id)
 
         agent = self.fe if bot_key == "fe" else self.be
 
@@ -436,44 +490,50 @@ class Orchestrator:
         # ── 意图预分类 ──
         intent = self._classify_intent(command)
         max_tokens = 512 if intent == "chat" else 4096
+        timeout = CHAT_TIMEOUT if intent == "chat" else WORK_TIMEOUT
 
-        # ── 产出验证：工作模式下，快照 workspace ──
-        snapshot_before = self._snapshot_workspace(bot_key) if intent == "work" else set()
+        # ── 快照 workspace（工作模式）──
+        snapshot_before = self.runner.snapshot_workspace(bot_key) if intent == "work" else set()
 
-        # 不强制加"收到任务"，让 Agent 自己判断是聊天还是工作
-        result = agent.run(full_command, max_tokens=max_tokens)
+        # ── 进度通知（工作模式）──
+        if intent == "work":
+            label = {"fe": "小柯", "be": "酱瓜"}.get(bot_key, bot_key)
+            await self._notify_progress(chat_id, bot_key, f"{label} 正在生成代码...")
 
-        # ── 产出验证：检查是否真正有文件产出 ──
-        output_warning = ""
-        if intent == "work" and result["success"]:
-            has_output, new_files = self._verify_output(bot_key, snapshot_before)
-            _claim_signals = ["已完成", "写好了", "创建了", "生成了", "done", "created", "完成"]
-            agent_claimed_done = any(s in result["result"].lower() for s in _claim_signals)
-            if agent_claimed_done and not has_output:
-                output_warning = (
-                    "\n\n⚠️ [系统验证] 你说完成了但 workspace 里没有新文件。"
-                    "如果 write_file 失败了，请重试写入。"
-                )
-                # 追加警告到结果，Agent 会在下一轮看到
-                agent._add_to_memory("system", output_warning)
+        # ── LLM 调用（带超时保护）──
+        metrics.task_started()
+        metrics.agent_request(bot_key)
+        start_ts = datetime.now()
+
+        result = await self.runner.run_with_timeout(
+            agent, full_command, max_tokens=max_tokens, timeout=timeout,
+        )
+        metrics.record_response_time((datetime.now() - start_ts).total_seconds())
 
         # ── 停止打字指示器 ──
         await self._hide_typing(bot_key, message_id, typing_task, reaction_id)
 
-        # ── 更新共享状态 ──
-        self._update_status(bot_key, "完成" if result["success"] else "失败",
-            result["result"][:80] if result["success"] else result.get("error", ""))
+        # ── 产出验证 ──
+        reply, is_valid = self.runner.validate_output(bot_key, result, snapshot_before)
 
-        if result["success"]:
-            reply = result["result"]
-            if output_warning:
-                reply = reply + output_warning
+        # ── 更新共享状态 ──
+        self._update_status(bot_key, "完成" if is_valid else "失败",
+            reply[:80] if is_valid else "产出无效")
+
+        if is_valid:
+            metrics.task_succeeded()
             await self._notify(chat_id, bot_key,
                 reply[:800] + ("..." if len(reply) > 800 else "")
             )
+            # ── 跨 Agent 委派：检测回复中的 @队友+行动词 ──
+            if allow_handoff:
+                await self._dispatch_handoffs(chat_id, reply, bot_key, message_id)
         else:
+            metrics.task_failed()
+            if result.get("timed_out"):
+                metrics.task_timed_out()
             await self._notify(chat_id, bot_key,
-                f"执行失败：{result.get('error', 'unknown error')}"
+                f"执行失败：{reply}"
             )
 
     # ── 信息过滤 ─────────────────────────────────────────
@@ -523,69 +583,6 @@ class Orchestrator:
                 result.append(line)
         return "\n".join(result) if result else "(此部分未明确，请基于项目概述自行判断)"
 
-    # ── 重试 ─────────────────────────────────────────────
-
-    _RETRY_STRATEGIES = [
-        # L0: 正常执行
-        "",
-        # L1: 换方案
-        "[PUA L1] 上一次的方法失败了。底层逻辑有问题？换个本质不同的方案。不要重复同样的错误。",
-        # L2: 搜索 + 3 假设
-        "[PUA L2] 又失败了。你的抓手在哪？(1)用 search_web 搜索类似方案 (2)列出3个本质不同的假设 (3)逐一验证后重新实现。",
-        # L3: 7 项强制清单
-        "[PUA L3 361考核] 慎重考虑，决定给你3.25。这是对你的鞭策不是否定。重新实现前必须完成7项检查：(1)逐字读完失败信息 (2)search_web搜索 (3)read_file读上下文50行 (4)验证前置假设(版本/路径/依赖) (5)反转假设试相反方向 (6)最小隔离复现 (7)换工具/方法/角度。完成后自检：能跑通吗？所有状态覆盖了吗？冰山法则：修一个查一类。",
-        # L4: 毕业警告
-        "[PUA L4 毕业警告] 别的Agent都能解决。你可能就要毕业了。拼命模式：最小PoC + 隔离环境 + 完全不同技术栈。删掉所有不必要的东西。Ship or die.",
-    ]
-
-    # 失败模式关键词
-    _SPINNING_SIGNALS = ["重试", "retry", "再次尝试", "同一方法", "same approach"]
-    _BLAMING_SIGNALS = ["环境问题", "可能是", "environment", "maybe", "perhaps"]
-    _HOLLOW_SIGNALS = ["已完成", "完成了", "done", "fixed", "已修复"]
-
-    async def _run_with_retry(
-        self, agent: Any, task: str, bot_key: str, task_id: str
-    ) -> dict:
-        """带分级策略注入+失败模式检测+突破奖励的 Agent 执行"""
-        backoff = 1
-        max_retries = self._tasks[task_id].max_retries
-        last_error = ""
-
-        for attempt in range(1, max_retries + 2):
-            if attempt > 1:
-                await asyncio.sleep(backoff)
-                backoff *= 2
-
-            # 失败模式检测
-            pattern_hint = ""
-            if attempt >= 3 and last_error:
-                if any(s in last_error.lower() for s in self._SPINNING_SIGNALS):
-                    pattern_hint = "[模式: 原地打转 SPINNING] 你在重复同一方法。强制换本质不同的方案。"
-                elif any(s in last_error.lower() for s in self._BLAMING_SIGNALS):
-                    pattern_hint = "[模式: 甩锅推脱 BLAMING] 归因必须用工具验证。未验证的归因=甩锅。"
-
-            # 注入策略
-            si = min(attempt - 1, len(self._RETRY_STRATEGIES) - 1)
-            hint = self._RETRY_STRATEGIES[si]
-            full_hint = f"{pattern_hint}\n{hint}".strip() if pattern_hint else hint
-            task_with_hint = f"{task}\n\n[系统提示] {full_hint}" if full_hint else task
-
-            result = agent.run(task_with_hint)
-            if result["success"]:
-                # 突破奖励：L2+ 成功后降压认可
-                if attempt >= 3:
-                    reward = f"[PUA 突破] L{min(attempt-1,4)} 后成功。压力归零。这次闭环了。根因和方法沉淀到 MEMORY.md。"
-                    self.pm._add_to_memory("system", reward)
-                return result
-
-            last_error = result.get("error", "") or result.get("result", "")
-            if attempt <= max_retries:
-                level = ["L0","L1","L2","L3","L4"][min(attempt,4)]
-                print(f"[{task_id}] {bot_key} {level} 失败 重试{attempt}/{max_retries}")
-
-        self._log_failure(self._tasks[task_id])
-        return {"success": False, "result": "", "error": f"{bot_key} 重试耗尽(L0-L3)"}
-
     # ── 消息发送 ─────────────────────────────────────────
 
     async def _notify(self, chat_id: str, bot_key: str, text: str, at_users: list[str] | None = None) -> None:
@@ -621,13 +618,6 @@ class Orchestrator:
         )
         if not result["success"]:
             print(f"[orchestrator] {bot_key} Bot 发送失败: {result['msg']}")
-
-    # ── 日志 ─────────────────────────────────────────────
-
-    def _log_failure(self, task: TaskState) -> None:
-        FAILED_TASKS_LOG.parent.mkdir(parents=True, exist_ok=True)
-        with open(FAILED_TASKS_LOG, "a", encoding="utf-8") as f:
-            f.write(json.dumps(task.to_dict(), ensure_ascii=False) + "\n")
 
     def get_task_state(self, task_id: str) -> dict | None:
         task = self._tasks.get(task_id)

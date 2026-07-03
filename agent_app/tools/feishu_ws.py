@@ -51,9 +51,14 @@ def _run_bot_process(bot_key: str, msg_queue: multiprocessing.Queue) -> None:
             )
 
             # 提取所有被 @ 的人（排除自己），用于群呼上下文
+            # 同时建立 内部ID → 显示名 映射，用于替换 command 中的 @_user_X
             all_mentioned_names: list[str] = []
+            id_to_name: dict[str, str] = {}
             for m in mentions:
+                key = getattr(m, "key", "") if hasattr(m, "key") else ""
                 name = getattr(m, "name", "") if hasattr(m, "name") else ""
+                if key and name:
+                    id_to_name[key] = name
                 if name and name != bot_name and bot_short not in name:
                     all_mentioned_names.append(name)
             mentioned_others = all_mentioned_names
@@ -109,6 +114,10 @@ def _run_bot_process(bot_key: str, msg_queue: multiprocessing.Queue) -> None:
                 command = f"{attachment_info}\n{command}"
             elif attachment_info:
                 command = attachment_info
+
+            # ── 替换 command 中的内部 ID（@_user_X → @Agent名字）──
+            for uid, name in id_to_name.items():
+                command = command.replace(f"@{uid}", f"@{name}")
 
             logger.info(f"[{bot_key}] chat={chat_id} type={msg_type} mentioned={is_mentioned} others={mentioned_others} cmd={command[:80] if command else '(empty)'}")
             msg_queue.put({

@@ -12,8 +12,12 @@ load_dotenv()
 _client = Anthropic(
     base_url=os.environ["ANTHROPIC_BASE_URL"],
     api_key=os.environ["ANTHROPIC_API_KEY"],
+    timeout=90.0,       # 单次 HTTP 请求超时
+    max_retries=1,       # SDK 层重试 1 次
 )
 DEFAULT_MODEL = os.environ.get("ANTHROPIC_MODEL", "deepseek-v4-pro")
+AGENT_TIMEOUT = 60       # Agent 整体执行超时（秒），chat 模式减半
+SHARED_MEMORY_FILE = Path(__file__).parent.parent / "memory" / "shared-memory.md"
 
 
 class BaseAgent:
@@ -36,13 +40,15 @@ class BaseAgent:
         self.model = model or DEFAULT_MODEL
         self._memory: list[dict] = []
         self._facts: list[str] = []
+        self._shared_ctx: dict = {"facts": [], "decisions": []}
 
         # 初始化工作目录
         if self.workspace:
             self.workspace.mkdir(parents=True, exist_ok=True)
 
-        # 加载历史记忆
+        # 加载历史记忆 + 共享记忆
         self._load_memory()
+        self._load_shared_memory()
 
     # ── 记忆管理 ───────────────────────────────────────
 
@@ -92,7 +98,7 @@ class BaseAgent:
         snippets: list[str] = []
         for entry in old_entries:
             c = entry.get("content", "")
-            if isinstance(c, str) and len(c.strip()) > 5:
+            if isinstance(c, str) and len(c.strip()) >= 3:
                 # 去掉系统前缀，取前 120 字
                 clean = c.replace("[群呼上下文]", "").replace("[长期记忆]", "").replace("[系统提示]", "").strip()
                 snippets.append(clean[:120])
@@ -117,24 +123,85 @@ class BaseAgent:
 
     def _extract_facts_from(self, text: str) -> None:
         """从用户消息中提取关键事实（决策/偏好/命名/需求）。"""
+        _skip_prefixes = ["[群呼上下文]", "[长期记忆]", "[系统提示]", "[团队共享记忆]",
+                          "[个人记忆]", "[Chat Budget]", "[上下文压缩]"]
         fact_signals = ["决定", "选", "偏好", "要求", "需要", "叫", "名字是", "用 ", "做", "写"]
         for line in text.split("\n"):
             line = line.strip()
+            if any(line.startswith(p) for p in _skip_prefixes):
+                continue
             if 5 < len(line) < 200 and any(s in line for s in fact_signals):
-                # 去重
                 if line not in self._facts:
                     self._facts.append(line)
         # 最多保留 15 条
         if len(self._facts) > 15:
             self._facts = self._facts[-15:]
+
+        # 全局性事实同步到共享记忆
+        _global_signals = ["项目", "技术栈", "偏好", "框架", "数据库", "部署", "用 ", "选型"]
+        if any(s in text for s in _global_signals):
+            self._add_shared_fact(text)
+
         self._save_memory()
 
-    def _build_facts_preamble(self) -> str:
-        """构建记忆注入：从历史事实中生成'你记得'上下文。"""
-        if not self._facts:
+    # ── 共享记忆（跨 Agent） ──────────────────────────
+
+    def _load_shared_memory(self) -> None:
+        """加载团队共享记忆——所有 Agent 共用的上下文。"""
+        try:
+            if SHARED_MEMORY_FILE.exists():
+                data = json.loads(SHARED_MEMORY_FILE.read_text(encoding="utf-8"))
+                self._shared_ctx = data if isinstance(data, dict) else {"facts": [], "decisions": []}
+        except (json.JSONDecodeError, ValueError):
+            self._shared_ctx = {"facts": [], "decisions": []}
+
+    def _save_shared_memory(self) -> None:
+        """持久化共享记忆。"""
+        from datetime import datetime as dt
+        self._shared_ctx["updated_at"] = dt.now().isoformat()
+        SHARED_MEMORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        SHARED_MEMORY_FILE.write_text(
+            json.dumps(self._shared_ctx, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    def _add_shared_fact(self, text: str) -> None:
+        """向共享记忆添加一条事实（去重 + 上限控制）。"""
+        clean = text.strip()[:200]
+        if clean and clean not in self._shared_ctx.get("facts", []):
+            facts = self._shared_ctx.setdefault("facts", [])
+            facts.append(clean)
+            if len(facts) > 30:
+                self._shared_ctx["facts"] = facts[-30:]
+            self._save_shared_memory()
+
+    def _build_shared_preamble(self) -> str:
+        """构建共享记忆注入：所有 Agent 都知道的团队上下文。"""
+        facts = self._shared_ctx.get("facts", [])
+        decisions = self._shared_ctx.get("decisions", [])
+        if not facts and not decisions:
             return ""
-        facts_text = "\n".join(f"- {f}" for f in self._facts[-8:])
-        return f"[长期记忆] 你记得以下关于用户和项目的事：\n{facts_text}\n"
+
+        lines = ["[团队共享记忆] 以下是整个团队都知道的信息："]
+        for f in facts[-10:]:
+            lines.append(f"- {f}")
+        for d in decisions[-5:]:
+            lines.append(f"- [决策] {d}")
+        return "\n".join(lines) + "\n"
+
+    def _build_facts_preamble(self) -> str:
+        """构建记忆注入：共享记忆 + 个人长期记忆。"""
+        parts: list[str] = []
+
+        shared = self._build_shared_preamble()
+        if shared:
+            parts.append(shared)
+
+        if self._facts:
+            facts_text = "\n".join(f"- {f}" for f in self._facts[-8:])
+            parts.append(f"[个人记忆] 你记得以下关于用户的事：\n{facts_text}\n")
+
+        return "\n".join(parts) if parts else ""
 
     # ── LLM 调用 ───────────────────────────────────────
 

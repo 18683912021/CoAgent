@@ -8,6 +8,7 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 
 from orchestrator import Orchestrator
+from monitor import metrics
 from tools.feishu_ws import start_all_bots
 from tools.feishu_utils import BOTS
 
@@ -45,13 +46,13 @@ async def health():
     bots_status = {}
     for i, key in enumerate(["pm", "fe", "be"]):
         bot = BOTS.get(key, {})
-        # 检查子进程是否存活
         alive = i < len(_processes) and _processes[i].is_alive()
         bots_status[key] = "connected" if (bot.get("app_id") and alive) else ("configured" if bot.get("app_id") else "missing")
     return {
         "status": "ok",
         "orchestrator": _orchestrator is not None,
         "bots": bots_status,
+        "metrics": metrics.to_dict(),
     }
 
 
