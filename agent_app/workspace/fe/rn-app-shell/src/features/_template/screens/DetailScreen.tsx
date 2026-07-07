@@ -8,7 +8,7 @@
  * - error: 错误提示 + 重试
  */
 
-import React, { useState } from 'react';
+import React from 'react';
 import {
   Alert,
   ScrollView,
@@ -73,7 +73,7 @@ export function DetailScreen(): React.ReactElement {
     );
   }
 
-  const statusInfo = STATUS_MAP[item.status];
+  const statusInfo = STATUS_MAP[item.status as keyof typeof STATUS_MAP];
 
   return (
     <ScrollView

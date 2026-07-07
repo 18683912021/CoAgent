@@ -373,11 +373,15 @@ class TaskRunner:
         patterns = ["_Test", "_test", ".test.", ".spec.", "__tests__", "__snapshots__"]
         deleted = 0
         for f in list(ws.rglob("*")):
+            if "node_modules" in f.parts:
+                continue
             if f.is_file() and any(p in str(f) for p in patterns):
                 f.unlink()
                 deleted += 1
-        # 清理空目录
+        # 清理空目录（跳过 node_modules）
         for d in sorted(list(ws.rglob("*")), key=lambda x: len(str(x)), reverse=True):
+            if "node_modules" in d.parts:
+                continue
             if d.is_dir() and not any(d.iterdir()):
                 d.rmdir()
         return deleted

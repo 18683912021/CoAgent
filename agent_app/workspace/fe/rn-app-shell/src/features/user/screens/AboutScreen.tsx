@@ -14,7 +14,7 @@ import { MenuRow } from '../components/MenuRow';
 
 export function AboutScreen(): React.ReactElement {
   const theme = useAppTheme();
-  const { data: versionInfo, isLoading: versionLoading } = useAppVersion();
+  const { data: versionInfo, isLoading: _loading } = useAppVersion();
   const { refetch: checkUpdate, isFetching: checkingUpdate } = useCheckUpdate();
 
   const handleCheckUpdate = useCallback(async () => {

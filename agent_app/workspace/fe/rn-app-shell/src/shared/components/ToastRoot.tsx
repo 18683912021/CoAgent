@@ -8,7 +8,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Animated, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useAppTheme } from '@design-system/theme';
 import { zIndex, radii, fontSizes, spacing } from '@design-system/tokens';
 import { toast } from './Toast';
 

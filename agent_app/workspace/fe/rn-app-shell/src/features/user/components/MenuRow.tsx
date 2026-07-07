@@ -7,7 +7,7 @@
 import React from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Switch } from 'react-native';
 import { useAppTheme } from '@design-system/theme';
-import { spacing, fontSizes, fontWeights, shadows } from '@design-system/tokens';
+import { spacing, fontSizes, fontWeights } from '@design-system/tokens';
 
 interface MenuRowProps {
   icon?: string;

@@ -3,6 +3,7 @@ from pathlib import Path
 
 from agents.base import BaseAgent
 from tools.search import SEARCH_TOOL_SPEC, search_web
+from tools.web_fetch import WEB_FETCH_TOOL_SPEC, web_fetch
 from tools.feishu import SEND_MESSAGE_TOOL_SPEC, send_feishu_message
 from tools.feishu_docs import (
     READ_DOC_TOOL_SPEC, READ_BITABLE_TOOL_SPEC, SEARCH_WIKI_TOOL_SPEC, READ_WIKI_TOOL_SPEC,
@@ -25,7 +26,7 @@ class PMAgent(BaseAgent):
             name="PM",
             system_prompt=system_prompt,
             memory_file=str(MEMORY_FILE),
-            tools=[SEARCH_TOOL_SPEC, SEND_MESSAGE_TOOL_SPEC,
+            tools=[SEARCH_TOOL_SPEC, WEB_FETCH_TOOL_SPEC, SEND_MESSAGE_TOOL_SPEC,
                    READ_DOC_TOOL_SPEC, READ_BITABLE_TOOL_SPEC, SEARCH_WIKI_TOOL_SPEC,
                    READ_WIKI_TOOL_SPEC],
             workspace=str(WORKSPACE),
@@ -38,6 +39,8 @@ class PMAgent(BaseAgent):
 
         if name == "search_web":
             return asyncio.run(search_web(**args))
+        elif name == "web_fetch":
+            return asyncio.run(web_fetch(**args))
         elif name == "send_feishu_message":
             return asyncio.run(send_feishu_message(**args))
         elif name == "read_feishu_doc":

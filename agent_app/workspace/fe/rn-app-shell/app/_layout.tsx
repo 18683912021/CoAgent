@@ -55,7 +55,7 @@ export default function RootLayout(): React.ReactElement {
     });
 
     // 5. Deep Link 处理器
-    setDeepLinkHandler((path, params) => {
+    setDeepLinkHandler((path, _params) => {
       if (path.startsWith('/')) {
         router.push(path as any);
       }

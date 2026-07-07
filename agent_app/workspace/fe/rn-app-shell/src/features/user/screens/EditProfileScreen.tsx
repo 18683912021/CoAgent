@@ -14,7 +14,6 @@ import {
   StyleSheet,
   ScrollView,
   Alert,
-  Platform,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
@@ -167,7 +166,7 @@ export function EditProfileScreen(): React.ReactElement {
                     color: isActive ? theme.colors.primary : theme.colors.semantic.textSecondary,
                   }}
                 >
-                  {GENDER_MAP[g]}
+                  {GENDER_MAP[g].label}
                 </Text>
               </TouchableOpacity>
             );

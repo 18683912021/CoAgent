@@ -108,12 +108,6 @@ export function SafeWebView({
     webViewRef.current?.reload();
   }, []);
 
-  // ---- 向网页发送消息 ----
-  const postMessage = useCallback((message: WebViewBridgeMessage) => {
-    webViewRef.current?.injectJavaScript(
-      `window.RNBridge && window.RNBridge.postMessage(${JSON.stringify(message)}); true;`,
-    );
-  }, []);
 
   // 暴露方法给父组件（通过 ref 或其他方式，这里先提供基础封装）
 

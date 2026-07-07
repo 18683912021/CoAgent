@@ -28,7 +28,7 @@ interface UsePaginationResult<T> {
   error: string | null;
 
   refresh: () => Promise<void>;
-  loadMore: () => Promise<void>;
+  loadMore: () => void;
   goToPage: (page: number) => Promise<void>;
 }
 

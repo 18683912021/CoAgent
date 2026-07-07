@@ -10,7 +10,7 @@ import { ScrollView, StyleSheet, View, RefreshControl } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useAppTheme } from '@design-system/theme';
 import { spacing } from '@design-system/tokens';
-import { Empty, SkeletonList } from '@shared/components';
+import { Empty } from '@shared/components';
 import { useAuthStore } from '@core/auth';
 import { useUserProfile } from '../hooks/useUserProfile';
 import { ProfileHeader } from '../components/ProfileHeader';

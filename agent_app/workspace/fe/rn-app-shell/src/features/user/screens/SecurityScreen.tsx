@@ -9,7 +9,7 @@ import React, { useCallback } from 'react';
 import { View, Text, ScrollView, StyleSheet, Alert } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useAppTheme } from '@design-system/theme';
-import { spacing, fontSizes, fontWeights, radii } from '@design-system/tokens';
+import { spacing, fontSizes, fontWeights } from '@design-system/tokens';
 import { Loading, Empty } from '@shared/components';
 import { toast } from '@shared/components/Toast';
 import { useAccountSecurity } from '../hooks/useUserProfile';

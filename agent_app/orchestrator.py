@@ -79,6 +79,10 @@ class TaskSession:
     project_name: str = ""   # 自动从 Agent 回复中提取
     files_created: list[str] = None  # 最近创建的文件
     command: str = ""        # 原始指令
+    # 审批门：PM 出 PRD 后暂存，等用户确认才派发
+    prd_pending: str = ""
+    fe_task_pending: str = ""
+    be_task_pending: str = ""
     created_at: str = ""
     last_active: str = ""
 
@@ -346,6 +350,75 @@ class Orchestrator:
         ctx = session.context_preamble()
         return f"{ctx}\n\n---\n用户指令: {command}"
 
+    _CONFIRMATION_KEYWORDS = [
+        "可以", "行", "好", "ok", "yes", "开始", "做吧", "干吧", "搞吧",
+        "派任务", "派吧", "开工", "动手", "执行", "确认", "没问题", "去吧",
+        "go", "start", "do it", "proceed",
+    ]
+
+    @classmethod
+    def _is_confirmation(cls, command: str) -> bool:
+        """检测用户消息是否为对 PRD 的确认/批准。"""
+        cmd = command.lower().strip()
+        return len(cmd) < 15 and any(kw in cmd for kw in cls._CONFIRMATION_KEYWORDS)
+
+    async def _dispatch_pending_prd(self, chat_id: str, message_id: str,
+                                     session: TaskSession) -> None:
+        """用户已确认 PRD，直接派发 FE/BE，不再重复调 PM。"""
+        await self._notify(chat_id, "pm", "收到，现在派给前后端。")
+
+        fe_snapshot = self.runner.snapshot_workspace("fe")
+        be_snapshot = self.runner.snapshot_workspace("be")
+
+        fe_future = self.runner.run_with_retry(
+            self.fe, session.fe_task_pending, "fe", "pending-dispatch")
+        be_future = self.runner.run_with_retry(
+            self.be, session.be_task_pending, "be", "pending-dispatch")
+        fe_result, be_result = await asyncio.gather(fe_future, be_future)
+
+        fe_text, fe_ok = self.runner.validate_output("fe", fe_result, fe_snapshot)
+        be_text, be_ok = self.runner.validate_output("be", be_result, be_snapshot)
+
+        for bk, text, snapshot in [("fe", fe_text, fe_snapshot), ("be", be_text, be_snapshot)]:
+            if snapshot:
+                _, new_files = self.runner.verify_output(bk, snapshot)
+                if new_files:
+                    file_list = "\n".join(f"  📄 {f}" for f in new_files[:6])
+                    ws_name = {"fe": "workspace/fe", "be": "workspace/be"}[bk]
+                    suffix = f"\n\n📁 `{ws_name}/` 新增 {len(new_files)} 个文件：\n{file_list}"
+                    if bk == "fe":
+                        fe_text += suffix
+                    else:
+                        be_text += suffix
+
+        for bk in ("fe", "be"):
+            n = self.runner.cleanup_test_files(bk)
+            if n > 0:
+                print(f"[cleanup] {bk}: 删除了 {n} 个测试文件")
+
+        self._update_status("fe", "完成" if fe_ok else "失败", fe_text[:80] if fe_ok else "")
+        self._update_status("be", "完成" if be_ok else "失败", be_text[:80] if be_ok else "")
+
+        if fe_ok:
+            await self._notify(chat_id, "fe", fe_text)
+        else:
+            await self._notify(chat_id, "fe", "PRD 信息不够，写不了。让小吴补充一下。")
+        if be_ok:
+            await self._notify(chat_id, "be", be_text)
+        else:
+            await self._notify(chat_id, "be", "后端任务信息不足，无法开始。请 PM 补充。")
+
+        all_files = []
+        for bk, snap in [("fe", fe_snapshot), ("be", be_snapshot)]:
+            _, nf = self.runner.verify_output(bk, snap)
+            all_files.extend(nf)
+        self._update_session_after_task(chat_id, "pending-dispatch", session.prd_pending, all_files)
+
+        # 清掉待审批状态
+        session.prd_pending = ""
+        session.fe_task_pending = ""
+        session.be_task_pending = ""
+
     # ── 意图预分类 ─────────────────────────────────────
 
     _WORK_KEYWORDS = [
@@ -574,6 +647,7 @@ class Orchestrator:
 
         _TOOL_LABELS: dict[str, str] = {
             "search_web":        "搜索网页",
+            "web_fetch":         "访问网页",
             "read_feishu_doc":   "读飞书文档",
             "read_feishu_wiki":  "读知识库",
             "search_feishu_wiki":"搜索知识库",
@@ -679,8 +753,13 @@ class Orchestrator:
         else:
             max_tokens, max_rounds, timeout = 8192, 30, PM_TIMEOUT
 
-        # ── 会话管理：让 Agent 知道任务间的延续关系 ──
+        # ── 审批门：有待审批 PRD + 用户说确认词 → 直接派发 ──
         session = self._get_or_create_session(chat_id, "pm", command, intent)
+        if session and session.prd_pending and self._is_confirmation(command):
+            await self._dispatch_pending_prd(chat_id, message_id, session)
+            return
+
+        # ── 会话管理 ──
         full_command = self._inject_session_context(full_command, session)
 
         # ── 状态机检查 ──
@@ -721,10 +800,11 @@ class Orchestrator:
         await self._notify(chat_id, "pm", task.prd)
         self._sync_to_teammates("pm", command, task.prd)
 
-        # 如果 PM 回复是聊天（短回复，不含 PRD 结构），不触发 FE/BE
+        # 如果 PM 回复是聊天/调研（短回复，不含 PRD 结构），不触发 FE/BE
         if len(task.prd) < 200 and "##" not in task.prd:
             task.state = State.COMPLETED
             task.completed_at = datetime.now().isoformat()
+            self._update_status("pm", "完成", task.prd[:80])
             return
 
         # 验证 PRD 有效性
@@ -750,136 +830,23 @@ class Orchestrator:
         task.fe_task, task.be_task = self._filter_and_split(task.prd)
         task.checklist = self._extract_checklist(task.prd)
 
-        # ── 状态转换：PLANNING → DISPATCHING → FE/BE_RUNNING ──
-        task.state = State.DISPATCHING
-
-        # 进度通知
-        await self._notify_progress(chat_id, "pm", "需求分析完成，小柯和酱瓜开始并行开发...")
-
-        # 快照 workspace
-        fe_snapshot = self.runner.snapshot_workspace("fe")
-        be_snapshot = self.runner.snapshot_workspace("be")
-
-        # 并行执行 FE/BE（带超时 + 重试）
-        task.state = State.FE_RUNNING
-        fe_future = self.runner.run_with_retry(self.fe, task.fe_task, "fe", task.task_id)
-        be_future = self.runner.run_with_retry(self.be, task.be_task, "be", task.task_id)
-        fe_result, be_result = await asyncio.gather(fe_future, be_future)
-
-        # 统一产出验证
-        task.fe_result, fe_valid = self.runner.validate_output("fe", fe_result, fe_snapshot)
-        task.be_result, be_valid = self.runner.validate_output("be", be_result, be_snapshot)
-
-        # ── PM Light Review（OpenMOSS 风格审查闭环）──
-        review: dict[str, Any] = {}
-        if fe_valid and be_valid:
-            review = await self._pm_review(task, task.fe_result, task.be_result)
-            task.review_result = review["review_text"]
-
-            # FE 返工
-            if not review["fe_pass"]:
-                fb = review.get("fe_feedback", "未通过 PM 审查")
-                fe_rework = f"{task.fe_task}\n\n[PM Review] {fb}\n请根据反馈修改代码，只修改被指出的问题。"
-                fe_redo = await self.runner.run_with_retry(
-                    self.fe, fe_rework, "fe", task.task_id, max_retries=1)
-                task.fe_result, fe_valid = self.runner.validate_output("fe", fe_redo, fe_snapshot)
-                if fe_valid:
-                    review["checked_items"] += "\n🔄 FE 返工后通过"
-
-            # BE 返工
-            if not review["be_pass"]:
-                fb = review.get("be_feedback", "未通过 PM 审查")
-                be_rework = f"{task.be_task}\n\n[PM Review] {fb}\n请根据反馈修改代码，只修改被指出的问题。"
-                be_redo = await self.runner.run_with_retry(
-                    self.be, be_rework, "be", task.task_id, max_retries=1)
-                task.be_result, be_valid = self.runner.validate_output("be", be_redo, be_snapshot)
-                if be_valid:
-                    review["checked_items"] += "\n🔄 BE 返工后通过"
-
-        # ── 产出文件列表附加到回复 ──
-        for bot_key, result_text, snapshot in [
-            ("fe", task.fe_result, fe_snapshot),
-            ("be", task.be_result, be_snapshot),
-        ]:
-            if snapshot:
-                _, new_files = self.runner.verify_output(bot_key, snapshot)
-                if new_files:
-                    file_list = "\n".join(f"  📄 {f}" for f in new_files[:6])
-                    ws_name = {"fe": "workspace/fe", "be": "workspace/be"}[bot_key]
-                    suffix = f"\n\n📁 `{ws_name}/` 新增 {len(new_files)} 个文件：\n{file_list}"
-                    if bot_key == "fe":
-                        task.fe_result += suffix
-                    else:
-                        task.be_result += suffix
-
-        # ── 清理测试文件 ──
-        for bk in ("fe", "be"):
-            n = self.runner.cleanup_test_files(bk)
-            if n > 0:
-                print(f"[cleanup] {bk}: 删除了 {n} 个测试文件")
-
-        # 进度通知
-        status_parts = []
-        if fe_valid: status_parts.append("前端✅")
-        else: status_parts.append("前端❌")
-        if be_valid: status_parts.append("后端✅")
-        else: status_parts.append("后端❌")
-        await self._notify_progress(chat_id, "pm", f"开发完成：{' '.join(status_parts)}")
-
-        # ── 更新共享状态 ──
-        self._update_status("fe", "完成" if fe_valid else "失败",
-            task.fe_result[:80] if fe_valid else "产出无效")
-        self._update_status("be", "完成" if be_valid else "失败",
-            task.be_result[:80] if be_valid else "产出无效")
-
-        # FE 和 BE 各自用自己 Bot 身份在群里发言
-        if fe_valid:
-            # 附上 checklist 勾选状态
-            review_note = ""
-            if review.get("checked_items"):
-                review_note = f"\n\n📋 验收进度：\n{review['checked_items']}"
-            elif task.checklist:
-                review_note = f"\n\n📋 验收 Checklist：\n{task.checklist}"
-            await self._notify(chat_id, "fe", task.fe_result + review_note)
-        else:
-            await self._notify(chat_id, "fe",
-                "PRD 信息不够，写不了代码。让小吴补充一下具体功能。"
-            )
-
-        if be_valid:
-            await self._notify(chat_id, "be", task.be_result)
-        else:
-            await self._notify(chat_id, "be",
-                "PM 分配的后端任务信息不足，无法开始开发。请 PM 提供具体的功能描述。"
-            )
-
-        # ── 跨 Agent 委派：FE/BE 回复中如果 @队友+行动词，自动递任务 ──
-        if fe_valid:
-            await self._dispatch_handoffs(chat_id, task.fe_result, "fe", message_id)
-        if be_valid:
-            await self._dispatch_handoffs(chat_id, task.be_result, "be", message_id)
-
+        # ── 审批门：暂存 PRD，等用户确认后再派发 ──
+        if session:
+            session.prd_pending = task.prd
+            session.fe_task_pending = task.fe_task
+            session.be_task_pending = task.be_task
         task.state = State.COMPLETED
         task.completed_at = datetime.now().isoformat()
         self._tasks[task.task_id] = task
         metrics.task_succeeded()
         metrics.record_response_time((datetime.now() - start_ts).total_seconds())
-
-        # ── 更新会话：记录产出，让后续消息知道项目上下文 ──
-        all_new_files = []
-        for bot_key, result_text, snapshot in [
-            ("fe", task.fe_result, fe_snapshot),
-            ("be", task.be_result, be_snapshot),
-        ]:
-            if snapshot:
-                _, new_files = self.runner.verify_output(bot_key, snapshot)
-                all_new_files.extend(new_files)
-        self._update_session_after_task(chat_id, task.task_id,
-            task.prd, all_new_files)
-
-        log_event("INFO", "pm_task_complete",
-            task_id=task.task_id, intent=intent,
-            fe_valid=fe_valid, be_valid=be_valid)
+        self._update_status("pm", "完成", task.prd[:80])
+        log_event("INFO", "pm_task_prd_ready",
+            task_id=task.task_id, intent=intent)
+        # 提醒用户确认
+        await self._notify(chat_id, "pm",
+            "PRD 和 Checklist 已出。确认没问题的话说一声「可以」或「开始」，我立刻派给小柯和酱瓜。")
+        return
 
     # ── FE/BE 直接入口：单 Agent 任务 ────────────────────
 

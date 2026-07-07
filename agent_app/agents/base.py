@@ -246,23 +246,29 @@ class BaseAgent:
         return ""
 
     def _extract_decisions(self, text: str) -> list[str]:
-        """从 Agent 回复中提取技术决策，写入精选记忆。"""
+        """从 Agent 回复中提取关键信息，写入精选记忆。
+
+        覆盖两类：技术决策（选型/架构）+ 调研发现（产品/竞品/行业洞察）。
+        """
         decisions: list[str] = []
-        _decision_signals = [
-            "选型", "决定", "技术栈", "架构", "数据库", "用 ", "采用",
-            "方案是", "最终方案", "确认使用", "选了", "定为",
+        _signals = [
+            "选型", "决定", "技术栈", "架构", "数据库",
+            "定位", "竞品", "核心功能", "产品概况", "商业模式",
+            "用户量", "行业趋势", "定价",
         ]
         for line in text.split("\n"):
             line = line.strip()
-            if 10 < len(line) < 200 and any(s in line for s in _decision_signals):
-                if not line.startswith("#") and not line.startswith("["):
-                    decisions.append(line)
-        # 去重：相邻相似条目只保留第一个
+            if not (10 < len(line) < 200):
+                continue
+            if line.startswith("#") or line.startswith("[") or line.startswith("|"):
+                continue
+            if any(s in line for s in _signals):
+                decisions.append(line)
         deduped: list[str] = []
         for d in decisions:
             if not deduped or not any(d[:30] in prev[:30] for prev in deduped):
                 deduped.append(d)
-        return deduped[:2]
+        return deduped[:3]
 
     # ── 缓存友好的 Prompt 构建 ────────────────────────
 
@@ -271,7 +277,10 @@ class BaseAgent:
         if intent == "chat":
             return "\n\n[Chat Budget] 闲聊模式。回复控制在3句话以内，不要展开分析或追问需求。"
         elif intent == "read":
-            return "\n\n[Read 模式] 用户发了文档/链接让你看。先读内容，然后给2-3句简要摘要。不要展开分析、不要写代码、不要追问需求——除非用户明确让你基于文档做具体的事。读完告诉用户你看了什么、大概是什么内容，表示你已了解。有活跃任务时可以提一句这个文档和当前任务的关系。"
+            return ("\n\n[Read 模式] 用户想了解某个产品/技术/话题。做深度调研："
+                    "1) 用 search_web 从多个角度搜索 2) 用 web_fetch 打开 3-5 个最有价值的链接读全文 "
+                    "3) 交叉验证后给出综合结论，引用具体来源。不要只搜一次就回答。"
+                    "如果有飞书文档链接，用 read_feishu_wiki 完整阅读。")
         elif intent == "plan":
             return "\n\n[Plan 模式] 只出分析和方案，不要写代码。说明思路、架构、选型理由即可。"
         return ""
@@ -497,6 +506,8 @@ class BaseAgent:
         """从工具参数中提取人类可读的进度描述。"""
         if tool_name == "search_web":
             return str(args.get("query", ""))[:80]
+        elif tool_name == "web_fetch":
+            return str(args.get("url", ""))[:60]
         elif tool_name == "read_feishu_doc":
             return str(args.get("doc_id", ""))[:40]
         elif tool_name == "read_feishu_wiki":
@@ -517,5 +528,5 @@ class BaseAgent:
 # ── 进度事件配置 ────────────────────────────────────────
 
 # 工具完成事件只对"有副作用的工具"发送，纯读操作不发完成事件，减少噪音
-_PROGRESS_WORTH_TOOLS = {"search_web", "read_feishu_doc", "read_feishu_wiki",
+_PROGRESS_WORTH_TOOLS = {"search_web", "web_fetch", "read_feishu_doc", "read_feishu_wiki",
                           "search_feishu_wiki", "read_feishu_bitable", "write_file"}

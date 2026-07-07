@@ -29,7 +29,6 @@ interface CachedImageProps {
   /** 过渡动画时长，默认 200ms */
   transition?: number;
   /** 兜底图 uri（本地 require 或远程 url） */
-  fallbackUri?: string;
 }
 
 const blurhash = 'L6PZfSi_.AyE_3t7t7R**0o#DgR4';
@@ -41,8 +40,7 @@ export function CachedImage({
   contentPosition = 'center',
   borderRadius = radii.md,
   style,
-  transition = 200,
-  fallbackUri,
+  transition = 200
 }: CachedImageProps): React.ReactElement {
   const theme = useAppTheme();
   const [status, setStatus] = useState<'loading' | 'loaded' | 'error'>('loading');
