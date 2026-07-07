@@ -13,11 +13,11 @@ load_dotenv()
 _client = Anthropic(
     base_url=os.environ["ANTHROPIC_BASE_URL"],
     api_key=os.environ["ANTHROPIC_API_KEY"],
-    timeout=360.0,      # 单次 HTTP 请求超时：6 分钟
+    timeout=720.0,      # 单次 HTTP 请求超时：12 分钟
     max_retries=2,       # SDK 层重试 2 次
 )
 DEFAULT_MODEL = os.environ.get("ANTHROPIC_MODEL", "deepseek-v4-pro")
-AGENT_TIMEOUT = 360      # Agent 整体执行超时（秒）
+AGENT_TIMEOUT = 720      # Agent 整体执行超时（秒）
 # 共享记忆已移除——Agent 之间通过 workspace/shared/ 目录通信更可靠
 
 
@@ -86,66 +86,80 @@ class BaseAgent:
             for dec in self._extract_decisions(content):
                 if dec not in self._facts:
                     self._facts.append(dec)
-        # 上下文压缩：超 20 条时压缩旧消息为摘要
-        if len(self._memory) > 20:
+        # 上下文压缩：超 30 条时调 LLM 做语义摘要（OpenClaw 风格）
+        if len(self._memory) > 30:
             self._compact_memory()
         self._save_memory()
 
     def _compact_memory(self) -> None:
-        """OpenClaw 风格分阶段压缩：按重要性分权重，保护关键信息。
+        """OpenClaw 风格 LLM 摘要压缩。用模型理解能力替代粗暴截断拼接。
 
-        - 关键技术内容（代码、决策、API）→ 保留 500 字
-        - 重要对话（工具调用、长回复）→ 保留 200 字
-        - 普通闲聊 → 保留 80 字
+        1. 提取旧消息中的文本内容（工具调用转为简短描述）
+        2. 调 LLM 生成 ≤200 字的结构化中文摘要
+        3. 摘要替换最旧 15 条消息
         """
-        old_entries = self._memory[:10]
+        old_entries = self._memory[:15]
 
-        critical: list[str] = []
-        important: list[str] = []
-        routine: list[str] = []
-
-        _CRITICAL_SIGNALS = [
-            "```", "API", "接口", "数据库", "选型", "架构", "数据模型",
-            "技术决策", "DECISION", "PRD", "契约", "表结构", "索引",
-            "write_file", "创建了", "生成了",
-        ]
-        _IMPORTANT_SIGNALS = [
-            "search_web", "read_file", "list_dir", "竞品", "调研",
-            "需求", "功能", "方案", "实现", "write_file",
-        ]
-
+        # ── Memory flush：压缩前先把重要决策记入 notes ──
         for entry in old_entries:
             c = entry.get("content", "")
+            role = entry.get("role", "")
+            if role == "assistant" and isinstance(c, str) and len(c) > 200:
+                for dec in self._extract_decisions(c):
+                    self.write_notes(dec)
+
+        # ── 构建摘要材料 ──
+        text_entries: list[str] = []
+        for entry in old_entries:
+            c = entry.get("content", "")
+            role = entry.get("role", "")
             if isinstance(c, list):
-                # 工具调用列表 → 提取工具名
-                tools = [t.get("name", "") for t in c if isinstance(t, dict)]
-                c = "调用工具: " + ", ".join(tools)
-            if not isinstance(c, str) or len(c.strip()) < 3:
+                tools = [t.get("name", "") for t in c if isinstance(t, dict) and t.get("type") == "tool_use"]
+                if tools:
+                    text_entries.append(f"[{role}] 调用: {', '.join(tools[:5])}")
                 continue
+            if isinstance(c, str) and len(c.strip()) >= 3:
+                clean = c.replace("[群呼上下文]", "").replace("[长期记忆]", "")\
+                          .replace("[系统提示]", "").replace("[个人记忆]", "")\
+                          .replace("[Chat Budget]", "").replace("[上下文压缩]", "")\
+                          .replace("[任务延续]", "").strip()
+                if clean:
+                    text_entries.append(f"[{role}] {clean[:400]}")
 
-            clean = c.replace("[群呼上下文]", "").replace("[长期记忆]", "")\
-                      .replace("[系统提示]", "").replace("[个人记忆]", "")\
-                      .replace("[Chat Budget]", "").replace("[上下文压缩]", "").strip()
-
-            if any(s in clean for s in _CRITICAL_SIGNALS):
-                critical.append(clean[:500])
-            elif any(s in clean for s in _IMPORTANT_SIGNALS):
-                important.append(clean[:200])
-            else:
-                routine.append(clean[:80])
-
-        # 合并：关键 → 重要 → 普通（最多 10 条）
-        all_snippets = critical + important + routine
-        if not all_snippets:
-            self._memory = self._memory[10:]
+        if len(text_entries) < 3:
+            self._memory = self._memory[15:]
             return
 
-        summary_text = " | ".join(all_snippets[:10])
+        # ── 调 LLM 生成语义摘要 ──
+        summary = self._summarize_messages(text_entries)
         compacted = {
             "role": "system",
-            "content": f"[上下文压缩] {summary_text}",
+            "content": f"[上下文压缩] {summary}",
         }
-        self._memory = [compacted] + self._memory[10:]
+        self._memory = [compacted] + self._memory[15:]
+
+    def _summarize_messages(self, entries: list[str]) -> str:
+        """调 LLM 将消息列表摘要为一段可读中文（≤200字）。失败时回退拼接。"""
+        prompt = (
+            "将以下对话片段摘要为一段简洁中文（≤200字）。"
+            "保留：关键决策、技术选型、需求变更、重要产出。忽略：闲聊、打招呼、空操作。\n\n"
+            + "\n".join(entries[-20:])  # 最多送 20 条给 LLM
+        )
+        try:
+            response = _client.messages.create(
+                model=self.model,
+                max_tokens=300,
+                system="你是精确的对话摘要器。只输出摘要文本，无前缀无解释。",
+                messages=[{"role": "user", "content": prompt}],
+            )
+            text = ""
+            for block in response.content:
+                if block.type == "text":
+                    text += block.text
+            return text.strip()[:300]
+        except Exception:
+            # LLM 摘要失败 → 回退到简单拼接
+            return "；".join(e.split("] ", 1)[-1][:100] for e in entries[:8])
 
     # ── Honcho 风格事实提取 ──────────────────────────
 

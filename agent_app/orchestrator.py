@@ -673,7 +673,7 @@ class Orchestrator:
         if intent == "chat":
             max_tokens, max_rounds, timeout = 1024, 3, CHAT_TIMEOUT
         elif intent == "read":
-            max_tokens, max_rounds, timeout = 4096, 30, 180     # 读文档+摘要
+            max_tokens, max_rounds, timeout = 4096, 30, 360     # 读文档+摘要
         elif intent == "plan":
             max_tokens, max_rounds, timeout = 4096, 30, PM_TIMEOUT
         else:
@@ -812,6 +812,12 @@ class Orchestrator:
                     else:
                         task.be_result += suffix
 
+        # ── 清理测试文件 ──
+        for bk in ("fe", "be"):
+            n = self.runner.cleanup_test_files(bk)
+            if n > 0:
+                print(f"[cleanup] {bk}: 删除了 {n} 个测试文件")
+
         # 进度通知
         status_parts = []
         if fe_valid: status_parts.append("前端✅")
@@ -898,7 +904,7 @@ class Orchestrator:
         if intent == "chat":
             max_tokens, max_rounds, timeout = 1024, 3, CHAT_TIMEOUT
         elif intent == "read":
-            max_tokens, max_rounds, timeout = 4096, 30, 180     # 读文档+摘要
+            max_tokens, max_rounds, timeout = 4096, 30, 360     # 读文档+摘要
         elif intent == "plan":
             max_tokens, max_rounds, timeout = 4096, 30, WORK_TIMEOUT
         else:
@@ -948,6 +954,10 @@ class Orchestrator:
             if snapshot_before:
                 _, created = self.runner.verify_output(bot_key, snapshot_before)
                 self._update_session_after_task(chat_id, "", reply, created)
+            # ── 清理测试文件 ──
+            n = self.runner.cleanup_test_files(bot_key)
+            if n > 0:
+                print(f"[cleanup] {bot_key}: 删除了 {n} 个测试文件")
             # ── 同步到队友记忆 ──
             self._sync_to_teammates(bot_key, command, reply)
             # ── 跨 Agent 委派：检测回复中的 @队友+行动词 ──

@@ -70,9 +70,9 @@ export function ProfileHeader({
       activeOpacity={0.7}
     >
       <CachedImage
-        source={{ uri: profile.avatar }}
+        uri={profile.avatar}
+        borderRadius={36}
         style={styles.avatar}
-        placeholderType="circle"
       />
       <View style={styles.info}>
         <View style={styles.nameRow}>

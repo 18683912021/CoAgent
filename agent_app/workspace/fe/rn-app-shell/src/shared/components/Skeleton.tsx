@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { View, StyleSheet, Animated, Easing } from 'react-native';
 import { useAppTheme } from '@design-system/theme';
 
@@ -20,7 +20,7 @@ export function Skeleton({
   style,
 }: SkeletonProps): React.ReactElement {
   const theme = useAppTheme();
-  const animatedValue = new Animated.Value(0);
+  const animatedValue = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
     const animation = Animated.loop(

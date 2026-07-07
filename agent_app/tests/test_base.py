@@ -12,7 +12,6 @@ class DummyAgent(BaseAgent):
     """无 LLM 调用的测试 Agent。"""
 
     def __init__(self, memory_path: str, clean: bool = False):
-        # 如果是 clean 模式，先写空文件
         if clean:
             Path(memory_path).parent.mkdir(parents=True, exist_ok=True)
             Path(memory_path).write_text('{"messages":[],"facts":[]}', encoding="utf-8")
@@ -25,6 +24,10 @@ class DummyAgent(BaseAgent):
 
     def _execute_tool(self, name, args):
         return "tool_ok"
+
+    def _summarize_messages(self, entries: list[str]) -> str:
+        """测试用：返回确定性摘要，不调真实 LLM。"""
+        return f"摘要了 {len(entries)} 条消息"
 
 
 class TestFactExtraction:
@@ -78,26 +81,24 @@ class TestMemoryCompaction:
         yield agent
         Path(path).unlink(missing_ok=True)
 
-    def test_compact_triggers_at_21(self, agent):
-        """超过 20 条应触发压缩。"""
-        for i in range(21):
+    def test_compact_triggers_at_31(self, agent):
+        """超过 30 条应触发压缩。"""
+        for i in range(31):
             agent._add_to_memory("user" if i % 2 == 0 else "assistant", f"消息 {i}")
-        # 压缩后：1条摘要 + 剩余消息
-        assert len(agent._memory) <= 12  # 1 compacted + up to 11 remaining
+        # 压缩后：1条摘要 + 剩余 16 条
+        assert len(agent._memory) <= 17  # 1 compacted + up to 16 remaining
 
     def test_compact_preserves_summary(self, agent):
-        """压缩应生成摘要条目。"""
-        for i in range(21):
+        """压缩应生成 LLM 摘要条目。"""
+        for i in range(31):
             agent._add_to_memory("user" if i % 2 == 0 else "assistant", f"消息 {i}")
-        # 压缩后条目数应 <= 12（1条压缩摘要 + 至多11条剩余）
-        assert len(agent._memory) <= 12
-        # 压缩摘要（system role + 含"压缩"关键词）应存在于记忆中的某个位置
+        assert len(agent._memory) <= 17
         compacts = [m for m in agent._memory
-                    if m["role"] == "system" and "压缩" in str(m.get("content", ""))]
+                    if m["role"] == "system" and "上下文压缩" in str(m.get("content", ""))]
         assert len(compacts) >= 1
 
     def test_no_compact_below_limit(self, agent):
-        """20 条以内不触发压缩。"""
+        """30 条以内不触发压缩。"""
         for i in range(15):
             agent._add_to_memory("user" if i % 2 == 0 else "assistant", f"消息 {i}")
         has_compacted = any(

@@ -104,6 +104,7 @@ const appConfig: ExpoConfig = {
     'expo-localization',
     'expo-secure-store',
     'expo-font',
+    'expo-notifications',
     [
       'expo-splash-screen',
       {

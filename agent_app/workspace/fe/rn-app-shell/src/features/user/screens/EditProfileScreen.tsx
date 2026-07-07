@@ -127,7 +127,7 @@ export function EditProfileScreen(): React.ReactElement {
         onPress={handlePickAvatar}
         activeOpacity={0.7}
       >
-        <CachedImage source={{ uri: avatarUri }} style={styles.avatar} placeholderType="circle" />
+        <CachedImage uri={avatarUri} style={styles.avatar} />
         <Text style={[styles.avatarHint, { color: theme.colors.primary }]}>更换头像</Text>
       </TouchableOpacity>
 
@@ -162,8 +162,12 @@ export function EditProfileScreen(): React.ReactElement {
                 ]}
                 onPress={() => setGender(g)}
               >
-                <Text style={{ color: isActive ? theme.colors.primary : theme.colors.semantic.textSecondary }}>
-                  {GENDER_MAP[g].icon} {GENDER_MAP[g].label}
+                <Text
+                  style={{
+                    color: isActive ? theme.colors.primary : theme.colors.semantic.textSecondary,
+                  }}
+                >
+                  {GENDER_MAP[g]}
                 </Text>
               </TouchableOpacity>
             );
@@ -184,11 +188,15 @@ export function EditProfileScreen(): React.ReactElement {
         />
       </View>
 
-      {/* 简介 */}
+      {/* 个人简介 */}
       <View style={[styles.field, { backgroundColor: theme.colors.semantic.surface }]}>
         <Text style={[styles.label, { color: theme.colors.semantic.textSecondary }]}>个人简介</Text>
         <TextInput
-          style={[styles.input, styles.bioInput, { color: theme.colors.semantic.textPrimary }]}
+          style={[
+            styles.input,
+            styles.bioInput,
+            { color: theme.colors.semantic.textPrimary },
+          ]}
           value={bio}
           onChangeText={setBio}
           placeholder="介绍一下自己吧"
@@ -196,20 +204,22 @@ export function EditProfileScreen(): React.ReactElement {
           maxLength={MAX_BIO_LENGTH}
           multiline
           numberOfLines={3}
-          textAlignVertical="top"
         />
         <Text style={[styles.charCount, { color: theme.colors.semantic.textTertiary }]}>
           {bio.length}/{MAX_BIO_LENGTH}
         </Text>
       </View>
 
-      {/* 保存按钮 */}
+      {/* 保存 */}
       <TouchableOpacity
         style={[styles.saveBtn, { backgroundColor: theme.colors.primary, opacity: isPending ? 0.6 : 1 }]}
         onPress={handleSave}
         disabled={isPending}
+        activeOpacity={0.8}
       >
-        <Text style={styles.saveText}>{isPending ? '保存中...' : '保存'}</Text>
+        <Text style={styles.saveBtnText}>
+          {isPending ? '保存中...' : '保存'}
+        </Text>
       </TouchableOpacity>
     </ScrollView>
   );
@@ -220,68 +230,64 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   content: {
-    paddingBottom: spacing.huge,
+    padding: spacing.md,
+    paddingBottom: spacing.xxl,
   },
   avatarSection: {
     alignItems: 'center',
-    paddingVertical: spacing.xxl,
+    paddingVertical: spacing.xl,
+    gap: spacing.sm,
   },
   avatar: {
-    width: 96,
-    height: 96,
-    borderRadius: 48,
+    width: 80,
+    height: 80,
+    borderRadius: 40,
   },
   avatarHint: {
-    marginTop: spacing.md,
-    fontSize: fontSizes.md,
+    fontSize: fontSizes.sm,
   },
   field: {
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.md,
-    marginHorizontal: spacing.lg,
-    marginBottom: spacing.sm,
     borderRadius: radii.md,
+    padding: spacing.md,
+    marginBottom: spacing.sm,
   },
   label: {
-    fontSize: fontSizes.sm,
+    fontSize: fontSizes.xs,
     marginBottom: spacing.xs,
   },
   input: {
-    fontSize: fontSizes.lg,
+    fontSize: fontSizes.md,
     paddingVertical: spacing.xs,
-    padding: 0,
   },
   bioInput: {
-    height: 80,
+    minHeight: 70,
+    textAlignVertical: 'top',
   },
   charCount: {
-    textAlign: 'right',
     fontSize: fontSizes.xs,
+    textAlign: 'right',
     marginTop: spacing.xs,
   },
   genderRow: {
     flexDirection: 'row',
     gap: spacing.sm,
-    marginTop: spacing.xs,
   },
   genderBtn: {
-    flex: 1,
+    paddingHorizontal: spacing.lg,
     paddingVertical: spacing.sm,
-    borderRadius: radii.sm,
+    borderRadius: radii.full,
     borderWidth: 1,
-    alignItems: 'center',
   },
   saveBtn: {
-    marginHorizontal: spacing.lg,
-    marginTop: spacing.xxl,
-    height: 48,
+    marginTop: spacing.xl,
+    paddingVertical: spacing.md,
     borderRadius: radii.md,
-    justifyContent: 'center',
     alignItems: 'center',
+    justifyContent: 'center',
   },
-  saveText: {
-    color: '#ffffff',
-    fontSize: fontSizes.lg,
-    fontWeight: fontWeights.semibold,
+  saveBtnText: {
+    color: '#fff',
+    fontSize: fontSizes.md,
+    fontWeight: fontWeights.semibold as any,
   },
 });

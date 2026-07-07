@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { storage } from '@core/storage';
 import { httpClient } from '@core/http';
 import { createLogger } from '@core/logger';
+import { eventBus, EventNames } from '@shared/utils/eventBus';
 
 const logger = createLogger('Auth');
 
@@ -59,6 +60,12 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   // 应用启动时恢复登录态
   initialize: async () => {
     try {
+      // 注册全局登出事件监听（仅注册一次，由 store 单例保证）
+      eventBus.on(EventNames.FORCE_LOGOUT, () => {
+        logger.warn('Force logout triggered by HTTP layer');
+        get().logout();
+      });
+
       const [token, userInfo] = await Promise.all([
         storage.get<string>(AUTH_TOKEN_KEY),
         storage.get<UserInfo>(USER_INFO_KEY),

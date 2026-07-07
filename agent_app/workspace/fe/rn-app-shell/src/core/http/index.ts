@@ -8,6 +8,7 @@ import axios, {
 import { env } from '@core/config';
 import { createLogger } from '@core/logger';
 import { storage } from '@core/storage';
+import { eventBus, EventNames } from '@shared/utils/eventBus';
 import type { ApiResponse } from './types';
 
 const logger = createLogger('HttpClient');
@@ -124,7 +125,8 @@ class HttpClient {
             // Token 刷新失败 — 清除登录态
             await storage.remove(TOKEN_KEY);
             await storage.remove(REFRESH_TOKEN_KEY);
-            // TODO: 触发全局登出事件
+            // 广播全局登出事件，auth store 和导航层各自响应
+            eventBus.emit(EventNames.FORCE_LOGOUT);
             throw refreshError;
           } finally {
             isRefreshing = false;
@@ -163,28 +165,33 @@ class HttpClient {
     return response.data.data;
   }
 
+  async patch<T>(url: string, data?: unknown, config?: AxiosRequestConfig): Promise<T> {
+    const response = await this.instance.patch<ApiResponse<T>>(url, data, config);
+    return response.data.data;
+  }
+
   async delete<T>(url: string, config?: AxiosRequestConfig): Promise<T> {
     const response = await this.instance.delete<ApiResponse<T>>(url, config);
     return response.data.data;
   }
 
-  // 文件上传专用
-  async upload<T>(url: string, formData: FormData, onProgress?: (percent: number) => void): Promise<T> {
+  async upload<T>(url: string, formData: FormData, config?: AxiosRequestConfig): Promise<T> {
     const response = await this.instance.post<ApiResponse<T>>(url, formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-      onUploadProgress: (event) => {
-        if (event.total && onProgress) {
-          onProgress(Math.round((event.loaded * 100) / event.total));
-        }
+      ...config,
+      headers: {
+        ...config?.headers,
+        'Content-Type': 'multipart/form-data',
       },
     });
     return response.data.data;
   }
 }
 
-// 自定义错误类
+// ---- 自定义错误 ----
+
 export class BusinessError extends Error {
   code: number;
+
   constructor(code: number, message: string) {
     super(message);
     this.name = 'BusinessError';
@@ -201,11 +208,14 @@ export class NetworkError extends Error {
 
 export class HttpError extends Error {
   status: number;
+
   constructor(status: number, message: string) {
     super(message);
     this.name = 'HttpError';
     this.status = status;
   }
 }
+
+// ---- 单例 ----
 
 export const httpClient = new HttpClient();

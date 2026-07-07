@@ -1,4 +1,5 @@
 import { Tabs } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
 import { useAppTheme } from '@design-system/theme';
 
 /**
@@ -23,21 +24,39 @@ export default function TabLayout(): React.ReactElement {
         name="home"
         options={{
           title: '首页',
-          tabBarIcon: ({ color }) => null, // TODO: 接入 Icon 组件
+          tabBarIcon: ({ color, size, focused }) => (
+            <Ionicons
+              name={focused ? 'home' : 'home-outline'}
+              size={size}
+              color={color}
+            />
+          ),
         }}
       />
       <Tabs.Screen
         name="user-center"
         options={{
           title: '我的',
-          tabBarIcon: ({ color }) => null,
+          tabBarIcon: ({ color, size, focused }) => (
+            <Ionicons
+              name={focused ? 'person' : 'person-outline'}
+              size={size}
+              color={color}
+            />
+          ),
         }}
       />
       <Tabs.Screen
         name="settings"
         options={{
           title: '设置',
-          tabBarIcon: ({ color }) => null,
+          tabBarIcon: ({ color, size, focused }) => (
+            <Ionicons
+              name={focused ? 'settings' : 'settings-outline'}
+              size={size}
+              color={color}
+            />
+          ),
         }}
       />
     </Tabs>

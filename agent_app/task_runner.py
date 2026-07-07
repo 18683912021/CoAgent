@@ -17,9 +17,9 @@ FAILED_TASKS_LOG = LOGS_DIR / "failed_tasks.jsonl"
 # ── 超时常量 ──────────────────────────────────────────
 
 CHAT_TIMEOUT = 120      # 闲聊：2 分钟
-WORK_TIMEOUT = 360      # 单个 Agent 工作：6 分钟
-PM_TIMEOUT = 240        # PM 分析+调研：4 分钟
-RETRY_TIMEOUT = 600     # 重试总超时：10 分钟
+WORK_TIMEOUT = 720      # 单个 Agent 工作：12 分钟
+PM_TIMEOUT = 480        # PM 分析+调研：8 分钟
+RETRY_TIMEOUT = 900     # 重试总超时：15 分钟
 
 # ── 重试策略 ──────────────────────────────────────────
 
@@ -361,6 +361,26 @@ class TaskRunner:
         elif bot_key == "fe":
             return TaskRunner.validate_frontend_code(bot_key, new_files)
         return ""
+
+    # ── 清理 ─────────────────────────────────────────
+
+    @staticmethod
+    def cleanup_test_files(bot_key: str) -> int:
+        """删除 Agent 生成的无用测试/示例文件。每次代码生成后自动执行。"""
+        ws = WORKSPACE_ROOT / bot_key
+        if not ws.exists():
+            return 0
+        patterns = ["_Test", "_test", ".test.", ".spec.", "__tests__", "__snapshots__"]
+        deleted = 0
+        for f in list(ws.rglob("*")):
+            if f.is_file() and any(p in str(f) for p in patterns):
+                f.unlink()
+                deleted += 1
+        # 清理空目录
+        for d in sorted(list(ws.rglob("*")), key=lambda x: len(str(x)), reverse=True):
+            if d.is_dir() and not any(d.iterdir()):
+                d.rmdir()
+        return deleted
 
     # ── 日志 ─────────────────────────────────────────
 
