@@ -277,10 +277,11 @@ class BaseAgent:
         if intent == "chat":
             return "\n\n[Chat Budget] 闲聊模式。回复控制在3句话以内，不要展开分析或追问需求。"
         elif intent == "read":
-            return ("\n\n[Read 模式] 用户想了解某个产品/技术/话题。做深度调研："
-                    "1) 用 search_web 从多个角度搜索 2) 用 web_fetch 打开 3-5 个最有价值的链接读全文 "
-                    "3) 交叉验证后给出综合结论，引用具体来源。不要只搜一次就回答。"
-                    "如果有飞书文档链接，用 read_feishu_wiki 完整阅读。")
+            return ("\n\n[Read 模式] 先判断用户要你读什么："
+                    "1) 用户提到了具体文件/文件夹路径 → 用 list_dir + read_file 直接读本地文件，不要搜索"
+                    "2) 用户发了飞书文档链接 → 用 read_feishu_wiki / read_feishu_doc 读，不要搜索"
+                    "3) 用户想了解某个话题/产品（无具体文件）→ 用 search_web 搜索 + web_fetch 读全文"
+                    "读完给摘要，不要写代码。")
         elif intent == "plan":
             return "\n\n[Plan 模式] 只出分析和方案，不要写代码。说明思路、架构、选型理由即可。"
         return ""

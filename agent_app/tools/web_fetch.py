@@ -59,7 +59,7 @@ async def web_fetch(url: str) -> str:
     except httpx.TimeoutException:
         return f"[web_fetch] 访问超时: {url}（20s 无响应）"
     except Exception as e:
-        return f"[web_fetch] 访问失败: {e}"
+        return "[web_fetch] 无法访问该页面，请尝试搜索关键词或换其他来源。"
 
 
 def _extract_title(html: str) -> str:

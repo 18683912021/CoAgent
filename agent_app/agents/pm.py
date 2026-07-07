@@ -9,10 +9,14 @@ from tools.feishu_docs import (
     READ_DOC_TOOL_SPEC, READ_BITABLE_TOOL_SPEC, SEARCH_WIKI_TOOL_SPEC, READ_WIKI_TOOL_SPEC,
     read_feishu_doc, read_feishu_bitable, search_feishu_wiki, read_feishu_wiki,
 )
+from tools.code_editor import (
+    READ_FILE_TOOL_SPEC, WRITE_FILE_TOOL_SPEC, LIST_DIR_TOOL_SPEC,
+    read_file, write_file, list_dir,
+)
 
 PROMPT_FILE = Path(__file__).parent.parent / "prompts" / "pm" / "prompt.md"
 MEMORY_FILE = Path(__file__).parent.parent / "memory" / "memory-pm.md"
-WORKSPACE = Path(__file__).parent.parent / "workspace" / "prd"
+PROJECT_ROOT = str(Path(__file__).parent.parent)
 
 
 class PMAgent(BaseAgent):
@@ -26,10 +30,11 @@ class PMAgent(BaseAgent):
             name="PM",
             system_prompt=system_prompt,
             memory_file=str(MEMORY_FILE),
-            tools=[SEARCH_TOOL_SPEC, WEB_FETCH_TOOL_SPEC, SEND_MESSAGE_TOOL_SPEC,
+            tools=[READ_FILE_TOOL_SPEC, WRITE_FILE_TOOL_SPEC, LIST_DIR_TOOL_SPEC,
+                   SEARCH_TOOL_SPEC, WEB_FETCH_TOOL_SPEC, SEND_MESSAGE_TOOL_SPEC,
                    READ_DOC_TOOL_SPEC, READ_BITABLE_TOOL_SPEC, SEARCH_WIKI_TOOL_SPEC,
                    READ_WIKI_TOOL_SPEC],
-            workspace=str(WORKSPACE),
+            workspace=PROJECT_ROOT,
             model=model,
         )
 
@@ -37,7 +42,13 @@ class PMAgent(BaseAgent):
         """PM Agent 的工具实现"""
         import asyncio
 
-        if name == "search_web":
+        if name == "read_file":
+            return read_file(PROJECT_ROOT, args.get("path", ""))
+        elif name == "write_file":
+            return write_file(PROJECT_ROOT, args.get("path", ""), args.get("content", ""))
+        elif name == "list_dir":
+            return list_dir(PROJECT_ROOT, args.get("path", "."))
+        elif name == "search_web":
             return asyncio.run(search_web(**args))
         elif name == "web_fetch":
             return asyncio.run(web_fetch(**args))

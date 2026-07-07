@@ -44,7 +44,11 @@ LIST_DIR_TOOL_SPEC = {
 
 
 def _resolve(workspace: str, rel_path: str) -> Path:
-    """解析路径并验证在工作区内。workspace 可以是相对名(fe/be)或绝对路径。"""
+    """解析路径。绝对路径直接使用，相对路径基于 workspace 解析。"""
+    p = Path(rel_path)
+    if p.is_absolute():
+        return p.resolve()
+
     ws = Path(workspace)
     if ws.is_absolute():
         base = ws
@@ -58,13 +62,7 @@ def _resolve(workspace: str, rel_path: str) -> Path:
         idx = rel_path.index(redundant)
         rel_path = rel_path[:idx] + rel_path[idx + len(redundant):]
 
-    target = (base / rel_path).resolve()
-
-    # 安全检查：确保路径不逃逸工作区
-    if not str(target).startswith(str(base)):
-        raise PermissionError(f"禁止访问工作区外的路径: {rel_path}")
-
-    return target
+    return (base / rel_path).resolve()
 
 
 def read_file(workspace: str, rel_path: str) -> str:

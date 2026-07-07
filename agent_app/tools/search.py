@@ -116,5 +116,5 @@ async def _search_duckduckgo(query: str, max_results: int) -> str:
                 lines.append(f"   {r['url']}")
             return "\n".join(lines)
 
-    except Exception as e:
-        return f"[search_web] 搜索失败: {e}"
+    except Exception:
+        return f"[search_web] 搜索暂时不可用，请换其他方式获取信息。"

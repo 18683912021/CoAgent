@@ -152,11 +152,12 @@ python main.py
 |------|------|:--:|:--:|:--:|
 | `search_web` | Tavily / DuckDuckGo 联网搜索 | ✅ | ✅ | ✅ |
 | `web_fetch` | 直接访问 URL 读网页全文 | ✅ | ✅ | ✅ |
+| `read_file` / `list_dir` | 读本地文件 / 列目录 | ✅ | ✅ | ✅ |
 | `read_feishu_wiki` | 读飞书知识库 | ✅ | ✅ | ✅ |
 | `read_feishu_doc` | 读飞书文档 | ✅ | ✅ | ✅ |
 | `search_feishu_wiki` | 搜索飞书知识库 | ✅ | ✅ | ✅ |
 | `read_feishu_bitable` | 读多维表格 | ✅ | ✅ | ✅ |
-| `write_file` / `read_file` / `list_dir` | 代码读写 | — | ✅ | ✅ |
+| `write_file` | 写代码 | — | ✅ | ✅ |
 
 ---
 

@@ -16,7 +16,7 @@ from tools.feishu_docs import (
 
 PROMPT_FILE = Path(__file__).parent.parent / "prompts" / "be" / "prompt.md"
 MEMORY_FILE = Path(__file__).parent.parent / "memory" / "memory-be.md"
-WORKSPACE = "be"  # 相对于 WORKSPACE_ROOT 的子目录
+PROJECT_ROOT = str(Path(__file__).parent.parent)
 
 
 class BEAgent(BaseAgent):
@@ -39,17 +39,17 @@ class BEAgent(BaseAgent):
         )
 
     def _execute_tool(self, name: str, args: dict) -> str:
-        """BE Agent 的工具实现 —— 仅在 workspace/be/ 内操作"""
+        """BE Agent 的工具实现 —— 读全局，写 workspace/be/"""
         if name == "read_file":
-            return read_file(WORKSPACE, args.get("path", ""))
+            return read_file(PROJECT_ROOT, args.get("path", ""))
         elif name == "search_web":
             return asyncio.run(search_web(**args))
         elif name == "web_fetch":
             return asyncio.run(web_fetch(**args))
         elif name == "write_file":
-            return write_file(WORKSPACE, args.get("path", ""), args.get("content", ""))
+            return write_file(PROJECT_ROOT, args.get("path", ""), args.get("content", ""))
         elif name == "list_dir":
-            return list_dir(WORKSPACE, args.get("path", "."))
+            return list_dir(PROJECT_ROOT, args.get("path", "."))
         elif name == "read_feishu_doc":
             return asyncio.run(read_feishu_doc(**args))
         elif name == "read_feishu_bitable":

@@ -40,13 +40,10 @@ async def _try_all_apps(action_name: str, api_call) -> str:
         if "Access denied" in msg or "permission" in msg.lower() or "scope" in msg.lower():
             permission_fails.append(f"  ❌ {label} — 未开通所需权限")
         else:
-            return f"[{action_name}] 失败: {result['msg']}"  # 非权限错误，直接返回
+            return f"[{action_name}] 暂时无法访问，请换一种方式获取信息。"
 
     # 全部权限不足
-    lines = [f"[{action_name}] 所有应用均无此权限："]
-    lines.extend(permission_fails)
-    lines.append("请在飞书开放平台 → 应用 → 权限管理 → 搜索对应权限 → 勾选 → 创建版本发布")
-    return "\n".join(lines)
+    return f"[{action_name}] 飞书权限不足，请用其他方式提供内容（如发链接或文件）。"
 
 # ── Tool Specs ─────────────────────────────────────────
 
@@ -132,7 +129,7 @@ async def read_feishu_doc(doc_id: str) -> str:
         return result
     if result["success"]:
         return f"文档《{result['title']}》：\n{result['content']}"
-    return f"[read_feishu_doc] 失败: {result['msg']}"
+    return "[read_feishu_doc] 暂时无法读取，请用其他方式提供内容。"
 
 
 async def read_feishu_bitable(app_token: str, table_id: str) -> str:
@@ -156,7 +153,7 @@ async def read_feishu_bitable(app_token: str, table_id: str) -> str:
         for r in records[:20]:
             lines.append(f"  - {r['fields']}")
         return "\n".join(lines)
-    return f"[read_feishu_bitable] 失败: {result['msg']}"
+    return "[read_feishu_bitable] 暂时无法读取，请用其他方式提供内容。"
 
 
 async def search_feishu_wiki(query: str) -> str:
@@ -177,7 +174,7 @@ async def search_feishu_wiki(query: str) -> str:
             lines.append(f"  - 《{item['title']}》")
             lines.append(f"    {item['snippet'][:120]}")
         return "\n".join(lines)
-    return f"[search_feishu_wiki] 失败: {result['msg']}"
+    return "[search_feishu_wiki] 搜索暂时不可用，请用其他方式获取信息。"
 
 
 async def read_feishu_wiki(wiki_token: str) -> str:
