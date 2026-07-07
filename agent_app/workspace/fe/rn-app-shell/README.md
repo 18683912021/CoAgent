@@ -1,4 +1,6 @@
-# AppShell — React Native 企业级模板
+# 轻松面试助手 — AI 面试辅助工具
+
+> React Native 企业级模板（Expo SDK 52）
 
 ## 目录结构
 

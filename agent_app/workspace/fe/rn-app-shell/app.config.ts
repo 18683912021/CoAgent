@@ -48,13 +48,13 @@ const ENV_CONFIG: Record<
 const currentEnv = ENV_CONFIG[APP_ENV];
 
 const appConfig: ExpoConfig = {
-  name: APP_ENV === 'production' ? 'AppShell' : `AppShell (${APP_ENV})`,
-  slug: 'testapp',
+  name: APP_ENV === 'production' ? '轻松面试助手' : `轻松面试助手 (${APP_ENV})`,
+  slug: 'easy-interview',
   owner: 'wuyang_studio',
   version: '1.0.0',
   orientation: 'portrait',
   icon: './assets/images/icon.png',
-  scheme: 'rnappshell',
+  scheme: 'easyinterview',
   userInterfaceStyle: 'automatic',
   newArchEnabled: true,
 
@@ -63,11 +63,11 @@ const appConfig: ExpoConfig = {
     supportsTablet: true,
     bundleIdentifier:
       APP_ENV === 'production'
-        ? 'com.company.appshell'
-        : `com.company.appshell.${APP_ENV}`,
+        ? 'com.company.easyinterview'
+        : `com.company.easyinterview.${APP_ENV}`,
     buildNumber: '1',
     infoPlist: {
-      LSApplicationQueriesSchemes: ['rnappshell'],
+      LSApplicationQueriesSchemes: ['easyinterview'],
     },
   },
 
@@ -79,13 +79,13 @@ const appConfig: ExpoConfig = {
     },
     package:
       APP_ENV === 'production'
-        ? 'com.company.appshell'
-        : `com.company.appshell.${APP_ENV}`,
+        ? 'com.company.easyinterview'
+        : `com.company.easyinterview.${APP_ENV}`,
     versionCode: 1,
     intentFilters: [
       {
         action: 'VIEW',
-        data: { scheme: 'rnappshell' },
+        data: { scheme: 'easyinterview' },
         category: ['BROWSABLE', 'DEFAULT'],
       },
     ],
