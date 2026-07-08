@@ -13,8 +13,12 @@ logger = logging.getLogger(__name__)
 def _run_bot_process(bot_key: str, msg_queue, stop_event=None) -> None:
     """子进程入口：为一个 Bot 建立 WebSocket 长连接。收到消息 → queue → 主进程。"""
     import asyncio
+    import logging as _logging
     import lark_oapi as lark
     from lark_oapi.api.im.v1 import P2ImMessageReceiveV1
+
+    # 子进程独立配置日志（multiprocessing spawn 模式不继承主进程配置）
+    _logging.basicConfig(level=_logging.INFO, format="%(asctime)s %(message)s")
 
     bot = BOTS.get(bot_key)
     if not bot or not bot["app_id"]:
@@ -81,7 +85,7 @@ def _run_bot_process(bot_key: str, msg_queue, stop_event=None) -> None:
             cli = lark.ws.Client(
                 app_id, app_secret,
                 event_handler=handler,
-                log_level=lark.LogLevel.ERROR,
+                log_level=lark.LogLevel.INFO,
             )
             cli.start()
         except Exception as e:
