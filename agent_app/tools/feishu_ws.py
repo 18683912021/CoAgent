@@ -29,7 +29,14 @@ def _run_bot_process(bot_key: str, msg_queue, stop_event=None) -> None:
     app_secret = bot["app_secret"]
 
     def handle_message(data: P2ImMessageReceiveV1) -> None:
-        logger.info(f"[{bot_key}] 收到 WebSocket 推送事件")
+        # 打印原始消息结构用于调试
+        msg = data.event.message
+        raw_content = msg.content or "{}"
+        raw_msg_type = getattr(msg, "msg_type", "text") or "text"
+        logger.info(
+            f"[{bot_key}] 收到 WebSocket 推送事件 msg_type={raw_msg_type} "
+            f"content={raw_content[:200]}"
+        )
         try:
             from tools.message_normalizer import normalize_feishu_message
 
