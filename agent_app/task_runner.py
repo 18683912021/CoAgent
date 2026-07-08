@@ -16,10 +16,10 @@ FAILED_TASKS_LOG = LOGS_DIR / "failed_tasks.jsonl"
 
 # ── 超时常量 ──────────────────────────────────────────
 
-CHAT_TIMEOUT = 120      # 闲聊：2 分钟
-WORK_TIMEOUT = 720      # 单个 Agent 工作：12 分钟
-PM_TIMEOUT = 480        # PM 分析+调研：8 分钟
-RETRY_TIMEOUT = 900     # 重试总超时：15 分钟
+CHAT_TIMEOUT = 240      # 闲聊：4 分钟
+WORK_TIMEOUT = 1440     # 单个 Agent 工作：24 分钟
+PM_TIMEOUT = 960        # PM 分析+调研：16 分钟
+RETRY_TIMEOUT = 1800    # 重试总超时：30 分钟
 
 # ── 重试策略 ──────────────────────────────────────────
 
@@ -101,7 +101,7 @@ class TaskRunner:
 
     async def run_with_timeout(
         self, agent: Any, command: str, max_tokens: int = 4096,
-        timeout: int = WORK_TIMEOUT, max_rounds: int = 15,
+        timeout: int = WORK_TIMEOUT, max_rounds: int = 30,
         intent: str = "work",
     ) -> dict:
         """在超时保护下执行 Agent。超时返回 error 而非挂死。
@@ -135,7 +135,7 @@ class TaskRunner:
 
     async def run_with_progress(
         self, agent: Any, command: str, max_tokens: int = 4096,
-        timeout: int = WORK_TIMEOUT, max_rounds: int = 15,
+        timeout: int = WORK_TIMEOUT, max_rounds: int = 30,
         intent: str = "work",
     ) -> tuple["asyncio.Future[dict]", "queue.Queue[dict]"]:
         """带进度流式输出的 Agent 执行。启动后立即返回，进度通过 Queue 获取。
@@ -185,7 +185,7 @@ class TaskRunner:
 
     async def run_with_retry(
         self, agent: Any, task: str, bot_key: str, task_id: str,
-        max_retries: int = 4, intent: str = "work",
+        max_retries: int = 8, intent: str = "work",
     ) -> dict:
         """带分级策略注入 + 失败模式检测 + 超时保护的 Agent 执行。"""
         backoff = 1

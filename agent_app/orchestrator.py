@@ -51,7 +51,7 @@ class TaskState:
     review_result: str = ""   # PM Light Review 结果
     fe_retries: int = 0
     be_retries: int = 0
-    max_retries: int = 4
+    max_retries: int = 8
     error: str = ""
     created_at: str = ""
     completed_at: str = ""
@@ -547,33 +547,31 @@ class Orchestrator:
     # ── 打字指示器 ─────────────────────────────────────
 
     async def _show_typing(self, bot_key: str, message_id: str,
-                           chat_id: str = "") -> tuple[asyncio.Task | None, str]:
-        """在用户消息上添加 ✍️ Reaction + 每 6s 刷新，模拟"正在输入"动画。
+                           chat_id: str = "") -> tuple[asyncio.Task | None, dict | None, str]:
+        """在用户消息上添加 Reaction + 文字"正在输入..."，两者同时展示。
 
-        message_id 为空时，发送文字"正在输入..."作为兜底。
         Returns:
-            (typing_task, initial_reaction_id)
+            (typing_task, reaction_state_dict, typing_text_msg_id)
         """
         bot = self._get_bot_config(bot_key)
         app_id = bot.get("app_id", "")
         app_secret = bot.get("app_secret", "")
 
-        # ── 没有 message_id：直接文字兜底 ──
-        if not message_id or not app_id:
-            if chat_id:
-                print(f"[typing] {bot_key}: message_id 为空，发文字兜底")
-                await self._notify(chat_id, bot_key, "正在输入...")
-            return None, ""
+        # ── 发送文字"正在输入..."（始终发送，与 Reaction 并发）──
+        typing_text_msg_id = ""
+        if chat_id:
+            result = await send_message(app_id, app_secret, chat_id, "正在输入...")
+            typing_text_msg_id = result.get("message_id", "")
 
-        # ── 正常路径：Reaction ✍️ ──
-        print(f"[typing] {bot_key}: 添加 ✍️ Reaction → msg={message_id[:20]}...")
-        result = await add_reaction(app_id, app_secret, message_id, "WRITING_HAND")
-        if not result["success"]:
-            # Reaction 失败（权限不足/API 变更等）→ 回退到文字兜底
-            print(f"[typing] {bot_key}: ✍️ Reaction 失败 → {result['msg']}（回退文字兜底）")
-            if chat_id:
-                await self._notify(chat_id, bot_key, "正在输入...")
-            return None, ""
+        # ── 添加 Reaction ──
+        if not message_id or not app_id:
+            return None, None, typing_text_msg_id
+
+        print(f"[typing] {bot_key}: 添加 OK Reaction → msg={message_id[:20]}...")
+        reaction_result = await add_reaction(app_id, app_secret, message_id, "OK")
+        if not reaction_result["success"]:
+            print(f"[typing] {bot_key}: Reaction 失败 → {reaction_result['msg']}（文字仍然展示）")
+            return None, None, typing_text_msg_id
         print(f"[typing] {bot_key}: ✍️ Reaction 成功 ✓")
 
         # 用可变容器共享 reaction_id，避免竞态：refresh loop 更新后 _hide_typing 拿旧值删错
@@ -590,7 +588,7 @@ class Orchestrator:
                     break
                 if state["reaction_id"]:
                     await delete_reaction(app_id, app_secret, message_id, state["reaction_id"])
-                r = await add_reaction(app_id, app_secret, message_id, "WRITING_HAND")
+                r = await add_reaction(app_id, app_secret, message_id, "OK")
                 if r["success"]:
                     state["reaction_id"] = r["reaction_id"]
 
@@ -598,8 +596,9 @@ class Orchestrator:
         return typing_task, state
 
     async def _hide_typing(self, bot_key: str, message_id: str,
-                           typing_task: asyncio.Task | None, state: dict | None) -> None:
-        """停止 typing indicator：取消刷新循环并删除最后的 reaction。"""
+                           typing_task: asyncio.Task | None, state: dict | None,
+                           typing_text_msg_id: str = "") -> None:
+        """停止 typing indicator：取消刷新循环、删除 reaction、删除"正在输入..."文字。"""
         if typing_task and not typing_task.done():
             typing_task.cancel()
             try:
@@ -610,9 +609,15 @@ class Orchestrator:
         reaction_id = state.get("reaction_id", "") if state else ""
         if reaction_id and message_id:
             bot = self._get_bot_config(bot_key)
-            print(f"[typing] {bot_key}: 摘除 ✍️ Reaction")
+            print(f"[typing] {bot_key}: 摘除 OK Reaction")
             await delete_reaction(bot.get("app_id", ""), bot.get("app_secret", ""),
                                   message_id, reaction_id)
+
+        # 删除"正在输入..."文字消息
+        if typing_text_msg_id:
+            bot = self._get_bot_config(bot_key)
+            await edit_message(bot.get("app_id", ""), bot.get("app_secret", ""),
+                              typing_text_msg_id, "")
 
     # ── 流式执行（✍️ + 进度消息）────────────────────────
 
@@ -649,19 +654,19 @@ class Orchestrator:
         detail = event.get("detail", "")
 
         if etype == "thinking":
-            return ""  # 不向用户展示"第N轮思考"
+            return "🤔 思考中..."
 
         _TOOL_LABELS: dict[str, str] = {
-            "search_web":        "搜索网页",
-            "web_fetch":         "访问网页",
-            "read_feishu_doc":   "读飞书文档",
-            "read_feishu_wiki":  "读知识库",
-            "search_feishu_wiki":"搜索知识库",
-            "read_feishu_bitable":"读多维表格",
-            "write_file":        "写代码",
-            "read_file":         "读代码",
-            "list_dir":          "列目录",
-            "send_feishu_message":"发消息",
+            "search_web":        "🔍 搜索网页",
+            "web_fetch":         "🌐 访问网页",
+            "read_feishu_doc":   "📄 读飞书文档",
+            "read_feishu_wiki":  "📚 读知识库",
+            "search_feishu_wiki":"🔍 搜索知识库",
+            "read_feishu_bitable":"📊 读多维表格",
+            "write_file":        "✍️ 写代码",
+            "read_file":         "📖 读代码",
+            "list_dir":          "📂 列目录",
+            "send_feishu_message":"💬 发消息",
         }
 
         label = _TOOL_LABELS.get(tool, tool)
@@ -682,9 +687,10 @@ class Orchestrator:
         agent, command: str, max_tokens: int, timeout: int, max_rounds: int,
         intent: str = "work",
     ) -> dict:
-        """执行 Agent，同时维护 ✍️ Reaction + 发送进度消息。"""
-        # ── ✍️ 打字指示器 ──
-        typing_task, typing_state = await self._show_typing(bot_key, message_id, chat_id)
+        """执行 Agent，同时维护 Reaction + 文字"正在输入..." + 进度消息。"""
+        # ── 打字指示器（Reaction + 文字并发）──
+        typing_task, typing_state, typing_text_msg_id = await self._show_typing(
+            bot_key, message_id, chat_id)
 
         # ── 启动 Agent（带进度队列）──
         result_future, progress_q = await self.runner.run_with_progress(
@@ -694,12 +700,12 @@ class Orchestrator:
 
         last_label = ""
         progress_msg_id = ""        # 进度消息 ID（用于原地编辑，不刷屏）
-        silent_rounds = 0           # Patrol: 连续无进度的轮次
+        silent_rounds = 0           # Patrol: 连续无进度的轮次（1s/轮）
         silence_notified = False
         try:
             while True:
-                # 等待 Agent 完成或 6s 间隔（匹配 ✍️ 刷新周期）
-                done, _ = await asyncio.wait([result_future], timeout=6.0)
+                # 每 1 秒轮询一次进度，实现实时更新
+                done, _ = await asyncio.wait([result_future], timeout=1.0)
 
                 # ── 排空进度队列（非阻塞、线程安全）──
                 had_progress = False
@@ -717,12 +723,12 @@ class Orchestrator:
                         last_label = label
                         had_progress = True
 
-                # ── Patrol 沉默检测：48s 无进度 → 提醒用户 ──
+                # ── Patrol 沉默检测：30s 无进度 → 提醒用户 ──
                 if had_progress:
                     silent_rounds = 0
                 else:
                     silent_rounds += 1
-                if silent_rounds >= 8 and not silence_notified:
+                if silent_rounds >= 30 and not silence_notified:
                     silence_msg = "⏳ 仍在工作中（暂无新的进度更新）。复杂任务可能需要更长时间…"
                     await self._send_progress(chat_id, bot_key, silence_msg, progress_msg_id)
                     silence_notified = True
@@ -732,7 +738,12 @@ class Orchestrator:
 
             return await result_future
         finally:
-            await self._hide_typing(bot_key, message_id, typing_task, typing_state)
+            # 清理进度消息：编辑为简短的完成标记
+            if progress_msg_id:
+                await self._send_progress(chat_id, bot_key, "✅", progress_msg_id)
+            # 清理 Reaction + 文字"正在输入..."
+            await self._hide_typing(bot_key, message_id, typing_task, typing_state,
+                                   typing_text_msg_id)
 
     async def _route_pm(self, chat_id: str, user_id: str, command: str,
                         mentioned_others: list[str] | None = None,
@@ -751,13 +762,13 @@ class Orchestrator:
         # ── 意图预分类：闲聊用短 token，工作用完整 pipeline ──
         intent = self._classify_intent(command, "pm")
         if intent == "chat":
-            max_tokens, max_rounds, timeout = 1024, 3, CHAT_TIMEOUT
+            max_tokens, max_rounds, timeout = 2048, 6, CHAT_TIMEOUT
         elif intent == "read":
-            max_tokens, max_rounds, timeout = 4096, 30, 720     # 读文档+摘要
+            max_tokens, max_rounds, timeout = 8192, 60, 1440    # 读文档+摘要
         elif intent == "plan":
-            max_tokens, max_rounds, timeout = 4096, 30, PM_TIMEOUT
+            max_tokens, max_rounds, timeout = 8192, 60, PM_TIMEOUT
         else:
-            max_tokens, max_rounds, timeout = 8192, 30, PM_TIMEOUT
+            max_tokens, max_rounds, timeout = 16384, 60, PM_TIMEOUT
 
         # ── 审批门：有待审批 PRD + 用户说确认词 → 直接派发 ──
         session = self._get_or_create_session(chat_id, "pm", command, intent)
@@ -875,13 +886,13 @@ class Orchestrator:
         # ── 意图预分类 ──
         intent = self._classify_intent(command, bot_key)
         if intent == "chat":
-            max_tokens, max_rounds, timeout = 1024, 3, CHAT_TIMEOUT
+            max_tokens, max_rounds, timeout = 2048, 6, CHAT_TIMEOUT
         elif intent == "read":
-            max_tokens, max_rounds, timeout = 4096, 30, 720     # 读文档+摘要
+            max_tokens, max_rounds, timeout = 8192, 60, 1440    # 读文档+摘要
         elif intent == "plan":
-            max_tokens, max_rounds, timeout = 4096, 30, WORK_TIMEOUT
+            max_tokens, max_rounds, timeout = 8192, 60, WORK_TIMEOUT
         else:
-            max_tokens, max_rounds, timeout = 8192, 30, WORK_TIMEOUT
+            max_tokens, max_rounds, timeout = 16384, 60, WORK_TIMEOUT
 
         # ── 会话管理：如果有活跃会话，注入项目上下文 ──
         session = self._get_or_create_session(chat_id, bot_key, command, intent)
@@ -1040,7 +1051,7 @@ class Orchestrator:
         )
 
         result = await self.runner.run_with_timeout(
-            self.pm, review_prompt, max_tokens=1024, timeout=60, max_rounds=3, intent="plan",
+            self.pm, review_prompt, max_tokens=2048, timeout=120, max_rounds=6, intent="plan",
         )
 
         review_text = result.get("result", "") if result["success"] else ""

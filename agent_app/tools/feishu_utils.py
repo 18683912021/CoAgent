@@ -171,12 +171,12 @@ async def edit_message(app_id: str, app_secret: str, message_id: str, text: str)
         return {"success": False, "message_id": "", "msg": f"异常: {e}"}
 
 
-async def add_reaction(app_id: str, app_secret: str, message_id: str, emoji_type: str = "WRITING_HAND") -> dict:
+async def add_reaction(app_id: str, app_secret: str, message_id: str, emoji_type: str = "OK") -> dict:
     """给消息添加表情回应（用于模拟"正在输入"状态）。
 
     Args:
         message_id: 飞书消息 ID
-        emoji_type: 表情类型，默认 WRITING_HAND（✍️）
+        emoji_type: 表情类型，默认 OK（👌）
 
     Returns:
         {"success": bool, "reaction_id": str, "msg": str}

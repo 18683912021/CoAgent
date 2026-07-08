@@ -13,11 +13,11 @@ load_dotenv()
 _client = Anthropic(
     base_url=os.environ["ANTHROPIC_BASE_URL"],
     api_key=os.environ["ANTHROPIC_API_KEY"],
-    timeout=720.0,      # 单次 HTTP 请求超时：12 分钟
-    max_retries=2,       # SDK 层重试 2 次
+    timeout=1440.0,     # 单次 HTTP 请求超时：24 分钟
+    max_retries=4,       # SDK 层重试 4 次
 )
 DEFAULT_MODEL = os.environ.get("ANTHROPIC_MODEL", "deepseek-v4-pro")
-AGENT_TIMEOUT = 720      # Agent 整体执行超时（秒）
+AGENT_TIMEOUT = 1440     # Agent 整体执行超时（秒）
 # 共享记忆已移除——Agent 之间通过 workspace/shared/ 目录通信更可靠
 
 
@@ -369,7 +369,7 @@ class BaseAgent:
 
     # ── 工具执行循环 ──────────────────────────────────
 
-    def run(self, user_message: str, max_rounds: int = 5, max_tokens: int = 8192,
+    def run(self, user_message: str, max_rounds: int = 10, max_tokens: int = 16384,
             on_progress: Callable[[str, str, str], None] | None = None,
             intent: str = "work") -> dict:
         """执行一次 Agent 对话。支持多轮工具调用循环。
