@@ -48,6 +48,10 @@ def _run_bot_process(bot_key: str, msg_queue, stop_event=None) -> None:
 
             # 过滤：Bot 自己的消息（text 为空表示应跳过）
             if not nm.text and not nm.attachment_info:
+                logger.info(
+                    f"[{bot_key}] 消息被过滤: text='{nm.text}' attachment='{nm.attachment_info}' "
+                    f"mentioned={nm.is_mentioned}"
+                )
                 return
 
             logger.info(
