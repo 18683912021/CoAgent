@@ -139,11 +139,13 @@ async def feishu_event(request: Request):
 # ── 信号处理：Ctrl+C 时确保子进程清理干净 ──
 
 def _signal_handler(signum, frame):
-    """收到 SIGINT/SIGTERM 时主动清理子进程。"""
+    """收到 SIGINT/SIGTERM 时主动清理子进程并立即退出。"""
+    import os as _os
     sig_name = signal.Signals(signum).name
     logger.info(f"收到 {sig_name} 信号，开始清理子进程...")
     _shutdown_subprocesses()
-    # 不主动 exit —— 让 Uvicorn 的 shutdown 流程接管
+    logger.info("子进程已清理，立即退出（不等 agent 线程）")
+    _os._exit(0)
 
 
 signal.signal(signal.SIGINT, _signal_handler)

@@ -139,20 +139,33 @@ def normalize_feishu_message(
     else:
         command = text
 
-    # 去掉 @Bot 前缀
+    # 替换内部 ID（@cli_xxx → @Agent名字）
+    for uid, name in id_to_name.items():
+        command = command.replace(f"@{uid}", f"@{name}")
+
+    # 去掉 @Bot 前缀（三种格式：@_user_N消息 / @名字消息 / @名字 消息）
     if command.startswith("@"):
-        parts = command.split(" ", 1)
-        command = parts[1] if len(parts) > 1 else ""
+        import re
+        # 格式 1: @_user_N 是飞书文本消息的 @mention 占位符（_user_N ∈ mentions array）
+        command = re.sub(r'^@_user_\d+\s?', '', command, count=1)
+        # 格式 2: @BotName 直接出现的名字
+        if command.startswith("@"):
+            stripped = False
+            for name in [bot_name, bot_short_name]:
+                prefix = f"@{name}"
+                if command.startswith(prefix):
+                    command = command[len(prefix):].lstrip()
+                    stripped = True
+                    break
+            if not stripped:
+                parts = command.split(" ", 1)
+                command = parts[1] if len(parts) > 1 else ""
 
     # 附件信息附到 command 前面
     if attachment_info and command:
         command = f"{attachment_info}\n{command}"
     elif attachment_info:
         command = attachment_info
-
-    # 替换内部 ID（@_user_X → @Agent名字）
-    for uid, name in id_to_name.items():
-        command = command.replace(f"@{uid}", f"@{name}")
 
     return NormalizedMessage(
         text=command.strip(),

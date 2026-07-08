@@ -85,6 +85,9 @@ def write_file(workspace: str, rel_path: str, content: str) -> str:
     """写入文件"""
     try:
         target = _resolve(workspace, rel_path)
+        # 防止 Agent 误传空路径或目录路径
+        if target.is_dir():
+            return f"[write_file] 路径是目录不是文件: {rel_path} → 请指定具体文件名，如 '{rel_path}/tasks.md'"
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
         return f"[write_file] 写入成功: {rel_path} ({len(content)} 字符)"
