@@ -519,6 +519,9 @@ class BaseAgent:
             return str(args.get("app_token", ""))[:40]
         elif tool_name == "write_file":
             return str(args.get("path", ""))[:80]
+        elif tool_name == "edit_file":
+            old = str(args.get("old_string", ""))[:30].replace("\n", " ")
+            return f"{str(args.get('path', ''))[:60]} | -{old}..."
         elif tool_name == "read_file":
             return str(args.get("path", ""))[:80]
         elif tool_name == "list_dir":
@@ -530,4 +533,4 @@ class BaseAgent:
 
 # 工具完成事件只对"有副作用的工具"发送，纯读操作不发完成事件，减少噪音
 _PROGRESS_WORTH_TOOLS = {"search_web", "web_fetch", "read_feishu_doc", "read_feishu_wiki",
-                          "search_feishu_wiki", "read_feishu_bitable", "write_file"}
+                          "search_feishu_wiki", "read_feishu_bitable", "write_file", "edit_file"}
