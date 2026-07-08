@@ -92,11 +92,11 @@ FEISHU_BE_APP_SECRET=xxx
 python main.py
 ├── ws-pm / ws-fe / ws-be 子进程 ── 飞书 WebSocket 长连接
 ├── msg-consumer 线程 → Queue → Orchestrator
-├── 消息标准化层 → 意图分类（chat/read/plan/work）
-└── Agent 执行：✍️ Reaction + 进度消息原地编辑 + 审查闭环
+├── 消息标准化层 → @_user_N 格式兼容 + 意图分类（chat/read/plan/work）
+└── Agent 执行：OK Reaction + "正在输入..."文字并发 + 实时进度 + 完成后自动清理
 ```
 
-**协作流程**：用户 @PM → PM 深度调研（search_web + web_fetch）→ 输出 PRD + 验收 Checklist → FE/BE 并行开发 → PM Light Review（PASS/FAIL）→ 自动清理测试文件 → 发结果
+**协作流程**：用户 @PM → PM 深度调研（search_web + web_fetch）→ 输出 PRD + 验收 Checklist → 审批门等确认 → FE/BE 并行（技术协商→开发→进度回填→联调签字）→ PM验收（通过/退回+原因）→ 发结果。详见 `prompts/shared/COLLABORATION.md`。
 
 ---
 
@@ -109,38 +109,43 @@ python main.py
 | **四种意图** | chat/read/plan/work 自动分流 |
 | **深度调研** | ChatGPT 风格：多角度搜索 → web_fetch 打开 3-5 个链接读全文 → 交叉验证 → 引来源 |
 | **联网搜索** | Brave Search（实时网页）+ DuckDuckGo 兜底；三个 Agent 都有 `search_web` + `web_fetch` |
-| **✍️ 打字指示器** | Reaction API；失败回退文字"正在输入..." |
-| **进度原地编辑** | 同一条消息反复编辑，不刷屏 |
-| **Patrol 沉默检测** | 48s 无进度 → 发提醒 |
+| **👌 打字指示器** | OK Reaction + "正在输入..." 文字并发，完成后自动清理 |
+| **实时进度** | 1s 轮询，进度消息原地编辑不刷屏，完成后自动清除 |
+| **Patrol 沉默检测** | 30s 无进度 → 发提醒 |
 | **测试文件自动清理** | 每次代码生成后删 `_Test*`、`*.test.*`、`__tests__/` |
 
 ### 审查闭环
 
 | 机制 | 说明 |
 |------|------|
-| **PM Light Review** | 对照 PRD 验收标准审查 FE/BE，不通过带反馈返工一次 |
+| **PM Light Review** | 对照 PRD 验收标准审查 FE/BE，不通过退回并注明原因 |
 | **验收 Checklist** | PM 输出 `- [ ]` 格式清单，Review 时自动勾选 |
+| **审批门** | PM 出 PRD 后等确认再派发；确认词无需 @mention 也能触发 |
+| **需求反馈闭环** | FE/BE 可质疑 PRD → PM 接受或驳回（必须附理由）→ 全部记入「需求变更记录」 |
 | **STATUS 持久化** | 三 Agent 状态独立记录，不互相覆盖 |
 
 ### 记忆与会话（借鉴 OpenClaw）
 
 | 机制 | 说明 |
 |------|------|
-| **LLM 语义压缩** | 30 条触发，调 LLM 生成摘要替代截断拼接；压缩前 flush 到 notes |
+| **纯文本压缩** | 超 30 条内存时纯文本拼接摘要，瞬时完成，不阻塞 Agent |
 | **精选笔记** | `notes-{name}.md`，Agent 自主记录技术经验 |
 | **每日日志** | `daily/YYYY-MM-DD-{name}.md`，系统自动写 |
-| **TaskSession** | 记住项目上下文，延续任务自动注入；30 分钟过期 |
+| **TaskSession** | 记住项目上下文，延续任务自动注入（自然简洁格式）；30 分钟过期 |
+| **群呼自然化** | @多人时不再注入机械指令，自然传递消息上下文 |
 | **Agent 锁** | asyncio.Lock 防并发记忆损坏 |
 
 ### 执行引擎
 
 | 机制 | 说明 |
 |------|------|
-| **并行执行** | FE/BE 通过 asyncio.gather 并行，各自 30 轮工具调用 |
-| **超时保护** | work 720s / PM 480s / 重试 900s / HTTP 720s |
-| **PUA 重试** | L0-L4 五级压力 + 失败模式检测（打转/甩锅/空壳） |
-| **流式进度** | on_progress 回调 + queue.Queue 桥接同步→异步 |
-| **代码验证** | Python `ast.parse` + 前端括号/import/export 检查 |
+| **并行执行** | FE/BE 通过 asyncio.gather 并行，各自 60 轮工具调用 |
+| **超时保护** | work 24min / PM 16min / 闲聊 4min / 重试 30min / HTTP 24min |
+| **PUA 重试** | L0-L4 五级压力 + 失败模式检测（打转/甩锅/空壳）+ 最多 8 次 |
+| **流式进度** | on_progress 回调 + queue.Queue 桥接同步→异步 + 1 秒实时轮询 |
+| **代码验证** | Python `ast.parse` + 前端括号/import/export 检查 + `edit_file` 防幻觉校验 |
+| **文件备份** | `write_file` 覆盖前自动备份到 `.backup/`，保留修改历史 |
+| **优雅退出** | Ctrl+C → stop_event→terminate→join→kill，不残留子进程 |
 
 ---
 
@@ -157,7 +162,9 @@ python main.py
 | `read_feishu_doc` | 读飞书文档 | ✅ | ✅ | ✅ |
 | `search_feishu_wiki` | 搜索飞书知识库 | ✅ | ✅ | ✅ |
 | `read_feishu_bitable` | 读多维表格 | ✅ | ✅ | ✅ |
-| `write_file` | 写代码 | — | ✅ | ✅ |
+| `write_file` | 创建/覆盖文件（覆盖前自动备份到 .backup/） | — | ✅ | ✅ |
+| `edit_file` | 精确编辑（old→new，唯一匹配+防幻觉校验+备份） | — | ✅ | ✅ |
+| `list_dir` | 列出工作目录结构 | ✅ | ✅ | ✅ |
 
 ---
 
@@ -213,17 +220,23 @@ agent_app/
 ├── tools/
 │   ├── search.py              #   Brave Search + DuckDuckGo
 │   ├── web_fetch.py           #   URL 直接访问
+│   ├── feishu.py              #   飞书消息发送（签名/API）
 │   ├── feishu_utils.py        #   飞书 API（消息/Reaction/编辑/文档）
 │   ├── feishu_docs.py         #   云文档工具
 │   ├── feishu_ws.py           #   WebSocket 长连接
 │   ├── message_normalizer.py  #   消息标准化
-│   └── code_editor.py         #   代码读写
+│   └── code_editor.py         #   代码读写 + 精确编辑 + 自动备份
 ├── tests/                     # 47 个单元测试
 ├── memory/                    # 运行时记忆 + notes + daily 日志
 ├── workspace/                 # 代码产出
 │   ├── fe/                    #   前端项目（如 rn-app-shell）
 │   ├── be/                    #   后端项目
 │   ├── prd/                   #   PM 产出的 PRD
-│   └── shared/                #   共享文件（API_CONTRACT.md / STATUS.md / tasks/）
+│   └── shared/                #   共享文件
+│       ├── API_CONTRACT.md     #     API 契约（PM→FE/BE 接口约定）
+│       ├── STATUS.md           #     三人任务状态
+│       ├── COLLABORATION.md    #     协作协议（任务生命周期/需求反馈闭环）
+│       └── tasks/
+│           └── _TEMPLATE.md    #     任务文档模板
 └── logs/                      # 失败任务日志
 ```

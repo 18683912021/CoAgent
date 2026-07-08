@@ -217,11 +217,23 @@ class Orchestrator:
     # ── PM 入口 ─────────────────────────────────────────
 
     def _build_social_context(self, command: str, mentioned_others: list[str]) -> str:
-        """构建群呼上下文。当用户同时 @ 多人时，帮 Agent 理解这是社交招呼而非工作指派。"""
+        """构建群呼上下文。当用户同时 @ 多人时，帮 Agent 理解这是社交招呼还是工作指令。"""
         if not mentioned_others:
             return command
 
+        # 检测原始消息是否包含明确的工作指令
+        _work_signals = ["做", "写", "改", "加", "删", "放", "修", "配", "装", "设", "定",
+                        "全部", "所有", "以后", "今后", "往后", "默认", "规则", "规范", "标准"]
+        is_work_directive = any(s in command for s in _work_signals)
+
         names = "、".join(mentioned_others)
+        if is_work_directive:
+            return (
+                f"[群呼上下文] 用户同时 @ 了你和 {names}——"
+                f"这是一条给你们所有人的工作指令，你要执行，但只做你份内的事。"
+                f"你只代表你自己，不要替别人回答或替别人承诺。"
+                f"用户说的是：「{command}」"
+            )
         return (
             f"[群呼上下文] 用户同时 @ 了你和 {names}——"
             f"就像生活中同时叫了几个人的名字。被叫到就自然应一声，不是给你派活。"
@@ -442,6 +454,7 @@ class Orchestrator:
         "部署", "上线", "发布", "回滚", "重启",
         # 中文 — 通用
         "搞", "弄", "整", "重构", "测试",
+        "放", "存", "保存", "移动", "搬",
         # 英文
         "build", "create", "make", "develop", "implement",
         "setup", "scaffold", "init", "deploy", "fix", "update",
@@ -547,77 +560,60 @@ class Orchestrator:
     # ── 打字指示器 ─────────────────────────────────────
 
     async def _show_typing(self, bot_key: str, message_id: str,
-                           chat_id: str = "") -> tuple[asyncio.Task | None, dict | None, str]:
-        """在用户消息上添加 Reaction + 文字"正在输入..."，两者同时展示。
+                           chat_id: str = "", intent: str = "chat") -> tuple[dict | None, str]:
+        """添加 👌 Reaction + 工作模式发"正在输入..."文字。
+
+        - 闲聊: 只加 Reaction（秒回，不需要文字提示）
+        - 工作/Plan: Reaction + 文字"正在输入..."
+        - 文字消息用 edit 清空而非 ✅，不留残影
 
         Returns:
-            (typing_task, reaction_state_dict, typing_text_msg_id)
+            (reaction_state, typing_text_msg_id)
         """
         bot = self._get_bot_config(bot_key)
         app_id = bot.get("app_id", "")
         app_secret = bot.get("app_secret", "")
 
-        # ── 发送文字"正在输入..."（始终发送，与 Reaction 并发）──
-        typing_text_msg_id = ""
-        if chat_id:
-            result = await send_message(app_id, app_secret, chat_id, "正在输入...")
-            typing_text_msg_id = result.get("message_id", "")
+        # ── 文字"正在输入..." + Reaction 同时发出 ──
+        async def send_text():
+            if chat_id and intent in ("work", "plan") and app_id:
+                r = await send_message(app_id, app_secret, chat_id, "正在输入...")
+                return r.get("message_id", "")
+            return ""
 
-        # ── 添加 Reaction ──
-        if not message_id or not app_id:
-            return None, None, typing_text_msg_id
-
-        print(f"[typing] {bot_key}: 添加 OK Reaction → msg={message_id[:20]}...")
-        reaction_result = await add_reaction(app_id, app_secret, message_id, "OK")
-        if not reaction_result["success"]:
-            print(f"[typing] {bot_key}: Reaction 失败 → {reaction_result['msg']}（文字仍然展示）")
-            return None, None, typing_text_msg_id
-        print(f"[typing] {bot_key}: ✍️ Reaction 成功 ✓")
-
-        # 用可变容器共享 reaction_id，避免竞态：refresh loop 更新后 _hide_typing 拿旧值删错
-        state = {"reaction_id": result["reaction_id"]}
-        stop_event = asyncio.Event()
-
-        async def refresh_loop():
-            while not stop_event.is_set():
-                try:
-                    await asyncio.wait_for(stop_event.wait(), timeout=6)
-                except asyncio.TimeoutError:
-                    pass
-                if stop_event.is_set():
-                    break
-                if state["reaction_id"]:
-                    await delete_reaction(app_id, app_secret, message_id, state["reaction_id"])
+        async def add_reaction_op():
+            if message_id and app_id:
                 r = await add_reaction(app_id, app_secret, message_id, "OK")
                 if r["success"]:
-                    state["reaction_id"] = r["reaction_id"]
+                    return {"reaction_id": r["reaction_id"]}
+            return None
 
-        typing_task = asyncio.create_task(refresh_loop())
-        return typing_task, state
+        typing_text_msg_id, state = await asyncio.gather(send_text(), add_reaction_op())
+
+        return state, typing_text_msg_id
 
     async def _hide_typing(self, bot_key: str, message_id: str,
-                           typing_task: asyncio.Task | None, state: dict | None,
-                           typing_text_msg_id: str = "") -> None:
-        """停止 typing indicator：取消刷新循环、删除 reaction、删除"正在输入..."文字。"""
-        if typing_task and not typing_task.done():
-            typing_task.cancel()
-            try:
-                await typing_task
-            except asyncio.CancelledError:
-                pass
+                           state: dict | None, typing_text_msg_id: str = "") -> None:
+        """清理 typing indicator：摘 Reaction + 编辑文字为空串。"""
+        # 删除 Reaction
+        if state and message_id:
+            reaction_id = state.get("reaction_id", "")
+            if reaction_id:
+                bot = self._get_bot_config(bot_key)
+                try:
+                    await delete_reaction(bot.get("app_id", ""), bot.get("app_secret", ""),
+                                          message_id, reaction_id)
+                except Exception:
+                    pass
 
-        reaction_id = state.get("reaction_id", "") if state else ""
-        if reaction_id and message_id:
-            bot = self._get_bot_config(bot_key)
-            print(f"[typing] {bot_key}: 摘除 OK Reaction")
-            await delete_reaction(bot.get("app_id", ""), bot.get("app_secret", ""),
-                                  message_id, reaction_id)
-
-        # 删除"正在输入..."文字消息
+        # 编辑"正在输入..."为空串，缩成最小气泡（失败无所谓，回复会自然冲走它）
         if typing_text_msg_id:
             bot = self._get_bot_config(bot_key)
-            await edit_message(bot.get("app_id", ""), bot.get("app_secret", ""),
-                              typing_text_msg_id, "")
+            try:
+                await edit_message(bot.get("app_id", ""), bot.get("app_secret", ""),
+                                   typing_text_msg_id, "")
+            except Exception:
+                pass
 
     # ── 流式执行（✍️ + 进度消息）────────────────────────
 
@@ -689,8 +685,8 @@ class Orchestrator:
     ) -> dict:
         """执行 Agent，同时维护 Reaction + 文字"正在输入..." + 进度消息。"""
         # ── 打字指示器（Reaction + 文字并发）──
-        typing_task, typing_state, typing_text_msg_id = await self._show_typing(
-            bot_key, message_id, chat_id)
+        typing_state, typing_text_msg_id = await self._show_typing(
+            bot_key, message_id, chat_id, intent)
 
         # ── 启动 Agent（带进度队列）──
         result_future, progress_q = await self.runner.run_with_progress(
@@ -742,8 +738,7 @@ class Orchestrator:
             if progress_msg_id:
                 await self._send_progress(chat_id, bot_key, "✅", progress_msg_id)
             # 清理 Reaction + 文字"正在输入..."
-            await self._hide_typing(bot_key, message_id, typing_task, typing_state,
-                                   typing_text_msg_id)
+            await self._hide_typing(bot_key, message_id, typing_state, typing_text_msg_id)
 
     async def _route_pm(self, chat_id: str, user_id: str, command: str,
                         mentioned_others: list[str] | None = None,

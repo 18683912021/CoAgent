@@ -139,27 +139,12 @@ class BaseAgent:
         self._memory = [compacted] + self._memory[15:]
 
     def _summarize_messages(self, entries: list[str]) -> str:
-        """调 LLM 将消息列表摘要为一段可读中文（≤200字）。失败时回退拼接。"""
-        prompt = (
-            "将以下对话片段摘要为一段简洁中文（≤200字）。"
-            "保留：关键决策、技术选型、需求变更、重要产出。忽略：闲聊、打招呼、空操作。\n\n"
-            + "\n".join(entries[-20:])  # 最多送 20 条给 LLM
-        )
-        try:
-            response = _client.messages.create(
-                model=self.model,
-                max_tokens=300,
-                system="你是精确的对话摘要器。只输出摘要文本，无前缀无解释。",
-                messages=[{"role": "user", "content": prompt}],
-            )
-            text = ""
-            for block in response.content:
-                if block.type == "text":
-                    text += block.text
-            return text.strip()[:300]
-        except Exception:
-            # LLM 摘要失败 → 回退到简单拼接
-            return "；".join(e.split("] ", 1)[-1][:100] for e in entries[:8])
+        """将消息列表摘要为纯文本拼接（不调 LLM，避免阻塞 Agent 执行）。
+
+        用分号拼接前 8 条的关键片段，保证压缩是瞬时操作。
+        每条消息取 ] 之后的内容（去掉 role 前缀），截断 100 字。
+        """
+        return "；".join(e.split("] ", 1)[-1][:100] for e in entries[:8])
 
     # ── Honcho 风格事实提取 ──────────────────────────
 
@@ -168,7 +153,7 @@ class BaseAgent:
         _skip_prefixes = [
             "[群呼上下文]", "[长期记忆]", "[系统提示]", "[团队共享记忆]",
             "[个人记忆]", "[Chat Budget]", "[上下文压缩]", "[来自",
-            "[系统验证]", "[编译检查]", "[结构检查]",
+            "[系统验证]", "[编译检查]", "[结构检查]", "[任务延续]",
         ]
         fact_signals = [
             "决定", "选", "偏好", "要求", "需要", "叫", "名字是",
@@ -391,6 +376,10 @@ class BaseAgent:
                     and m["content"][0].get("type") in ("tool_use", "tool_result"))
         ]
 
+        # ── 工具死循环熔断：同工具同错误连续 3 次 → 中断 ──
+        self._stuck_count = 0
+        self._last_stuck_key = ""
+
         # ── 注入个人记忆 + 今日日志 ──
         facts_preamble = self._build_facts_preamble()
         daily_preamble = self._build_daily_preamble()
@@ -470,6 +459,7 @@ class BaseAgent:
             self._memory.append({"role": "assistant", "content": assistant_content})
 
             tool_results = []
+            stuck_tool = ""
             for tu in tool_uses:
                 # ── 进度：工具开始 ──
                 detail = self._progress_detail(tu["name"], tu["input"])
@@ -477,6 +467,23 @@ class BaseAgent:
                     on_progress("tool_start", tu["name"], detail)
 
                 output = self._execute_tool(tu["name"], tu["input"])
+
+                # ── 熔断：同一工具同一错误连续 3 次 → 中断，防止死循环 ──
+                stuck_key = f"{tu['name']}|{output[:120]}"
+                if stuck_key == self._last_stuck_key:
+                    self._stuck_count += 1
+                else:
+                    self._stuck_count = 1
+                    self._last_stuck_key = stuck_key
+
+                if self._stuck_count >= 3:
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": tu["id"],
+                        "content": output,
+                    })
+                    stuck_tool = tu["name"]
+                    break
 
                 # ── 进度：工具完成 ──
                 if on_progress and tu["name"] in _PROGRESS_WORTH_TOOLS:
@@ -489,6 +496,14 @@ class BaseAgent:
                     "content": output,
                 })
             self._memory.append({"role": "user", "content": tool_results})
+
+            if stuck_tool:
+                return {
+                    "success": False,
+                    "result": "",
+                    "error": f"工具 {stuck_tool} 连续失败 3 次，已中断防止死循环。请检查参数或换一种方式。",
+                }
+
             self._save_memory()
 
         return {

@@ -69,13 +69,29 @@ class TaskRunner:
 
     # ── 快照 & 验证 ──────────────────────────────────
 
+    # 快照时跳过的目录（含大量依赖文件，遍历它们毫无意义且阻塞 event loop）
+    _SKIP_DIRS = {"node_modules", "__pycache__", ".git", ".expo", "dist", "build",
+                  ".next", "vendor", "venv", ".venv", "egg-info", ".turbo"}
+
+    @staticmethod
+    def _walk_files(ws: Path) -> set[str]:
+        """高效遍历工作区文件，在遍历层剪枝依赖目录（不进入 node_modules 等）。"""
+        import os
+        result: set[str] = set()
+        for root, dirs, files in os.walk(str(ws)):
+            dirs[:] = [d for d in dirs if d not in TaskRunner._SKIP_DIRS]
+            for f in files:
+                full = Path(root) / f
+                result.add(str(full.relative_to(ws)))
+        return result
+
     @staticmethod
     def snapshot_workspace(bot_key: str) -> set[str]:
-        """拍快照：记录 workspace 当前所有文件。"""
+        """拍快照：记录 workspace 当前所有文件（跳过依赖目录）。"""
         ws = WORKSPACE_ROOT / bot_key
         if not ws.exists():
             return set()
-        return {str(p.relative_to(ws)) for p in ws.rglob("*") if p.is_file()}
+        return TaskRunner._walk_files(ws)
 
     @staticmethod
     def verify_output(bot_key: str, before: set[str]) -> tuple[bool, list[str]]:
@@ -83,7 +99,7 @@ class TaskRunner:
         ws = WORKSPACE_ROOT / bot_key
         if not ws.exists():
             return False, []
-        after = {str(p.relative_to(ws)) for p in ws.rglob("*") if p.is_file()}
+        after = TaskRunner._walk_files(ws)
         new_files = sorted(after - before)
         return len(new_files) > 0, new_files
 
