@@ -10,7 +10,8 @@ from tools.feishu_utils import BOTS
 logger = logging.getLogger(__name__)
 
 
-def _run_bot_process(bot_key: str, msg_queue: multiprocessing.Queue) -> None:
+def _run_bot_process(bot_key: str, msg_queue: multiprocessing.Queue,
+                     stop_event: multiprocessing.Event | None = None) -> None:
     """子进程入口：为一个 Bot 建立 WebSocket 长连接。收到消息 → queue → 主进程。"""
     import asyncio
     import lark_oapi as lark
@@ -73,6 +74,9 @@ def _run_bot_process(bot_key: str, msg_queue: multiprocessing.Queue) -> None:
 
     delay = 1
     while True:
+        if stop_event and stop_event.is_set():
+            logger.info(f"[{bot_key}] 收到停止信号，子进程退出")
+            break
         try:
             logger.info(f"[{bot_key}] WebSocket 连接中 (PID={multiprocessing.current_process().pid})...")
             cli = lark.ws.Client(
@@ -82,6 +86,8 @@ def _run_bot_process(bot_key: str, msg_queue: multiprocessing.Queue) -> None:
             )
             cli.start()
         except Exception as e:
+            if stop_event and stop_event.is_set():
+                break
             logger.error(f"[{bot_key}] 断开: {e}，{delay}s 重连...")
             time.sleep(delay)
             delay = min(delay * 2, 60)
@@ -114,13 +120,14 @@ def _msg_consumer(msg_queue: multiprocessing.Queue, orchestrator: Any, main_loop
         )
 
 
-def start_all_bots(orchestrator: Any) -> tuple[multiprocessing.Queue, list[multiprocessing.Process]]:
+def start_all_bots(orchestrator: Any) -> tuple[multiprocessing.Queue, list[multiprocessing.Process], multiprocessing.Event]:
     """启动所有 Bot 的 WebSocket 连接（各独立子进程）+ 消息消费线程。
 
     Returns:
-        (消息队列, 子进程列表)
+        (消息队列, 子进程列表, 停止信号)
     """
     msg_queue = multiprocessing.Queue()
+    stop_event = multiprocessing.Event()
 
     # 获取主 event loop（调用方处于 async 上下文中）
     import asyncio as _asyncio
@@ -137,11 +144,11 @@ def start_all_bots(orchestrator: Any) -> tuple[multiprocessing.Queue, list[multi
     consumer.start()
 
     # 三个 Bot 子进程
-    processes = []
+    processes: list[multiprocessing.Process] = []
     for bot_key in ["pm", "fe", "be"]:
         p = multiprocessing.Process(
             target=_run_bot_process,
-            args=(bot_key, msg_queue),
+            args=(bot_key, msg_queue, stop_event),
             name=f"ws-{bot_key}",
             daemon=True,
         )
@@ -149,4 +156,4 @@ def start_all_bots(orchestrator: Any) -> tuple[multiprocessing.Queue, list[multi
         processes.append(p)
 
     logger.info(f"所有 Bot WebSocket 已启动 ({len(processes)} 个子进程)")
-    return msg_queue, processes
+    return msg_queue, processes, stop_event

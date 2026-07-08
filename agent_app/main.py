@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import multiprocessing
+import signal
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, HTTPException
@@ -17,24 +18,48 @@ logger = logging.getLogger(__name__)
 
 _orchestrator: Orchestrator | None = None
 _processes: list[multiprocessing.Process] = []
+_stop_event: multiprocessing.Event | None = None
+
+
+def _shutdown_subprocesses() -> None:
+    """优雅关闭所有子进程：先发停止信号 → 等最多 5s → 强杀 → 确保全死。"""
+    global _processes, _stop_event
+
+    if _stop_event:
+        _stop_event.set()
+        logger.info("已发送停止信号给所有 Bot 子进程")
+
+    import time as _time
+    _time.sleep(0.5)  # 给子进程一点时间检查 stop_event
+
+    for i, p in enumerate(_processes):
+        if p.is_alive():
+            p.terminate()
+            p.join(timeout=5)
+            if p.is_alive():
+                logger.warning(f"子进程 {p.name} (PID={p.pid}) 未响应 terminate，强制 kill")
+                p.kill()
+                p.join(timeout=2)
+            logger.info(f"子进程 {p.name} (PID={p.pid}) 已退出")
+
+    _processes = []
+    logger.info("所有子进程已清理完毕")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """启动时建立 WebSocket，关闭时断开"""
-    global _orchestrator, _processes
+    global _orchestrator, _processes, _stop_event
     _orchestrator = Orchestrator()
     logger.info("Orchestrator 初始化完成")
 
     # 启动所有 Bot 的 WebSocket 长连接（各独立子进程）
-    _, _processes = start_all_bots(_orchestrator)
+    _, _processes, _stop_event = start_all_bots(_orchestrator)
     logger.info("所有 Bot WebSocket 已启动，服务就绪")
 
     yield
 
-    # 关闭所有子进程
-    for p in _processes:
-        p.terminate()
+    _shutdown_subprocesses()
     logger.info("服务关闭")
 
 
@@ -109,6 +134,20 @@ async def feishu_event(request: Request):
         logger.error(f"[webhook] 解析失败: {e}")
 
     return JSONResponse({"code": 0, "msg": "processing"})
+
+
+# ── 信号处理：Ctrl+C 时确保子进程清理干净 ──
+
+def _signal_handler(signum, frame):
+    """收到 SIGINT/SIGTERM 时主动清理子进程。"""
+    sig_name = signal.Signals(signum).name
+    logger.info(f"收到 {sig_name} 信号，开始清理子进程...")
+    _shutdown_subprocesses()
+    # 不主动 exit —— 让 Uvicorn 的 shutdown 流程接管
+
+
+signal.signal(signal.SIGINT, _signal_handler)
+signal.signal(signal.SIGTERM, _signal_handler)
 
 
 if __name__ == "__main__":
