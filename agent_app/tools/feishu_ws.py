@@ -10,8 +10,7 @@ from tools.feishu_utils import BOTS
 logger = logging.getLogger(__name__)
 
 
-def _run_bot_process(bot_key: str, msg_queue: multiprocessing.Queue,
-                     stop_event: multiprocessing.Event | None = None) -> None:
+def _run_bot_process(bot_key: str, msg_queue, stop_event=None) -> None:
     """子进程入口：为一个 Bot 建立 WebSocket 长连接。收到消息 → queue → 主进程。"""
     import asyncio
     import lark_oapi as lark
