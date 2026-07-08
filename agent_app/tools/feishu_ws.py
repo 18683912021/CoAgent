@@ -29,6 +29,7 @@ def _run_bot_process(bot_key: str, msg_queue, stop_event=None) -> None:
     app_secret = bot["app_secret"]
 
     def handle_message(data: P2ImMessageReceiveV1) -> None:
+        logger.info(f"[{bot_key}] 收到 WebSocket 推送事件")
         try:
             from tools.message_normalizer import normalize_feishu_message
 
@@ -109,6 +110,10 @@ def _msg_consumer(msg_queue: multiprocessing.Queue, orchestrator: Any, main_loop
             msg = msg_queue.get(timeout=2)
         except Exception:
             continue
+
+        logger.info(
+            f"[consumer] 收到队列消息 bot={msg['bot_key']} cmd={msg['command'][:60]}"
+        )
 
         # 调度到主 event loop，非阻塞——三条消息同时入队，三个协程并发执行
         _asyncio.run_coroutine_threadsafe(
