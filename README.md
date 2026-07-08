@@ -183,8 +183,33 @@ agent_app/
 ├── task_runner.py             # 执行（超时/重试/流式/验证/清理）
 ├── monitor.py                 # 指标 + 日志
 ├── .env / .env.example
-├── agents/                    # PM / FE / BE
-├── prompts/                   # Agent 定义（角色/技能/工作流/记忆规则）
+├── agents/                    # Agent 类定义
+│   ├── base.py                #   BaseAgent（LLM调用 + 工具循环 + 记忆管理）
+│   ├── pm.py                  #   PM Agent（小吴）
+│   ├── fe.py                  #   FE Agent（小柯）
+│   └── be.py                  #   BE Agent（酱瓜）
+├── prompts/
+│   ├── shared/
+│   │   └── COLLABORATION.md    #   三人协作协议（任务生命周期/联调/验收）
+│   ├── pm/
+│   │   ├── prompt.md           #     身份定义（P8 产品总监 · 小吴）
+│   │   ├── AGENTS.md           #     操作规则（聊天/工作模式 + 任务生命周期）
+│   │   ├── COMMAND.md          #     工作流 + PRD五关自检 + PRD缺陷修复流程
+│   │   ├── SKILL.md            #     技能书（需求分析 + PRD模板 + 任务拆解规范）
+│   │   └── MEMORY.md           #     长期记忆模板
+│   ├── fe/
+│   │   ├── prompt.md           #     身份定义（P8 前端架构师 · 小柯）
+│   │   ├── AGENTS.md           #     操作规则（聊天/工作模式 + 协作）
+│   │   ├── COMMAND.md          #     工作流 + 写后六关自检 + Bug修复六步法
+│   │   ├── SKILL.md            #     技能书（技术选型 + 组件模式 + TS规范）
+│   │   └── MEMORY.md           #     长期记忆模板
+│   ├── be/
+│   │   ├── prompt.md           #     身份定义（P8 后端架构师 · 酱瓜）
+│   │   ├── AGENTS.md           #     操作规则（聊天/工作模式 + 协作）
+│   │   ├── COMMAND.md          #     工作流 + 写后六关自检 + Bug修复六步法
+│   │   ├── SKILL.md            #     技能书（技术选型 + API规范 + Python规范）
+│   │   └── MEMORY.md           #     长期记忆模板
+│   └── pua/                    #   PUA 引擎 L0-L4 重试策略
 ├── tools/
 │   ├── search.py              #   Brave Search + DuckDuckGo
 │   ├── web_fetch.py           #   URL 直接访问
@@ -194,7 +219,11 @@ agent_app/
 │   ├── message_normalizer.py  #   消息标准化
 │   └── code_editor.py         #   代码读写
 ├── tests/                     # 47 个单元测试
-├── memory/                    # 运行时记忆 + notes + daily
-├── workspace/                 # 代码产出（fe/be/prd/shared）
+├── memory/                    # 运行时记忆 + notes + daily 日志
+├── workspace/                 # 代码产出
+│   ├── fe/                    #   前端项目（如 rn-app-shell）
+│   ├── be/                    #   后端项目
+│   ├── prd/                   #   PM 产出的 PRD
+│   └── shared/                #   共享文件（API_CONTRACT.md / STATUS.md / tasks/）
 └── logs/                      # 失败任务日志
 ```

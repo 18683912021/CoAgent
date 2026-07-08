@@ -272,6 +272,176 @@ class User(TimestampMixin, Base):
     is_active: Mapped[bool] = mapped_column(default=True)
 ```
 
+## Python / FastAPI 编码规范
+
+> P8 后端必须写出让 mypy/pyright 满意的代码，接口设计让前端开箱即用。
+
+### 禁止项（红线）
+
+| 禁止 | 原因 | 正确做法 |
+|------|------|----------|
+| 字符串拼接 SQL | SQL 注入漏洞 | SQLAlchemy ORM 或参数化查询 |
+| async 函数内同步阻塞调用 | 阻塞事件循环，拖垮整个服务 | `time.sleep()` → `asyncio.sleep()`，requests → httpx，pymysql → asyncpg |
+| 裸 `except:` / `except Exception: pass` | 吞掉异常，问题不可见 | 捕获具体异常类型，至少 `logger.exception()` |
+| 硬编码密钥/密码 | 泄露到 git 历史 | 环境变量 `os.environ["KEY"]` 或 `pydantic-settings` |
+| `# type: ignore` / `# noqa` | 隐藏真实问题 | 修复类型错误本身 |
+
+### async/await 铁律
+
+```python
+# ❌ async 函数内用同步 pymysql
+async def get_users():
+    conn = pymysql.connect(...)          # 阻塞！
+    return conn.execute("SELECT ...")
+
+# ✅ SQLAlchemy 2.0 async
+async def get_users(db: AsyncSession):
+    result = await db.execute(select(User).where(User.is_active == True))
+    return result.scalars().all()
+
+# ❌ async 函数内 requests.get
+async def call_external():
+    resp = requests.get("https://api.example.com")   # 阻塞！
+
+# ✅ httpx AsyncClient
+async def call_external():
+    async with httpx.AsyncClient() as client:
+        resp = await client.get("https://api.example.com")
+    return resp.json()
+```
+
+### SQLAlchemy Session 管理
+
+```python
+# ✅ FastAPI Depends 自动管理生命周期
+async def get_db():
+    async with AsyncSessionLocal() as session:
+        yield session
+
+@router.get("/users")
+async def list_users(db: Annotated[AsyncSession, Depends(get_db)]):
+    ...
+# ✅ 事务保护的写操作
+async def create_user(db: AsyncSession, data: UserCreate):
+    async with db.begin():                    # 自动 commit/rollback
+        user = User(**data.model_dump())
+        db.add(user)
+        await db.flush()                     # 获取 DB 生成的 id
+    return user
+
+# ❌ 共享 session 跨请求
+# ❌ 手动 session.commit() 后不处理 rollback
+# ❌ lazy load 在 async session 已关闭后触发（用 selectinload 预加载）
+```
+
+### Pydantic v2 最佳实践
+
+```python
+# ✅ 用 Annotated + Field 描述字段
+from typing import Annotated
+from pydantic import BaseModel, Field, EmailStr, field_validator
+
+class UserCreate(BaseModel):
+    username: Annotated[str, Field(min_length=2, max_length=50, examples=["john_doe"])]
+    email: EmailStr
+    age: Annotated[int, Field(ge=0, le=150)]
+    role: Annotated[str, Field(default="user", pattern=r"^(user|admin|moderator)$")]
+
+    @field_validator("username")
+    @classmethod
+    def username_no_special(cls, v: str) -> str:
+        if not v.replace("_", "").replace("-", "").isalnum():
+            raise ValueError("用户名只能包含字母、数字、下划线和连字符")
+        return v.strip()
+
+# ✅ 用 model_config 全局配置
+class BaseSchema(BaseModel):
+    model_config = ConfigDict(
+        from_attributes=True,    # 允许从 ORM model 构建
+        str_strip_whitespace=True,
+        use_enum_values=True,
+    )
+
+# ❌ 不用 from_attributes，手动写 dict 转 model
+# ❌ 不用 field_validator，散落在 service 层校验
+# ❌ 多个 schema 间大量重复字段（用继承/Mixin 减少重复）
+```
+
+### 依赖注入规范
+
+```python
+# ✅ 类型清晰、可测试的依赖注入
+from typing import Annotated
+from fastapi import Depends
+
+async def get_current_user(
+    token: Annotated[str, Depends(oauth2_scheme)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> User:
+    ...
+
+@router.get("/me")
+async def me(current_user: Annotated[User, Depends(get_current_user)]):
+    return current_user
+
+# ❌ 在 router 内部手动解析 token、手动查 DB
+# ❌ Depends 链超过 3 层（难追踪，考虑合并中间依赖）
+```
+
+### 错误处理规范
+
+```python
+# ✅ 统一异常 handler，不在每个路由 try/catch
+from fastapi import Request
+from fastapi.responses import JSONResponse
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"error": exc.detail, "code": exc.status_code},
+    )
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    request_id = str(uuid.uuid4())
+    logger.exception(f"[{request_id}] Unhandled exception: {request.url}")
+    return JSONResponse(
+        status_code=500,
+        content={"error": "InternalError", "request_id": request_id},
+    )
+
+# ✅ 业务层抛具体异常，不返回模糊的 500
+class DuplicateUserError(HTTPException):
+    def __init__(self, field: str, value: str):
+        super().__init__(status_code=409, detail=f"{field} '{value}' 已存在")
+
+# ❌ 每个路由手动 return JSONResponse(status_code=500, ...)
+# ❌ 生产环境 exc.detail 直接返回给客户端（可能泄露内部信息）
+```
+
+### 日志规范
+
+```python
+import logging
+logger = logging.getLogger(__name__)
+
+# ✅ 结构化日志
+logger.info("user_created", extra={"user_id": user.id, "by": operator_id})
+logger.error("payment_failed", extra={"order_id": oid, "reason": str(e)})
+
+# ❌ 无差别 print()
+# ❌ logger.info(f"创建了用户 {user}")  —— 不结构化，不好检索
+# ❌ 敏感信息进入日志：logger.info(f"密码: {password}")
+```
+
+### 性能检查清单
+- [ ] 列表查询没有 `SELECT *` 全字段（指定需要的列）
+- [ ] 大表统计没有 `COUNT(*)` 每次都扫全表（考虑缓存或估算）
+- [ ] 批量操作没有循环单条 INSERT（用 `bulk_insert_mappings` 或 `executemany`）
+- [ ] 热点数据有缓存（Redis Cache-Aside），且设置了 TTL
+- [ ] 耗时操作（发邮件/生成报表/导出）走消息队列异步处理
+
 ## 文件结构
 ```
 workspace/be/{project-name}/

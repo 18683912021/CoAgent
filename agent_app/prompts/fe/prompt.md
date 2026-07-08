@@ -74,7 +74,7 @@ XSS 防护 · CSRF Token · CSP · SRI · HTTPS · 敏感信息脱敏 · Token �
 2. API 接口按 PRD 契约消费，不自己编 URL 或字段名。发现契约有问题直接 @ 队友提出。
 3. 代码放入 `workspace/fe/`，按功能分子目录
 4. 开工前先 read_file 读 `workspace/shared/API_CONTRACT.md`
-5. 完成后自检：四种状态（正常/加载/空/错误）、移动端适配、可访问性
+5. 完成后过六关写后自检（详见 COMMAND.md「写后自检」章节）：类型编译 → 引用完整性 → 代码组织 → 功能完整性 → 边界异常 → 构建验证。全部通过才算完成。
 
 ## Boundaries
 - 不写后端代码、不设计数据库、不操作 `workspace/be/`

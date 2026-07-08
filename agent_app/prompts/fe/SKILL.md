@@ -229,6 +229,112 @@ ipcMain.handle('dialog:saveFile', async (_, { content, defaultName }) => {
 });
 ```
 
+## TypeScript 编码规范
+
+> P8 前端必须写出让 TypeScript 编译器满意的代码，而不是跟编译器打架。
+
+### 禁止项（红线）
+
+| 禁止 | 原因 | 正确做法 |
+|------|------|----------|
+| `as any` | 完全绕过类型检查，埋雷 | `as User` 用具体类型，或用 type guard 收窄 |
+| `@ts-ignore` | 掩耳盗铃，隐藏真实问题 | 修复类型错误本身，或 `@ts-expect-error` + 注释原因 |
+| 裸 `any` 类型 | 让类型系统失效 | `unknown` → type guard 收窄 |
+| `// eslint-disable` | 有 lint 错误说明代码有问题 | 修复代码，不是关闭检查 |
+| `as` 强制类型断言（除非必要） | 伪造类型，运行时原形毕露 | type guard (`if (x is Type)`) 或 zod 运行时校验 |
+
+### 推荐模式
+
+#### 1. API 状态用 Discriminated Union（不用多个 boolean flag）
+```typescript
+// ❌ 不好——多种状态靠 boolean 组合，可能出现不可能的状态
+interface State {
+  loading: boolean;
+  data: User[] | null;
+  error: string | null;
+}
+
+// ✅ 好——每种状态互斥，TypeScript 自动收窄类型
+type State =
+  | { status: 'idle' }
+  | { status: 'loading' }
+  | { status: 'success'; data: User[] }
+  | { status: 'error'; error: string };
+```
+
+#### 2. Props 接口必须显式定义（不用 `React.FC<{...}>` 内联或隐式 any）
+```typescript
+// ❌
+const Card = ({ title, children }: any) => { ... };
+const Card: React.FC<{title: string; children: React.ReactNode}> = ({ title, children }) => { ... };
+
+// ✅
+interface CardProps {
+  title: string;
+  children: React.ReactNode;
+}
+function Card({ title, children }: CardProps) { ... }
+```
+
+#### 3. 可选 Props 给默认值或用可选链，不假设一定有值
+```typescript
+interface Props {
+  onPress?: () => void;
+  className?: string;
+}
+function Button({ onPress, className = '' }: Props) {
+  // ✅ 用默认值 + 可选链
+  const handlePress = () => onPress?.();
+  return <button className={className}>...</button>;
+}
+```
+
+#### 4. 泛型约束——让类型更精确
+```typescript
+// ❌ 没有任何约束
+function getFirst<T>(arr: T[]): T | undefined { return arr[0]; }
+
+// ✅ 有约束，且使用者知道能做什么
+interface Identifiable { id: string; }
+function findById<T extends Identifiable>(items: T[], id: string): T | undefined {
+  return items.find(item => item.id === id);
+}
+```
+
+#### 5. 类型守卫收窄 `unknown` / 联合类型
+```typescript
+// API 返回的数据在编译时是 unknown，运行时才知道是什么
+function isUser(obj: unknown): obj is User {
+  return typeof obj === 'object' && obj !== null && 'id' in obj && 'name' in obj;
+}
+const data: unknown = await fetch('/api/user').then(r => r.json());
+if (isUser(data)) {
+  console.log(data.name); // ✅ 这里 data 类型自动收窄为 User
+}
+```
+
+#### 6. `as const` 固定字面量类型
+```typescript
+// ✅ 用 as const 让数组变为 readonly tuple 类型
+const STATUSES = ['idle', 'loading', 'success', 'error'] as const;
+type Status = typeof STATUSES[number]; // 'idle' | 'loading' | 'success' | 'error'
+```
+
+#### 7. 不要过度使用 `useEffect`
+```typescript
+// ❌ 用 useEffect 做"当 X 变化时计算 Y"
+useEffect(() => { setFullName(firstName + ' ' + lastName); }, [firstName, lastName]);
+
+// ✅ 用 useMemo 直接计算
+const fullName = useMemo(() => `${firstName} ${lastName}`, [firstName, lastName]);
+```
+
+### 类型文件组织
+- 组件专用类型：与组件同目录，如 `UserTable/types.ts`
+- 业务模块共享类型：`features/users/types.ts`
+- 全局通用类型：`src/shared/types/index.ts`
+- API 响应类型：与 API 调用同文件，如 `features/users/api.ts`
+
 ## 文件结构规范
 ```
 workspace/fe/{project-name}/

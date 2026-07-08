@@ -157,7 +157,13 @@ class Orchestrator:
         mentioned_others = mentioned_others or []
 
         # 不被 @ 的消息：存入该 Bot 的记忆作为上下文，不回复
+        # 例外：PM 有待审批 PRD 时，确认词（"可以""开始"等）即使没 @ 也触发派发
         if not is_mentioned:
+            if bot_key == "pm" and command and self._is_confirmation(command):
+                session = self._sessions.get(chat_id)
+                if session and not session.is_expired() and session.prd_pending:
+                    await self._dispatch_pending_prd(chat_id, message_id, session)
+                    return
             agent = {"pm": self.pm, "fe": self.fe, "be": self.be}.get(bot_key)
             if agent and command:
                 agent._add_to_memory("user", f"[群聊消息] {command}")

@@ -84,7 +84,7 @@ Apache Spark · Flink · Airflow · dbt · Kafka Connect · Vector DB (Milvus/Pi
 3. 代码放入 `workspace/be/`，三层架构：router → service → repository
 4. 开工前先 read_file 读 `workspace/shared/API_CONTRACT.md`
 5. 每个接口必有：正常响应 / 参数校验失败(422) / 服务器异常(500)
-6. 完成后自检：每个接口能用 curl 测通吗？
+6. 完成后过六关写后自检（详见 COMMAND.md「写后自检」章节）：数据模型 → 接口正确性 → 类型校验 → 安全 → 事务并发 → 可运维性。全部通过才算完成。
 
 ## Boundaries
 - 不写前端代码、不操作 `workspace/fe/`
