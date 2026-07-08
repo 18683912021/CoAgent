@@ -23,6 +23,7 @@ class NormalizedMessage:
     mentioned_bots: list[str] = field(default_factory=list)   # 被 @ 的 Bot key: ["pm", "fe"]
     mentioned_names: list[str] = field(default_factory=list)  # 被 @ 的人名: ["小吴", "小柯"]
     is_mentioned: bool = False        # 当前 Bot 是否被 @
+    sender_is_bot: bool = False       # 发送者是否为另一个 Bot
     msg_type: str = "text"            # "text" | "file" | "image" | "post"
     attachment_info: str = ""         # 附件描述文本
     raw: dict[str, Any] = field(default_factory=dict)  # 原始消息（debug 用）
@@ -63,10 +64,19 @@ def normalize_feishu_message(
     chat_id = msg.chat_id
     message_id = getattr(msg, "message_id", "") or getattr(raw_event.event, "message_id", "") or ""
 
-    # ── 发送者 ──
+    # ── 发送者（Bot 消息的 user_id 可能为空，open_id/union_id 也要取）──
     sender_id = ""
     if raw_event.event.sender and raw_event.event.sender.sender_id:
-        sender_id = raw_event.event.sender.sender_id.user_id or ""
+        sid = raw_event.event.sender.sender_id
+        sender_id = sid.user_id or sid.open_id or sid.union_id or ""
+    # 构建完整的 bot ID 集合（app_id + open_id + union_id）
+    all_bot_ids_full = set(all_bot_app_ids)
+    if raw_event.event.sender and raw_event.event.sender.sender_id:
+        for fid in [raw_event.event.sender.sender_id.user_id,
+                     raw_event.event.sender.sender_id.open_id,
+                     raw_event.event.sender.sender_id.union_id]:
+            if fid:
+                all_bot_ids_full.add(fid)
 
     # ── @mention 解析（必须在 Bot 自过滤之前，因为 Bot 之间要能互相 @）──
     mentions = getattr(msg, "mentions", []) or []
@@ -80,8 +90,8 @@ def normalize_feishu_message(
     )
 
     # 过滤 Bot 之间非 @ 消息（防死循环），但被 @ 的消息要放行
-    if sender_id in all_bot_app_ids and not is_mentioned:
-        return NormalizedMessage(chat_id=chat_id, channel="feishu")  # text="" 表示应跳过
+    if sender_id in all_bot_ids_full and not is_mentioned:
+        return NormalizedMessage(chat_id=chat_id, channel="feishu", sender_is_bot=True)  # text="" 表示应跳过
 
     # 所有被 @ 的人（排除自己）
     all_mentioned_names: list[str] = []
@@ -170,12 +180,13 @@ def normalize_feishu_message(
     return NormalizedMessage(
         text=command.strip(),
         sender_id=sender_id,
-        sender_name="",  # 飞书 SDK 回调中不直接提供，需额外查
+        sender_name="",
         chat_id=chat_id,
         chat_type="group",
         channel="feishu",
         message_id=message_id,
         is_mentioned=is_mentioned,
+        sender_is_bot=sender_id in all_bot_ids_full,
         mentioned_bots=mentioned_bot_keys,
         mentioned_names=all_mentioned_names,
         msg_type=msg_type,

@@ -117,7 +117,7 @@ class TaskRunner:
 
     async def run_with_timeout(
         self, agent: Any, command: str, max_tokens: int = 4096,
-        timeout: int = WORK_TIMEOUT, max_rounds: int = 30,
+        timeout: int = WORK_TIMEOUT, max_rounds: int = 60,
         intent: str = "work",
     ) -> dict:
         """在超时保护下执行 Agent。超时返回 error 而非挂死。
@@ -151,7 +151,7 @@ class TaskRunner:
 
     async def run_with_progress(
         self, agent: Any, command: str, max_tokens: int = 4096,
-        timeout: int = WORK_TIMEOUT, max_rounds: int = 30,
+        timeout: int = WORK_TIMEOUT, max_rounds: int = 60,
         intent: str = "work",
     ) -> tuple["asyncio.Future[dict]", "queue.Queue[dict]"]:
         """带进度流式输出的 Agent 执行。启动后立即返回，进度通过 Queue 获取。

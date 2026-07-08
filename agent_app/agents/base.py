@@ -354,7 +354,7 @@ class BaseAgent:
 
     # ── 工具执行循环 ──────────────────────────────────
 
-    def run(self, user_message: str, max_rounds: int = 10, max_tokens: int = 16384,
+    def run(self, user_message: str, max_rounds: int = 20, max_tokens: int = 16384,
             on_progress: Callable[[str, str, str], None] | None = None,
             intent: str = "work") -> dict:
         """执行一次 Agent 对话。支持多轮工具调用循环。

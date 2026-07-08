@@ -162,15 +162,20 @@ class Orchestrator:
         if sender_is_bot and is_mentioned and command:
             agent = {"pm": self.pm, "fe": self.fe, "be": self.be}.get(bot_key)
             if agent:
-                bot_names = {"fe": "小柯", "be": "酱瓜", "pm": "小吴"}
-                sender_name = bot_names.get(
-                    {"cli_a9612d": "fe", "cli_aa8d88": "be", "cli_aa8d89": "pm"}.get(user_id[:10], ""),
-                    "队友")
+                # 根据 user_id 匹配发送者名字（用 app_id 查 BOTS 字典）
+                sender_name = "队友"
+                for key, bot_info in BOTS.items():
+                    if bot_info.get("app_id") == user_id:
+                        sender_name = bot_info.get("short_name", key)
+                        break
+                print(f"[bot2bot] {bot_key} 收到来自 {sender_name} 的 @: {command[:60]}")
                 result = await self.runner.run_with_timeout(
                     agent, f"[来自{sender_name}的@] {command}",
-                    max_tokens=1024, max_rounds=3, timeout=CHAT_TIMEOUT, intent="chat")
+                    max_tokens=1024, max_rounds=6, timeout=CHAT_TIMEOUT, intent="chat")
                 if result["success"] and result["result"]:
                     await self._notify(chat_id, bot_key, result["result"])
+                else:
+                    print(f"[bot2bot] {bot_key} bot-to-bot 响应失败: {result.get('error', '')[:80]}")
             return
 
         # 不被 @ 的消息：存入该 Bot 的记忆作为上下文，不回复
@@ -412,7 +417,13 @@ class Orchestrator:
     def _is_confirmation(cls, command: str) -> bool:
         """检测用户消息是否为对 PRD 的确认/批准。"""
         cmd = command.lower().strip()
-        return len(cmd) < 15 and any(kw in cmd for kw in cls._CONFIRMATION_KEYWORDS)
+        # 消息以确认词开头（前 10 字），或短消息（< 50 字）含确认词
+        head = cmd[:10]
+        if any(kw in head for kw in cls._CONFIRMATION_KEYWORDS):
+            return True
+        if len(cmd) < 50 and any(kw in cmd for kw in cls._CONFIRMATION_KEYWORDS):
+            return True
+        return False
 
     async def _dispatch_pending_prd(self, chat_id: str, message_id: str,
                                      session: TaskSession) -> None:
@@ -848,13 +859,13 @@ class Orchestrator:
                 and len(command.strip()) < 50:
             intent = "chat"
         if intent == "chat":
-            max_tokens, max_rounds, timeout = 2048, 6, CHAT_TIMEOUT
+            max_tokens, max_rounds, timeout = 2048, 12, CHAT_TIMEOUT
         elif intent == "read":
-            max_tokens, max_rounds, timeout = 8192, 60, 1440    # 读文档+摘要
+            max_tokens, max_rounds, timeout = 8192, 120, 1440    # 读文档+摘要
         elif intent == "plan":
-            max_tokens, max_rounds, timeout = 8192, 60, PM_TIMEOUT
+            max_tokens, max_rounds, timeout = 8192, 120, PM_TIMEOUT
         else:
-            max_tokens, max_rounds, timeout = 16384, 60, PM_TIMEOUT
+            max_tokens, max_rounds, timeout = 16384, 120, PM_TIMEOUT
 
         # ── 审批门：有待审批 PRD + 用户说确认词 → 直接派发 ──
         session = self._get_or_create_session(chat_id, "pm", command, intent)
@@ -946,9 +957,6 @@ class Orchestrator:
         self._update_status("pm", "完成", task.prd[:80])
         log_event("INFO", "pm_task_prd_ready",
             task_id=task.task_id, intent=intent)
-        # 提醒用户确认
-        await self._notify(chat_id, "pm",
-            "PRD 和 Checklist 已出。确认没问题的话说一声「可以」或「开始」，我立刻派给小柯和酱瓜。")
         return
 
     # ── FE/BE 直接入口：单 Agent 任务 ────────────────────
@@ -977,13 +985,13 @@ class Orchestrator:
                 and len(command.strip()) < 50:
             intent = "chat"
         if intent == "chat":
-            max_tokens, max_rounds, timeout = 2048, 6, CHAT_TIMEOUT
+            max_tokens, max_rounds, timeout = 2048, 12, CHAT_TIMEOUT
         elif intent == "read":
-            max_tokens, max_rounds, timeout = 8192, 60, 1440    # 读文档+摘要
+            max_tokens, max_rounds, timeout = 8192, 120, 1440    # 读文档+摘要
         elif intent == "plan":
-            max_tokens, max_rounds, timeout = 8192, 60, WORK_TIMEOUT
+            max_tokens, max_rounds, timeout = 8192, 120, WORK_TIMEOUT
         else:
-            max_tokens, max_rounds, timeout = 16384, 60, WORK_TIMEOUT
+            max_tokens, max_rounds, timeout = 16384, 120, WORK_TIMEOUT
 
         # ── 会话管理：如果有活跃会话，注入项目上下文 ──
         session = self._get_or_create_session(chat_id, bot_key, command, intent)
@@ -1151,7 +1159,7 @@ class Orchestrator:
         )
 
         result = await self.runner.run_with_timeout(
-            self.pm, review_prompt, max_tokens=2048, timeout=120, max_rounds=6, intent="plan",
+            self.pm, review_prompt, max_tokens=2048, timeout=120, max_rounds=12, intent="plan",
         )
 
         review_text = result.get("result", "") if result["success"] else ""
@@ -1305,7 +1313,7 @@ class Orchestrator:
             "酱瓜": "be", "瓜": "be", "后端": "be",
             "小吴": "pm", "吴": "pm", "产品经理": "pm",
         }
-        if len(text) < 500:  # 短消息才可能是通知，长文档不替换
+        if True:  # Agent 写了 @名字 就是要通知，长短都转
             for name, key in _NAME_TO_BOT_KEY.items():
                 if f"@{name}" in text and key != bot_key:
                     target_bot = BOTS.get(key, {})

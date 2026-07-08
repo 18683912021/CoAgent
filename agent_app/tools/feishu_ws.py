@@ -74,7 +74,7 @@ def _run_bot_process(bot_key: str, msg_queue, stop_event=None) -> None:
                 "user_id": nm.sender_id,
                 "command": nm.text,
                 "is_mentioned": nm.is_mentioned,
-                "sender_is_bot": nm.sender_id in all_bot_ids,
+                "sender_is_bot": nm.sender_is_bot,
                 "mentioned_others": nm.mentioned_names,
                 "msg_type": nm.msg_type,
                 "content": nm.raw.get("content_str", "{}"),
@@ -124,7 +124,8 @@ def _msg_consumer(msg_queue: multiprocessing.Queue, orchestrator: Any, main_loop
             continue
 
         logger.info(
-            f"[consumer] 收到队列消息 bot={msg['bot_key']} cmd={msg['command'][:60]}"
+            f"[consumer] 收到队列消息 bot={msg['bot_key']} sender_is_bot={msg.get('sender_is_bot',False)} "
+            f"mentioned={msg.get('is_mentioned',True)} cmd={msg['command'][:60]}"
         )
 
         # 调度到主 event loop，非阻塞——三条消息同时入队，三个协程并发执行
