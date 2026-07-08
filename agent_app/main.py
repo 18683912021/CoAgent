@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 _orchestrator: Orchestrator | None = None
 _processes: list[multiprocessing.Process] = []
-_stop_event: multiprocessing.Event | None = None
+_stop_event = None  # multiprocessing.Event
 
 
 def _shutdown_subprocesses() -> None:
