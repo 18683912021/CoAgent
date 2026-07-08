@@ -57,13 +57,14 @@ def _run_bot_process(bot_key: str, msg_queue, stop_event=None) -> None:
             if not nm.text and not nm.attachment_info:
                 logger.info(
                     f"[{bot_key}] 消息被过滤: text='{nm.text}' attachment='{nm.attachment_info}' "
-                    f"mentioned={nm.is_mentioned}"
+                    f"mentioned={nm.is_mentioned} sender_is_bot={nm.sender_is_bot} sender_id={nm.sender_id}"
                 )
                 return
 
             logger.info(
                 f"[{bot_key}] chat={nm.chat_id} msg_id={nm.message_id[:16] if nm.message_id else 'EMPTY'} "
-                f"type={nm.msg_type} mentioned={nm.is_mentioned} others={nm.mentioned_names} "
+                f"type={nm.msg_type} mentioned={nm.is_mentioned} sender_is_bot={nm.sender_is_bot} "
+                f"sender_id={nm.sender_id[:15]} others={nm.mentioned_names} "
                 f"cmd={nm.text[:80] if nm.text else '(empty)'}"
             )
 

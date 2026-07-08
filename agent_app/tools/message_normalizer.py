@@ -69,14 +69,9 @@ def normalize_feishu_message(
     if raw_event.event.sender and raw_event.event.sender.sender_id:
         sid = raw_event.event.sender.sender_id
         sender_id = sid.user_id or sid.open_id or sid.union_id or ""
-    # 构建完整的 bot ID 集合（app_id + open_id + union_id）
-    all_bot_ids_full = set(all_bot_app_ids)
-    if raw_event.event.sender and raw_event.event.sender.sender_id:
-        for fid in [raw_event.event.sender.sender_id.user_id,
-                     raw_event.event.sender.sender_id.open_id,
-                     raw_event.event.sender.sender_id.union_id]:
-            if fid:
-                all_bot_ids_full.add(fid)
+    # 发送者是否为 Bot：检查 sender_type 或 app_id 匹配
+    sender_type = getattr(raw_event.event.sender, "sender_type", "") if raw_event.event.sender else ""
+    sender_is_bot = (sender_type == "app" or sender_id in all_bot_app_ids)
 
     # ── @mention 解析（必须在 Bot 自过滤之前，因为 Bot 之间要能互相 @）──
     mentions = getattr(msg, "mentions", []) or []
@@ -90,7 +85,7 @@ def normalize_feishu_message(
     )
 
     # 过滤 Bot 之间非 @ 消息（防死循环），但被 @ 的消息要放行
-    if sender_id in all_bot_ids_full and not is_mentioned:
+    if sender_is_bot and not is_mentioned:
         return NormalizedMessage(chat_id=chat_id, channel="feishu", sender_is_bot=True)  # text="" 表示应跳过
 
     # 所有被 @ 的人（排除自己）
@@ -156,8 +151,8 @@ def normalize_feishu_message(
     # 去掉 @Bot 前缀（三种格式：@_user_N消息 / @名字消息 / @名字 消息）
     if command.startswith("@"):
         import re
-        # 格式 1: @_user_N 是飞书文本消息的 @mention 占位符（_user_N ∈ mentions array）
-        command = re.sub(r'^@_user_\d+\s?', '', command, count=1)
+        # 格式 1: @_user_N 是飞书文本消息的 @mention 占位符，全部清除
+        command = re.sub(r'@_user_\d+\s?', '', command).strip()
         # 格式 2: @BotName 直接出现的名字
         if command.startswith("@"):
             stripped = False
@@ -186,7 +181,7 @@ def normalize_feishu_message(
         channel="feishu",
         message_id=message_id,
         is_mentioned=is_mentioned,
-        sender_is_bot=sender_id in all_bot_ids_full,
+        sender_is_bot=sender_is_bot,
         mentioned_bots=mentioned_bot_keys,
         mentioned_names=all_mentioned_names,
         msg_type=msg_type,

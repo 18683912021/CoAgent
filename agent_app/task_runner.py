@@ -387,8 +387,6 @@ class TaskRunner:
         ".DS_Store", "Thumbs.db", "__pycache__", "*.pyc",
     ]
 
-    BACKUP_DIR = Path(__file__).parent.parent / ".backup"
-
     @staticmethod
     def cleanup_test_files(bot_key: str) -> int:
         """删除 Agent 生成的无用测试/示例文件。每次代码生成后自动执行。"""
@@ -413,16 +411,10 @@ class TaskRunner:
 
     @staticmethod
     def cleanup_junk(bot_key: str) -> int:
-        """任务完成后清理无用文件：备份副本 + .backup/ 目录 + 空目录。"""
+        """任务完成后清理无用文件：垃圾文件 + 空目录。"""
         deleted = 0
-        # 1. 清空 .backup/ 目录
-        backup_dir = TaskRunner.BACKUP_DIR
-        if backup_dir.exists():
-            import shutil
-            shutil.rmtree(backup_dir)
-            deleted += 1  # 计一次清理
 
-        # 2. 清理 workspace 下的垃圾文件
+        # 清理 workspace 下的垃圾文件
         ws = WORKSPACE_ROOT / bot_key
         if ws.exists():
             for f in list(ws.rglob("*")):

@@ -171,7 +171,7 @@ class Orchestrator:
                 print(f"[bot2bot] {bot_key} 收到来自 {sender_name} 的 @: {command[:60]}")
                 result = await self.runner.run_with_timeout(
                     agent, f"[来自{sender_name}的@] {command}",
-                    max_tokens=1024, max_rounds=6, timeout=CHAT_TIMEOUT, intent="chat")
+                    max_tokens=1024, max_rounds=12, timeout=CHAT_TIMEOUT, intent="chat")
                 if result["success"] and result["result"]:
                     await self._notify(chat_id, bot_key, result["result"])
                 else:
@@ -285,8 +285,11 @@ class Orchestrator:
     ]
     _NAME_TO_BOT = {
         "小柯": "fe", "柯": "fe", "柯柯": "fe", "前端": "fe", "FE": "fe",
+        "AI小柯（前端）": "fe", "AI小柯": "fe",
         "酱瓜": "be", "瓜": "be", "瓜瓜": "be", "后端": "be", "BE": "be",
+        "AI酱瓜（后端开发工程师）": "be", "AI酱瓜": "be",
         "小吴": "pm", "吴": "pm", "吴吴": "pm", "PM": "pm", "产品经理": "pm",
+        "AI小吴（产品经理）": "pm", "AI小吴": "pm",
     }
 
     def _detect_handoff(self, text: str, source_key: str) -> list[dict]:
@@ -528,7 +531,6 @@ class Orchestrator:
         "部署", "上线", "发布", "回滚", "重启",
         # 中文 — 通用
         "搞", "弄", "整", "重构", "测试",
-        "放", "存", "保存", "移动", "搬",
         # 英文
         "build", "create", "make", "develop", "implement",
         "setup", "scaffold", "init", "deploy", "fix", "update",
@@ -1309,9 +1311,9 @@ class Orchestrator:
 
         # ── @名字→<at> 标签替换（仅短消息，长文档里的 @名字 是引用而非通知）──
         _NAME_TO_BOT_KEY = {
-            "小柯": "fe", "柯": "fe", "前端": "fe",
-            "酱瓜": "be", "瓜": "be", "后端": "be",
-            "小吴": "pm", "吴": "pm", "产品经理": "pm",
+            "小柯": "fe", "柯": "fe", "前端": "fe", "AI小柯（前端）": "fe",
+            "酱瓜": "be", "瓜": "be", "后端": "be", "AI酱瓜（后端开发工程师）": "be",
+            "小吴": "pm", "吴": "pm", "产品经理": "pm", "AI小吴（产品经理）": "pm",
         }
         if True:  # Agent 写了 @名字 就是要通知，长短都转
             for name, key in _NAME_TO_BOT_KEY.items():

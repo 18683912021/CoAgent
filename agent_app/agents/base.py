@@ -468,7 +468,7 @@ class BaseAgent:
 
                 output = self._execute_tool(tu["name"], tu["input"])
 
-                # ── 熔断：同一工具同一错误连续 3 次 → 中断，防止死循环 ──
+                # ── 熔断：同一工具同一错误连续 9 次 → 中断，防止死循环 ──
                 stuck_key = f"{tu['name']}|{output[:120]}"
                 if stuck_key == self._last_stuck_key:
                     self._stuck_count += 1
@@ -476,7 +476,7 @@ class BaseAgent:
                     self._stuck_count = 1
                     self._last_stuck_key = stuck_key
 
-                if self._stuck_count >= 3:
+                if self._stuck_count >= 9:
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": tu["id"],
@@ -501,7 +501,7 @@ class BaseAgent:
                 return {
                     "success": False,
                     "result": "",
-                    "error": f"工具 {stuck_tool} 连续失败 3 次，已中断防止死循环。请检查参数或换一种方式。",
+                    "error": f"工具 {stuck_tool} 连续失败 9 次，已中断防止死循环。请检查参数或换一种方式。",
                 }
 
             self._save_memory()

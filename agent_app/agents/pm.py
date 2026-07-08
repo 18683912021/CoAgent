@@ -31,7 +31,7 @@ class PMAgent(BaseAgent):
             system_prompt=system_prompt,
             memory_file=str(MEMORY_FILE),
             tools=[READ_FILE_TOOL_SPEC, WRITE_FILE_TOOL_SPEC, LIST_DIR_TOOL_SPEC,
-                   SEARCH_TOOL_SPEC, WEB_FETCH_TOOL_SPEC, SEND_MESSAGE_TOOL_SPEC,
+                   SEARCH_TOOL_SPEC, WEB_FETCH_TOOL_SPEC,
                    READ_DOC_TOOL_SPEC, READ_BITABLE_TOOL_SPEC, SEARCH_WIKI_TOOL_SPEC,
                    READ_WIKI_TOOL_SPEC],
             workspace=PROJECT_ROOT,

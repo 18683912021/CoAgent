@@ -1,14 +1,8 @@
 """代码文件读写工具——在隔离工作区内操作"""
 import os
-import time
-import shutil
 from pathlib import Path
 
 # 工作区根目录
-WORKSPACE_ROOT = Path(__file__).parent.parent / "workspace"
-
-# 自动备份目录（对标 Claude Code 的 ~/.claude/file-history/）
-BACKUP_DIR = Path(__file__).parent.parent / ".backup"
 WORKSPACE_ROOT = Path(__file__).parent.parent / "workspace"
 
 READ_FILE_TOOL_SPEC = {
@@ -114,20 +108,10 @@ def write_file(workspace: str, rel_path: str, content: str) -> str:
         # 防止 Agent 误传空路径或目录路径
         if target.is_dir():
             return f"[write_file] 路径是目录不是文件: {rel_path} → 请指定具体文件名，如 '{rel_path}/tasks.md'"
-        # 如果覆盖已有文件，先备份
-        overwrite_warning = ""
-        if target.exists():
-            BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-            backup_path = BACKUP_DIR / target.name
-            # 加时间戳防重名覆盖
-            if backup_path.exists():
-                backup_path = BACKUP_DIR / f"{target.stem}_{int(time.time())}{target.suffix}"
-            shutil.copy2(target, backup_path)
-            overwrite_warning = f" [已备份旧版本到 {backup_path}]"
+        action = "覆盖" if target.exists() else "写入"
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
-        action = "覆盖" if overwrite_warning else "写入"
-        return f"[write_file] {action}成功: {rel_path} ({len(content)} 字符){overwrite_warning}"
+        return f"[write_file] {action}成功: {rel_path} ({len(content)} 字符)"
     except PermissionError as e:
         return f"[write_file] 权限错误: {e}"
     except Exception as e:
@@ -176,11 +160,6 @@ def edit_file(workspace: str, rel_path: str, old_string: str, new_string: str) -
 
         if old_string == new_string:
             return f"[edit_file] old_string 和 new_string 完全相同，无需替换: {rel_path}"
-
-        # 替换前备份
-        BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-        backup_path = BACKUP_DIR / f"{target.stem}_{int(time.time())}{target.suffix}"
-        shutil.copy2(target, backup_path)
 
         # 执行替换
         new_content = content.replace(old_string, new_string, 1)
