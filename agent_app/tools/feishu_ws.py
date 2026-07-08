@@ -74,6 +74,7 @@ def _run_bot_process(bot_key: str, msg_queue, stop_event=None) -> None:
                 "user_id": nm.sender_id,
                 "command": nm.text,
                 "is_mentioned": nm.is_mentioned,
+                "sender_is_bot": nm.sender_id in all_bot_ids,
                 "mentioned_others": nm.mentioned_names,
                 "msg_type": nm.msg_type,
                 "content": nm.raw.get("content_str", "{}"),
@@ -134,6 +135,7 @@ def _msg_consumer(msg_queue: multiprocessing.Queue, orchestrator: Any, main_loop
                 msg.get("is_mentioned", True),
                 msg.get("mentioned_others", []),
                 msg.get("message_id", ""),
+                sender_is_bot=msg.get("sender_is_bot", False),
             ),
             main_loop,
         )

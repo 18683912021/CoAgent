@@ -146,6 +146,7 @@ class Orchestrator:
         is_mentioned: bool = True,
         mentioned_others: list[str] | None = None,
         message_id: str = "",
+        sender_is_bot: bool = False,
     ) -> None:
         """根据被 @ 的 Bot 分发任务。
 
@@ -153,8 +154,24 @@ class Orchestrator:
             is_mentioned: 是否被 @。False 时只记录上下文不回复。
             mentioned_others: 同一消息中其他被 @ 的人名列表，用于群呼上下文。
             message_id: 飞书消息 ID，用于 Reaction 打字指示器。
+            sender_is_bot: 发送者是否为另一个 Bot（防死循环：强制 chat 模式）。
         """
         mentioned_others = mentioned_others or []
+
+        # Bot 间消息：队友 @ 你，chat 模式快速回应，不启动工作流（防死循环）
+        if sender_is_bot and is_mentioned and command:
+            agent = {"pm": self.pm, "fe": self.fe, "be": self.be}.get(bot_key)
+            if agent:
+                bot_names = {"fe": "小柯", "be": "酱瓜", "pm": "小吴"}
+                sender_name = bot_names.get(
+                    {"cli_a9612d": "fe", "cli_aa8d88": "be", "cli_aa8d89": "pm"}.get(user_id[:10], ""),
+                    "队友")
+                result = await self.runner.run_with_timeout(
+                    agent, f"[来自{sender_name}的@] {command}",
+                    max_tokens=1024, max_rounds=3, timeout=CHAT_TIMEOUT, intent="chat")
+                if result["success"] and result["result"]:
+                    await self._notify(chat_id, bot_key, result["result"])
+            return
 
         # 不被 @ 的消息：存入该 Bot 的记忆作为上下文，不回复
         # 例外：PM 有待审批 PRD 时，确认词（"可以""开始"等）即使没 @ 也触发派发
@@ -196,7 +213,9 @@ class Orchestrator:
         """更新共享任务状态表。保留其他 Bot 的状态，不覆盖。"""
         from datetime import datetime as dt
         now = dt.now().strftime("%H:%M")
-        summary = output_summary[:80] if output_summary else "-"
+        # 清理：换行→空格，去掉 |（防表格炸裂），截断 60 字
+        clean = output_summary.replace("\n", " ").replace("|", "/") if output_summary else ""
+        summary = clean[:60] if clean else "-"
         self._bot_status[bot_key] = {"status": status, "summary": summary, "time": now}
 
         status_path = SHARED_DIR / "STATUS.md"
@@ -322,8 +341,11 @@ class Orchestrator:
 
         existing = self._sessions.get(chat_id)
 
-        # 延续信号 → 复用现有会话
-        is_continuation = any(kw in command.lower() for kw in self._CONTINUE_KEYWORDS)
+        # 延续信号：关键词 OR 短消息跟在活跃会话后
+        is_continuation = (
+            any(kw in command.lower() for kw in self._CONTINUE_KEYWORDS)
+            or (existing and not existing.is_expired() and len(command.strip()) < 50)
+        )
         if existing and not existing.is_expired() and is_continuation:
             existing.touch()
             return existing
@@ -374,6 +396,18 @@ class Orchestrator:
         "go", "start", "do it", "proceed",
     ]
 
+    @staticmethod
+    def _find_task_doc() -> str:
+        """找到 workspace/shared/tasks/ 下最近修改的任务文档。"""
+        tasks_dir = SHARED_DIR / "tasks"
+        if not tasks_dir.exists():
+            return ""
+        md_files = [f for f in tasks_dir.glob("*.md") if f.name != "_TEMPLATE.md"]
+        if not md_files:
+            return ""
+        latest = max(md_files, key=lambda f: f.stat().st_mtime)
+        return f"workspace/shared/tasks/{latest.name}"
+
     @classmethod
     def _is_confirmation(cls, command: str) -> bool:
         """检测用户消息是否为对 PRD 的确认/批准。"""
@@ -385,13 +419,34 @@ class Orchestrator:
         """用户已确认 PRD，直接派发 FE/BE，不再重复调 PM。"""
         await self._notify(chat_id, "pm", "收到，现在派给前后端。")
 
+        # ── 注入上下文：任务文档路径 + 项目上下文 ──
+        task_doc_hint = self._find_task_doc()
+        context_inject = session.context_preamble() if session else ""
+        extra = ""
+        if task_doc_hint:
+            extra += f"任务文档: {task_doc_hint}。开工后先 read_file 读任务文档，按 FE 任务清单逐项开发，完成一项勾一项 ✅，全部完成后 @ 酱瓜 通知。"
+        if context_inject:
+            extra += f"\n{context_inject}"
+        fe_cmd = f"{session.fe_task_pending}\n\n{extra}" if extra else session.fe_task_pending
+
+        extra_be = ""
+        if task_doc_hint:
+            extra_be += f"任务文档: {task_doc_hint}。开工后先 read_file 读任务文档，按 BE 任务清单逐项开发，完成一项勾一项 ✅，全部完成后 @ 小柯 通知。"
+        if context_inject:
+            extra_be += f"\n{context_inject}"
+        be_cmd = f"{session.be_task_pending}\n\n{extra_be}" if extra_be else session.be_task_pending
+
+        # ── 开工确认 ──
+        await self._notify(chat_id, "fe", "收到，开始干活 👨‍💻")
+        await self._notify(chat_id, "be", "收到，开始干活 👨‍💻")
+
         fe_snapshot = self.runner.snapshot_workspace("fe")
         be_snapshot = self.runner.snapshot_workspace("be")
 
         fe_future = self.runner.run_with_retry(
-            self.fe, session.fe_task_pending, "fe", "pending-dispatch")
+            self.fe, fe_cmd, "fe", "pending-dispatch")
         be_future = self.runner.run_with_retry(
-            self.be, session.be_task_pending, "be", "pending-dispatch")
+            self.be, be_cmd, "be", "pending-dispatch")
         fe_result, be_result = await asyncio.gather(fe_future, be_future)
 
         fe_text, fe_ok = self.runner.validate_output("fe", fe_result, fe_snapshot)
@@ -411,20 +466,28 @@ class Orchestrator:
 
         for bk in ("fe", "be"):
             n = self.runner.cleanup_test_files(bk)
-            if n > 0:
-                print(f"[cleanup] {bk}: 删除了 {n} 个测试文件")
+            j = self.runner.cleanup_junk(bk)
+            if n > 0 or j > 0:
+                print(f"[cleanup] {bk}: 删除了 {n} 个测试文件 + {j} 个垃圾文件")
 
         self._update_status("fe", "完成" if fe_ok else "失败", fe_text[:80] if fe_ok else "")
         self._update_status("be", "完成" if be_ok else "失败", be_text[:80] if be_ok else "")
 
         if fe_ok:
             await self._notify(chat_id, "fe", fe_text)
+            await self._notify_completion(chat_id, "fe", fe_snapshot)
         else:
             await self._notify(chat_id, "fe", "PRD 信息不够，写不了。让小吴补充一下。")
         if be_ok:
             await self._notify(chat_id, "be", be_text)
+            await self._notify_completion(chat_id, "be", be_snapshot)
         else:
             await self._notify(chat_id, "be", "后端任务信息不足，无法开始。请 PM 补充。")
+
+        # ── 双方都完成 → 提醒联调 ──
+        if fe_ok and be_ok:
+            await self._notify(chat_id, "pm",
+                "前端和后端都完成了，双方各自在群里通知了对方。接下来你们技术协商→联调→签字→我验收。")
 
         all_files = []
         for bk, snap in [("fe", fe_snapshot), ("be", be_snapshot)]:
@@ -556,6 +619,29 @@ class Orchestrator:
     async def _notify_progress(self, chat_id: str, bot_key: str, text: str) -> None:
         """发送轻量进度通知——让用户知道系统在干什么，不盯 ✍️ 干等。"""
         await self._notify(chat_id, bot_key, f"🔄 {text}")
+
+    async def _notify_completion(self, chat_id: str, bot_key: str,
+                                  snapshot_before: set[str]) -> None:
+        """工作完成后主动通知队友。只发一条简短消息，不刷屏。"""
+        _, new_files = self.runner.verify_output(bot_key, snapshot_before)
+        bot_label = {"fe": "小柯", "be": "酱瓜", "pm": "小吴"}.get(bot_key, bot_key)
+        teammate_key = {"fe": "be", "be": "fe"}.get(bot_key)
+        teammate_name = {"fe": "酱瓜", "be": "小柯"}.get(bot_key, "")
+
+        if bot_key == "fe":
+            msg = f"我的前端任务完成了"
+            if new_files:
+                msg += f"（{len(new_files)} 个文件）"
+            if teammate_name:
+                msg += f"，@酱瓜 你那边好了告诉我，准备联调"
+        elif bot_key == "be":
+            msg = f"我的后端任务完成了，接口可以 curl 验证"
+            if teammate_name:
+                msg += f"，@小柯 你好了随时联调"
+        else:
+            return  # PM 不需要这种通知
+
+        await self._notify(chat_id, bot_key, f"✅ {msg}")
 
     # ── 打字指示器 ─────────────────────────────────────
 
@@ -756,6 +842,11 @@ class Orchestrator:
 
         # ── 意图预分类：闲聊用短 token，工作用完整 pipeline ──
         intent = self._classify_intent(command, "pm")
+        # 活跃会话 + 短消息 → 延续对话，不是新任务
+        session_check = self._sessions.get(chat_id)
+        if intent == "work" and session_check and not session_check.is_expired() \
+                and len(command.strip()) < 50:
+            intent = "chat"
         if intent == "chat":
             max_tokens, max_rounds, timeout = 2048, 6, CHAT_TIMEOUT
         elif intent == "read":
@@ -880,6 +971,11 @@ class Orchestrator:
 
         # ── 意图预分类 ──
         intent = self._classify_intent(command, bot_key)
+        # 活跃会话 + 短消息 → 延续对话，不是新任务
+        session_check = self._sessions.get(chat_id)
+        if intent == "work" and session_check and not session_check.is_expired() \
+                and len(command.strip()) < 50:
+            intent = "chat"
         if intent == "chat":
             max_tokens, max_rounds, timeout = 2048, 6, CHAT_TIMEOUT
         elif intent == "read":
@@ -895,6 +991,11 @@ class Orchestrator:
 
         # ── 快照 workspace（工作模式）──
         snapshot_before = self.runner.snapshot_workspace(bot_key) if intent == "work" else set()
+
+        # ── 工作模式开工确认：让团队知道谁在做什么 ──
+        if intent == "work":
+            bot_label = {"fe": "小柯", "be": "酱瓜"}.get(bot_key, bot_key)
+            await self._notify(chat_id, bot_key, f"收到，开始干活 👨‍💻")
 
         # ── LLM 调用（✍️ Reaction + 进度消息内置于 _run_agent_streaming）──
         metrics.task_started()
@@ -933,12 +1034,16 @@ class Orchestrator:
             if snapshot_before:
                 _, created = self.runner.verify_output(bot_key, snapshot_before)
                 self._update_session_after_task(chat_id, "", reply, created)
-            # ── 清理测试文件 ──
+            # ── 清理无用文件 ──
             n = self.runner.cleanup_test_files(bot_key)
-            if n > 0:
-                print(f"[cleanup] {bot_key}: 删除了 {n} 个测试文件")
+            j = self.runner.cleanup_junk(bot_key)
+            if n > 0 or j > 0:
+                print(f"[cleanup] {bot_key}: 删除了 {n} 个测试文件 + {j} 个垃圾文件")
             # ── 同步到队友记忆 ──
             self._sync_to_teammates(bot_key, command, reply)
+            # ── 工作模式完成→主动通知队友 ──
+            if intent == "work":
+                await self._notify_completion(chat_id, bot_key, snapshot_before)
             # ── 跨 Agent 委派：检测回复中的 @队友+行动词 ──
             if allow_handoff:
                 await self._dispatch_handoffs(chat_id, reply, bot_key, message_id)
@@ -1181,7 +1286,7 @@ class Orchestrator:
 
     async def _send_long_message(self, chat_id: str, bot_key: str, text: str,
                                   at_users: list[str] | None = None) -> None:
-        """OpenClaw 风格发送：Markdown→纯文本 → 智能分片 → 人味延迟。"""
+        """发送消息：Markdown→纯文本 → @名字→<at> 标签替换 → 智能分片。"""
         import random as _random
 
         # Markdown → 纯文本
@@ -1194,44 +1299,37 @@ class Orchestrator:
             print(f"[orchestrator] {bot_key} Bot 未配置，模拟发送: {text[:80]}...")
             return
 
-        # ── 自动检测 @队友名 ──
+        # ── @名字→<at> 标签替换（仅短消息，长文档里的 @名字 是引用而非通知）──
         _NAME_TO_BOT_KEY = {
             "小柯": "fe", "柯": "fe", "前端": "fe",
             "酱瓜": "be", "瓜": "be", "后端": "be",
             "小吴": "pm", "吴": "pm", "产品经理": "pm",
         }
-        auto_at = list(at_users) if at_users else []
-        for name, key in _NAME_TO_BOT_KEY.items():
-            if f"@{name}" in text and key != bot_key:
-                target_bot = BOTS.get(key, {})
-                target_id = target_bot.get("app_id", "")
-                if target_id and target_id not in auto_at:
-                    auto_at.append(target_id)
+        if len(text) < 500:  # 短消息才可能是通知，长文档不替换
+            for name, key in _NAME_TO_BOT_KEY.items():
+                if f"@{name}" in text and key != bot_key:
+                    target_bot = BOTS.get(key, {})
+                    target_id = target_bot.get("app_id", "")
+                    if target_id:
+                        text = text.replace(f"@{name}", f'<at user_id="{target_id}">{name}</at>')
 
         # ── 智能分片 ──
         chunks = self._smart_split(text, max_len=1800)
         total = len(chunks)
 
         for i, chunk in enumerate(chunks):
-            # 多片时加标记（首片加概要提示，末片不加）
             if total > 1:
-                if i == 0:
-                    chunk = chunk + f"\n\n(共 {total} 条消息，正在发送…)"
-                else:
-                    chunk = f"({i + 1}/{total})\n" + chunk.strip()
+                chunk = f"({i + 1}/{total})\n" + chunk.strip() if i > 0 else chunk
 
             result = await send_message(
                 app_id=bot["app_id"], app_secret=bot["app_secret"],
                 chat_id=chat_id, text=chunk,
-                at_users=auto_at if i == 0 and auto_at else None,
             )
             if not result["success"]:
                 print(f"[orchestrator] {bot_key} Bot 分片{i+1}发送失败: {result['msg']}")
 
-            # ── OpenClaw 风格人味延迟：片间随机停顿 1-2.5 秒 ──
             if i < total - 1:
-                delay = _random.uniform(1.0, 2.5)
-                await asyncio.sleep(delay)
+                await asyncio.sleep(_random.uniform(1.0, 2.5))
 
     async def _notify(self, chat_id: str, bot_key: str, text: str, at_users: list[str] | None = None) -> None:
         """用指定 Bot 的身份向群聊发消息。长消息自动分片，Markdown 自动转纯文本。"""

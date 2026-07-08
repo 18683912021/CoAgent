@@ -94,8 +94,7 @@ async def send_message(
     if not token:
         return {"success": False, "msg": "获取 tenant_access_token 失败"}
 
-    # 构造消息内容
-    # 如果有 at_users，在 text 末尾追加 <at> 标签实现真正的 @mention
+    # 构造消息内容。@mention 由调用方在 text 里用 <at user_id="xxx">name</at> 内嵌
     msg_text = text
     if at_users:
         at_tags = " ".join(f'<at user_id="{uid}"></at>' for uid in at_users)

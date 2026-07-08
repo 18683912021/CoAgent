@@ -68,11 +68,7 @@ def normalize_feishu_message(
     if raw_event.event.sender and raw_event.event.sender.sender_id:
         sender_id = raw_event.event.sender.sender_id.user_id or ""
 
-    # 过滤 Bot 自己发的消息（防死循环）
-    if sender_id in all_bot_app_ids:
-        return NormalizedMessage(chat_id=chat_id, channel="feishu")  # text="" 表示应跳过
-
-    # ── @mention 解析 ──
+    # ── @mention 解析（必须在 Bot 自过滤之前，因为 Bot 之间要能互相 @）──
     mentions = getattr(msg, "mentions", []) or []
     mentioned_keys = {m.key for m in mentions if hasattr(m, "key")}
     mentioned_names_list = {m.name for m in mentions if hasattr(m, "name")}
@@ -82,6 +78,10 @@ def normalize_feishu_message(
         or bot_name in mentioned_names_list
         or any(bot_short_name in n for n in mentioned_names_list)
     )
+
+    # 过滤 Bot 之间非 @ 消息（防死循环），但被 @ 的消息要放行
+    if sender_id in all_bot_app_ids and not is_mentioned:
+        return NormalizedMessage(chat_id=chat_id, channel="feishu")  # text="" 表示应跳过
 
     # 所有被 @ 的人（排除自己）
     all_mentioned_names: list[str] = []

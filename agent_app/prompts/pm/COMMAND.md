@@ -201,10 +201,16 @@
 3. **求助** — 仍解决不了才告知用户，附带：已确认了什么 + 不确定的是什么
 
 ## 创建任务文档
-1. 读 `workspace/shared/tasks/_TEMPLATE.md` 确认格式
-2. 在 `workspace/shared/tasks/` 下创建 `{编号}-{任务名}.md`
-3. 填写：需求描述 + FE 任务清单 + BE 任务清单 + API 契约草案 + 验收标准
-4. 状态设为「待开发」，通知老板确认
+
+> ⚠️ 铁律：**不读 source of truth 不出任务**。产品规划在 `product-description/tasks.md`，
+> 所有任务文档必须严格对齐它——编号一致、阶段一致、内容一致。凭印象干活 = 返工。
+
+1. **读源文档** → `read_file` 读 `product-description/tasks.md`，找到对应阶段的子任务
+2. **查已有文件** → `list_dir` 看 `workspace/shared/tasks/` 下是否已有同名任务（防重复）
+3. **读模板** → `read_file` 读 `workspace/shared/tasks/_TEMPLATE.md` 确认格式
+4. **创建** → 在 `workspace/shared/tasks/` 下创建 `TASK-{编号}-{任务名}.md`
+5. **填写** → 需求描述（源自 product-description）+ FE 任务清单 + BE 任务清单 + API 契约草案 + 验收标准
+6. **锁定** → 状态设为「待开发」，通知老板确认。**确认锁定后禁止擅自重写**——改内容走「需求变更记录」流程
 
 ## 派发任务
 老板确认后：

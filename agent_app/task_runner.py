@@ -380,6 +380,15 @@ class TaskRunner:
 
     # ── 清理 ─────────────────────────────────────────
 
+    # 无用文件模式：备份/副本/临时文件/缓存
+    _JUNK_PATTERNS = [
+        "_backup", "_copy", "_old", "_temp", "_tmp", ".bak", ".old", ".tmp",
+        "backup_", "copy_", "old_", "temp_", "副本", "备份",
+        ".DS_Store", "Thumbs.db", "__pycache__", "*.pyc",
+    ]
+
+    BACKUP_DIR = Path(__file__).parent.parent / ".backup"
+
     @staticmethod
     def cleanup_test_files(bot_key: str) -> int:
         """删除 Agent 生成的无用测试/示例文件。每次代码生成后自动执行。"""
@@ -400,6 +409,38 @@ class TaskRunner:
                 continue
             if d.is_dir() and not any(d.iterdir()):
                 d.rmdir()
+        return deleted
+
+    @staticmethod
+    def cleanup_junk(bot_key: str) -> int:
+        """任务完成后清理无用文件：备份副本 + .backup/ 目录 + 空目录。"""
+        deleted = 0
+        # 1. 清空 .backup/ 目录
+        backup_dir = TaskRunner.BACKUP_DIR
+        if backup_dir.exists():
+            import shutil
+            shutil.rmtree(backup_dir)
+            deleted += 1  # 计一次清理
+
+        # 2. 清理 workspace 下的垃圾文件
+        ws = WORKSPACE_ROOT / bot_key
+        if ws.exists():
+            for f in list(ws.rglob("*")):
+                if "node_modules" in f.parts:
+                    continue
+                if f.is_file():
+                    fn = f.name.lower()
+                    if any(p.lower() in fn for p in TaskRunner._JUNK_PATTERNS):
+                        f.unlink()
+                        deleted += 1
+
+            # 3. 清理空目录
+            for d in sorted(list(ws.rglob("*")), key=lambda x: len(str(x)), reverse=True):
+                if "node_modules" in d.parts:
+                    continue
+                if d.is_dir() and not any(d.iterdir()):
+                    d.rmdir()
+
         return deleted
 
     # ── 日志 ─────────────────────────────────────────
