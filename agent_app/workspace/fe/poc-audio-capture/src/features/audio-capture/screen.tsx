@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -14,8 +14,16 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import AudioCapture, {
   type AudioCaptureConfig,
   type AudioCaptureStatus,
+  type CaptureSource,
+  type AudioLevels,
 } from '../../../modules/audio-capture';
 import AudioVisualizer from './components/AudioVisualizer';
+
+const SOURCES: { key: CaptureSource; label: string; desc: string }[] = [
+  { key: 'mic', label: '🎤 麦克风', desc: '仅采集使用者声音' },
+  { key: 'system', label: '🔊 系统音频', desc: '仅采集设备内部播放的声音' },
+  { key: 'both', label: '🎤+🔊 双路', desc: '同时采集麦克风和系统音频' },
+];
 
 const TEST_CONFIG: AudioCaptureConfig = {
   sampleRate: 16000,
@@ -23,35 +31,89 @@ const TEST_CONFIG: AudioCaptureConfig = {
   encoding: 'pcm_16bit',
 };
 
-export default function AudioCaptureScreen(): React.ReactElement {
-  const [status, setStatus] = useState<AudioCaptureStatus>('idle');
-  const [isSupported, setIsSupported] = useState<boolean | null>(null);
-  const [audioLevel, setAudioLevel] = useState(0);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+type AppStatus = AudioCaptureStatus | 'need_auth' | 'authorizing';
 
+export default function AudioCaptureScreen(): React.ReactElement {
+  const [status, setStatus] = useState<AppStatus>('idle');
+  const [isSupported, setIsSupported] = useState<boolean | null>(null);
+  const [captureSource, setCaptureSource] = useState<CaptureSource>('mic');
+  const [hasAuth, setHasAuth] = useState<boolean>(false);
+  const [levels, setLevels] = useState<AudioLevels>({ mic: 0, system: 0 });
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const sourceRef = useRef<CaptureSource>('mic'); // 防闭包过期
+
+  // ── 初始化 ──
   useEffect(() => {
     AudioCapture.isSupported()
       .then(setIsSupported)
       .catch(() => setIsSupported(false));
   }, []);
 
+  // ── 切换采集源 ──
+  const handleSourceChange = useCallback(async (source: CaptureSource) => {
+    setCaptureSource(source);
+    sourceRef.current = source;
+    setErrorMsg(null);
+
+    try {
+      await AudioCapture.setCaptureSource(source);
+    } catch {
+      // 非关键路径，忽略
+    }
+
+    // 切换到 system/both 时检查是否已授权
+    if (source === 'system' || source === 'both') {
+      const authed = await AudioCapture.hasMediaProjection();
+      setHasAuth(authed);
+      if (!authed) {
+        setStatus('need_auth');
+      }
+    } else {
+      setHasAuth(false);
+      setStatus('idle');
+    }
+  }, []);
+
+  // ── MediaProjection 授权 ──
+  const handleAuthorize = useCallback(async () => {
+    try {
+      setStatus('authorizing');
+      setErrorMsg(null);
+
+      const ok = await AudioCapture.requestMediaProjection();
+      setHasAuth(ok);
+
+      if (ok) {
+        setStatus('idle');
+      } else {
+        setStatus('need_auth');
+        Alert.alert('授权被拒绝', '系统音频采集需要屏幕录制权限，请在下次弹窗中允许');
+      }
+    } catch (err: any) {
+      setStatus('need_auth');
+      setErrorMsg(err.message ?? '授权失败');
+      Alert.alert('授权失败', err.message ?? '未知错误');
+    }
+  }, []);
+
+  // ── 开始采集 ──
   const handleStart = useCallback(async () => {
     try {
       setErrorMsg(null);
 
-      // Android 6.0+ 运行时权限：RECORD_AUDIO 必须动态申请
+      // Android 运行时权限
       if (Platform.OS === 'android') {
         const granted = await PermissionsAndroid.request(
           PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
           {
             title: '麦克风权限',
-            message: '系统音频采集需要麦克风权限来验证采集管道',
+            message: '音频采集需要麦克风权限',
             buttonPositive: '允许',
             buttonNegative: '拒绝',
           },
         );
         if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
-          Alert.alert('权限被拒绝', '麦克风权限是采集音频的必要条件，请在系统设置中手动开启');
+          Alert.alert('权限被拒绝', '请在系统设置中开启麦克风权限');
           return;
         }
       }
@@ -69,66 +131,129 @@ export default function AudioCaptureScreen(): React.ReactElement {
     }
   }, []);
 
+  // ── 停止采集 ──
   const handleStop = useCallback(async () => {
     try {
       await AudioCapture.stop();
       setStatus('idle');
-      setAudioLevel(0);
+      setLevels({ mic: 0, system: 0 });
     } catch (err: any) {
       setErrorMsg(err.message ?? '停止失败');
     }
   }, []);
 
+  // ── 电平轮询 ──
   useEffect(() => {
     if (status !== 'capturing') return;
 
     const timer = setInterval(() => {
-      AudioCapture.getAudioLevel()
-        .then(setAudioLevel)
+      AudioCapture.getAudioLevels()
+        .then(setLevels)
         .catch(() => {});
     }, 100);
 
     return () => clearInterval(timer);
   }, [status]);
 
+  // ── 派生状态 ──
   const isBusy = status === 'starting' || status === 'capturing';
   const isActive = status === 'capturing';
+  const needsAuth =
+    (captureSource === 'system' || captureSource === 'both') && !hasAuth;
+  const canStart =
+    (status === 'idle' || status === 'error') && !needsAuth;
+  const showDualViz = captureSource === 'both';
 
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView contentContainerStyle={styles.content}>
         {/* 标题 */}
         <Text style={styles.title}>🎙️ Audio Capture PoC</Text>
-        <Text style={styles.subtitle}>系统音频采集验证</Text>
+        <Text style={styles.subtitle}>双路音频采集验证（麦克风 + 系统内部音频）</Text>
 
-        {/* 可视化区域 */}
-        <AudioVisualizer level={audioLevel} isActive={isActive} />
+        {/* ── 采集源选择 ── */}
+        <Text style={styles.sectionTitle}>采集源</Text>
+        <View style={styles.sourceRow}>
+          {SOURCES.map((s) => {
+            const active = captureSource === s.key;
+            return (
+              <TouchableOpacity
+                key={s.key}
+                style={[styles.sourceChip, active && styles.sourceChipActive]}
+                onPress={() => handleSourceChange(s.key)}
+                disabled={isBusy}
+                activeOpacity={0.7}
+              >
+                <Text style={[styles.sourceChipText, active && styles.sourceChipTextActive]}>
+                  {s.label}
+                </Text>
+                <Text style={[styles.sourceChipDesc, active && styles.sourceChipDescActive]}>
+                  {s.desc}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
 
-        {/* 设备支持 & 状态（双列） */}
+        {/* ── MediaProjection 授权（system/both 模式需要） ── */}
+        {needsAuth && status !== 'authorizing' && (
+          <View style={styles.authBanner}>
+            <Text style={styles.authBannerIcon}>🔐</Text>
+            <Text style={styles.authBannerText}>
+              系统音频采集需要"屏幕录制"授权，Android 会弹出系统对话框
+            </Text>
+            <TouchableOpacity style={styles.authButton} onPress={handleAuthorize} activeOpacity={0.8}>
+              <Text style={styles.authButtonText}>授权系统音频</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {/* ── 可视化区域 ── */}
+        {showDualViz ? (
+          <View style={styles.dualVizRow}>
+            <AudioVisualizer
+              level={levels.mic}
+              isActive={isActive}
+              label="麦克风"
+              colorScheme="warm"
+            />
+            <AudioVisualizer
+              level={levels.system}
+              isActive={isActive}
+              label="系统音频"
+              colorScheme="cool"
+            />
+          </View>
+        ) : (
+          <AudioVisualizer
+            level={captureSource === 'mic' ? levels.mic : levels.system}
+            isActive={isActive}
+            label={captureSource === 'mic' ? '麦克风' : '系统音频'}
+            colorScheme={captureSource === 'mic' ? 'warm' : 'cool'}
+          />
+        )}
+
+        {/* ── 状态双列卡片 ── */}
         <View style={styles.rowCards}>
           <View style={styles.miniCard}>
-            <Text style={styles.miniCardTitle}>设备检测</Text>
+            <Text style={styles.miniCardTitle}>设备</Text>
             {isSupported === null ? (
               <View style={styles.row}>
                 <ActivityIndicator size="small" color="#007AFF" />
                 <Text style={styles.miniCardValue}>检测中...</Text>
               </View>
             ) : (
-              <Text
-                style={[
-                  styles.miniCardValue,
-                  { color: isSupported ? '#34C759' : '#FF3B30' },
-                ]}
-              >
-                {isSupported ? '✅ 支持' : '❌ 不支持'}
+              <Text style={[styles.miniCardValue, { color: isSupported ? '#34C759' : '#FF3B30' }]}>
+                {isSupported ? '✅ Android 10+' : '❌ 不兼容'}
               </Text>
             )}
           </View>
-
           <View style={styles.miniCard}>
             <Text style={styles.miniCardTitle}>运行状态</Text>
             <Text style={styles.miniCardValue}>
               {status === 'idle' && '⏸️ 空闲'}
+              {status === 'need_auth' && '🔐 待授权'}
+              {status === 'authorizing' && '🔄 授权中...'}
               {status === 'starting' && '🔄 启动中...'}
               {status === 'capturing' && '🔴 采集中'}
               {status === 'error' && '⚠️ 错误'}
@@ -137,7 +262,7 @@ export default function AudioCaptureScreen(): React.ReactElement {
           </View>
         </View>
 
-        {/* 错误信息 */}
+        {/* ── 错误信息 ── */}
         {errorMsg && (
           <View style={styles.errorCard}>
             <Text style={styles.errorTitle}>⚠️ 错误详情</Text>
@@ -145,7 +270,7 @@ export default function AudioCaptureScreen(): React.ReactElement {
           </View>
         )}
 
-        {/* 配置信息 */}
+        {/* ── 配置卡片 ── */}
         <View style={styles.configCard}>
           <Text style={styles.configTitle}>采集参数</Text>
           <View style={styles.configGrid}>
@@ -170,20 +295,37 @@ export default function AudioCaptureScreen(): React.ReactElement {
           </View>
         </View>
 
-        {/* 控制按钮 */}
-        <TouchableOpacity
-          style={[styles.button, isBusy ? styles.buttonStop : styles.buttonStart]}
-          onPress={isBusy ? handleStop : handleStart}
-          activeOpacity={0.8}
-        >
-          <Text style={styles.buttonText}>
-            {isBusy ? '⏹️ 停止采集' : '▶️ 开始采集'}
-          </Text>
-        </TouchableOpacity>
+        {/* ── 控制按钮 ── */}
+        {isBusy ? (
+          <TouchableOpacity
+            style={[styles.button, styles.buttonStop]}
+            onPress={handleStop}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.buttonText}>⏹️ 停止采集</Text>
+          </TouchableOpacity>
+        ) : (
+          <TouchableOpacity
+            style={[styles.button, styles.buttonStart, !canStart && styles.buttonDisabled]}
+            onPress={canStart ? handleStart : undefined}
+            activeOpacity={0.8}
+          >
+            {status === 'authorizing' ? (
+              <View style={styles.row}>
+                <ActivityIndicator size="small" color="#fff" />
+                <Text style={styles.buttonText}>  授权中...</Text>
+              </View>
+            ) : (
+              <Text style={styles.buttonText}>
+                {needsAuth ? '🔐 请先授权系统音频' : '▶️ 开始采集'}
+              </Text>
+            )}
+          </TouchableOpacity>
+        )}
 
         {!isSupported && (
           <Text style={styles.warning}>
-            ⚠️ 设备不支持系统音频采集，请使用 Android 10+ 或 iOS 15+ 真机测试
+            ⚠️ 设备不支持系统音频采集，请使用 Android 10+ 真机测试
           </Text>
         )}
       </ScrollView>
@@ -214,7 +356,100 @@ const styles = StyleSheet.create({
     marginBottom: 24,
   },
 
-  // 双列卡片
+  // ── 采集源选择 ──
+  sectionTitle: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#999',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginBottom: 8,
+  },
+  sourceRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 16,
+  },
+  sourceChip: {
+    flex: 1,
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    padding: 12,
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: 'transparent',
+    shadowColor: '#000',
+    shadowOpacity: 0.03,
+    shadowRadius: 4,
+    elevation: 1,
+  },
+  sourceChipActive: {
+    borderColor: '#1a1a2e',
+    backgroundColor: '#1a1a2e',
+  },
+  sourceChipText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#333',
+    marginBottom: 2,
+  },
+  sourceChipTextActive: {
+    color: '#fff',
+  },
+  sourceChipDesc: {
+    fontSize: 10,
+    color: '#aaa',
+    textAlign: 'center',
+  },
+  sourceChipDescActive: {
+    color: 'rgba(255,255,255,0.7)',
+  },
+
+  // ── 授权横幅 ──
+  authBanner: {
+    backgroundColor: '#FFF9E6',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 16,
+    borderLeftWidth: 4,
+    borderLeftColor: '#FFD43B',
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: 8,
+  },
+  authBannerIcon: {
+    fontSize: 24,
+  },
+  authBannerText: {
+    flex: 1,
+    fontSize: 13,
+    color: '#8B6914',
+    lineHeight: 18,
+  },
+  authButton: {
+    backgroundColor: '#1a1a2e',
+    borderRadius: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    width: '100%',
+    marginTop: 8,
+    alignItems: 'center',
+  },
+  authButtonText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+
+  // ── 双路可视化 ──
+  dualVizRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginBottom: 16,
+  },
+
+  // ── 双列卡片 ──
   rowCards: {
     flexDirection: 'row',
     gap: 12,
@@ -244,7 +479,7 @@ const styles = StyleSheet.create({
     color: '#333',
   },
 
-  // 错误卡片
+  // ── 错误 ──
   errorCard: {
     backgroundColor: '#fff2f0',
     borderRadius: 12,
@@ -265,7 +500,7 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
 
-  // 配置卡片
+  // ── 配置 ──
   configCard: {
     backgroundColor: '#fff',
     borderRadius: 12,
@@ -304,14 +539,14 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
 
-  // 通用
+  // ── 通用 ──
   row: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
   },
 
-  // 按钮
+  // ── 按钮 ──
   button: {
     marginTop: 24,
     paddingVertical: 16,
@@ -325,13 +560,15 @@ const styles = StyleSheet.create({
   buttonStop: {
     backgroundColor: '#FF3B30',
   },
+  buttonDisabled: {
+    backgroundColor: '#999',
+  },
   buttonText: {
     fontSize: 17,
     fontWeight: '700',
     color: '#fff',
   },
 
-  // 警告
   warning: {
     marginTop: 16,
     fontSize: 13,

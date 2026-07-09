@@ -66,15 +66,13 @@ class AudioCaptureModule : Module() {
     // ═══════════════════════════════════════════
     // Activity Result Handler
     // ═══════════════════════════════════════════
-    OnActivityResult { payload ->
-      @Suppress("UNCHECKED_CAST")
-      val (requestCode, resultCode, data) = payload
-      if (requestCode == MEDIA_PROJECTION_REQUEST_CODE) {
-        if (resultCode == Activity.RESULT_OK && data != null) {
+    OnActivityResult { _, payload ->
+      if (payload.requestCode == MEDIA_PROJECTION_REQUEST_CODE) {
+        if (payload.resultCode == Activity.RESULT_OK && payload.data != null) {
           val ctx = appContext.reactContext
           if (ctx != null) {
             val manager = ctx.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-            mediaProjection = manager.getMediaProjection(resultCode, data)
+            mediaProjection = manager.getMediaProjection(payload.resultCode, payload.data)
             Log.d(TAG, "✅ MediaProjection 授权成功")
           }
           mediaProjectionContinuation?.resume(true)

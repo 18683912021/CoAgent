@@ -32,7 +32,6 @@ const appConfig: ExpoConfig = {
   android: {
     package: 'com.poc.audiocapture',
     versionCode: 1,
-    minSdkVersion: 29, // AudioPlaybackCapture 需要 API 29+
     adaptiveIcon: {
       foregroundImage: './assets/images/adaptive-icon.png',
       backgroundColor: '#ffffff',
