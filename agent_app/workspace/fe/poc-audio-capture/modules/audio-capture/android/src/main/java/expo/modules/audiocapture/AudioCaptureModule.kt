@@ -68,11 +68,12 @@ class AudioCaptureModule : Module() {
     // ═══════════════════════════════════════════
     OnActivityResult { _, payload ->
       if (payload.requestCode == MEDIA_PROJECTION_REQUEST_CODE) {
-        if (payload.resultCode == Activity.RESULT_OK && payload.data != null) {
+        val data = payload.data  // 局部变量解决跨模块 smart-cast 问题
+        if (payload.resultCode == Activity.RESULT_OK && data != null) {
           val ctx = appContext.reactContext
           if (ctx != null) {
             val manager = ctx.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-            mediaProjection = manager.getMediaProjection(payload.resultCode, payload.data)
+            mediaProjection = manager.getMediaProjection(payload.resultCode, data)
             Log.d(TAG, "✅ MediaProjection 授权成功")
           }
           mediaProjectionContinuation?.resume(true)
@@ -101,20 +102,7 @@ class AudioCaptureModule : Module() {
     // MediaProjection 授权（弹系统对话框）
     // ═══════════════════════════════════════════
     AsyncFunction("requestMediaProjection") {
-      suspendCoroutine<Boolean> { cont ->
-        mediaProjectionContinuation = cont
-        val activity = appContext.currentActivity
-          ?: run {
-            cont.resume(false)
-            return@suspendCoroutine
-          }
-        val manager = activity.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        activity.startActivityForResult(
-          manager.createScreenCaptureIntent(),
-          MEDIA_PROJECTION_REQUEST_CODE
-        )
-        Log.d(TAG, "📺 MediaProjection 授权对话框已弹出")
-      }
+      doRequestMediaProjection()
     }
 
     // ═══════════════════════════════════════════
@@ -159,7 +147,7 @@ class AudioCaptureModule : Module() {
     AsyncFunction("start") {
       if (isCapturing) {
         Log.w(TAG, "已在采集中，忽略重复 start")
-        return@AsyncFunction
+        return@AsyncFunction Unit
       }
 
       val needsMic = captureSource == "mic" || captureSource == "both"
@@ -212,6 +200,24 @@ class AudioCaptureModule : Module() {
     AsyncFunction("getAudioLevels") {
       mapOf("mic" to lastMicLevel, "system" to lastSystemLevel)
     }
+  }
+
+  // ═══════════════════════════════════════════════
+  // Private: MediaProjection 授权（挂起 → 等待系统弹窗回调）
+  // ═══════════════════════════════════════════════
+  private suspend fun doRequestMediaProjection(): Boolean = suspendCoroutine { cont ->
+    mediaProjectionContinuation = cont
+    val activity = appContext.currentActivity
+      ?: run {
+        cont.resume(false)
+        return@suspendCoroutine
+      }
+    val manager = activity.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+    activity.startActivityForResult(
+      manager.createScreenCaptureIntent(),
+      MEDIA_PROJECTION_REQUEST_CODE
+    )
+    Log.d(TAG, "📺 MediaProjection 授权对话框已弹出")
   }
 
   // ═══════════════════════════════════════════════
