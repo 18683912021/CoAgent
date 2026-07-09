@@ -134,6 +134,19 @@ class Orchestrator:
             "be": {"status": "空闲", "summary": "-", "time": "-"},
         }
         self._agent_locks = {k: asyncio.Lock() for k in ("pm", "fe", "be")}
+        # 启动时自动获取 Bot 的 open_id（用于 post @ 通知）
+        asyncio.create_task(self._init_open_ids())
+
+    async def _init_open_ids(self):
+        """启动时通过 bot/v3/info API 获取每个 Bot 的 open_id。"""
+        from tools.feishu_utils import get_bot_open_id
+        for key in ("pm", "fe", "be"):
+            bot = BOTS.get(key, {})
+            if not bot.get("open_id") and bot.get("app_id"):
+                open_id = await get_bot_open_id(bot["app_id"], bot["app_secret"])
+                if open_id:
+                    bot["open_id"] = open_id
+                    print(f"[open_id] {key}: {open_id}")
 
     def _get_bot_config(self, key: str) -> dict:
         """获取 Bot 配置"""
@@ -158,25 +171,7 @@ class Orchestrator:
         """
         mentioned_others = mentioned_others or []
 
-        # Bot 间消息：队友 @ 你，chat 模式快速回应，不启动工作流（防死循环）
-        if sender_is_bot and is_mentioned and command:
-            agent = {"pm": self.pm, "fe": self.fe, "be": self.be}.get(bot_key)
-            if agent:
-                # 根据 user_id 匹配发送者名字（用 app_id 查 BOTS 字典）
-                sender_name = "队友"
-                for key, bot_info in BOTS.items():
-                    if bot_info.get("app_id") == user_id:
-                        sender_name = bot_info.get("short_name", key)
-                        break
-                print(f"[bot2bot] {bot_key} 收到来自 {sender_name} 的 @: {command[:60]}")
-                result = await self.runner.run_with_timeout(
-                    agent, f"[来自{sender_name}的@] {command}",
-                    max_tokens=1024, max_rounds=12, timeout=CHAT_TIMEOUT, intent="chat")
-                if result["success"] and result["result"]:
-                    await self._notify(chat_id, bot_key, result["result"])
-                else:
-                    print(f"[bot2bot] {bot_key} bot-to-bot 响应失败: {result.get('error', '')[:80]}")
-            return
+        # Bot 间消息：被 @ 了就正常回应
 
         # 不被 @ 的消息：存入该 Bot 的记忆作为上下文，不回复
         # 例外：PM 有待审批 PRD 时，确认词（"可以""开始"等）即使没 @ 也触发派发
@@ -241,29 +236,12 @@ class Orchestrator:
     # ── PM 入口 ─────────────────────────────────────────
 
     def _build_social_context(self, command: str, mentioned_others: list[str]) -> str:
-        """构建群呼上下文。当用户同时 @ 多人时，帮 Agent 理解这是社交招呼还是工作指令。"""
+        """构建群呼上下文。只做最低限度的信息传递，不注入机械指令。"""
         if not mentioned_others:
             return command
 
-        # 检测原始消息是否包含明确的工作指令
-        _work_signals = ["做", "写", "改", "加", "删", "放", "修", "配", "装", "设", "定",
-                        "全部", "所有", "以后", "今后", "往后", "默认", "规则", "规范", "标准"]
-        is_work_directive = any(s in command for s in _work_signals)
-
         names = "、".join(mentioned_others)
-        if is_work_directive:
-            return (
-                f"[群呼上下文] 用户同时 @ 了你和 {names}——"
-                f"这是一条给你们所有人的工作指令，你要执行，但只做你份内的事。"
-                f"你只代表你自己，不要替别人回答或替别人承诺。"
-                f"用户说的是：「{command}」"
-            )
-        return (
-            f"[群呼上下文] 用户同时 @ 了你和 {names}——"
-            f"就像生活中同时叫了几个人的名字。被叫到就自然应一声，不是给你派活。"
-            f"**你只代表你自己，不要替别人回答**（比如不要说'{names}也在'——他们自己会回应）。"
-            f"用户说的是：「{command}」"
-        )
+        return f"[群呼] 用户也 @ 了 {names}。{command}"
 
     # ── Agent 间委派 ────────────────────────────────────
 
@@ -1002,10 +980,9 @@ class Orchestrator:
         # ── 快照 workspace（工作模式）──
         snapshot_before = self.runner.snapshot_workspace(bot_key) if intent == "work" else set()
 
-        # ── 工作模式开工确认：让团队知道谁在做什么 ──
-        if intent == "work":
-            bot_label = {"fe": "小柯", "be": "酱瓜"}.get(bot_key, bot_key)
-            await self._notify(chat_id, bot_key, f"收到，开始干活 👨‍💻")
+        # ── 轻量确认（非 chat 给个快速反馈，不定义是聊天还是干活）──
+        if intent != "chat":
+            await self._notify(chat_id, bot_key, "👌")
 
         # ── LLM 调用（✍️ Reaction + 进度消息内置于 _run_agent_streaming）──
         metrics.task_started()
@@ -1051,9 +1028,6 @@ class Orchestrator:
                 print(f"[cleanup] {bot_key}: 删除了 {n} 个测试文件 + {j} 个垃圾文件")
             # ── 同步到队友记忆 ──
             self._sync_to_teammates(bot_key, command, reply)
-            # ── 工作模式完成→主动通知队友 ──
-            if intent == "work":
-                await self._notify_completion(chat_id, bot_key, snapshot_before)
             # ── 跨 Agent 委派：检测回复中的 @队友+行动词 ──
             if allow_handoff:
                 await self._dispatch_handoffs(chat_id, reply, bot_key, message_id)
@@ -1218,6 +1192,32 @@ class Orchestrator:
     # ── 消息发送（OpenClaw 风格）─────────────────────────
 
     @staticmethod
+    def _text_to_post(text: str, name_map: dict, bot_key: str, bots: dict) -> list:
+        """将带 @名字 的文本转为飞书 post 格式的 content 数组。"""
+        import re
+        # 按 @名字 分割文本，保留分隔符
+        pattern = "|".join(re.escape(f"@{n}") for n in name_map)
+        parts = re.split(f"({pattern})", text)
+        content: list[dict] = []
+        for part in parts:
+            if not part:
+                continue
+            if part.startswith("@") and part[1:] in name_map:
+                key = name_map[part[1:]]
+                if key == bot_key:
+                    content.append({"tag": "text", "text": part})
+                else:
+                    target = bots.get(key, {})
+                    content.append({
+                        "tag": "at",
+                        "user_id": target.get("open_id") or target.get("app_id", ""),
+                        "user_name": target.get("name", part[1:]),
+                    })
+            else:
+                content.append({"tag": "text", "text": part})
+        return content
+
+    @staticmethod
     def _md_to_plain(text: str) -> str:
         """将 Markdown 转为飞书可读的纯文本。保留结构感。"""
         import re
@@ -1296,7 +1296,7 @@ class Orchestrator:
 
     async def _send_long_message(self, chat_id: str, bot_key: str, text: str,
                                   at_users: list[str] | None = None) -> None:
-        """发送消息：Markdown→纯文本 → @名字→<at> 标签替换 → 智能分片。"""
+        """发送消息：Markdown→纯文本 → @名字→post at 元素 → 飞书发送。"""
         import random as _random
 
         # Markdown → 纯文本
@@ -1309,28 +1309,41 @@ class Orchestrator:
             print(f"[orchestrator] {bot_key} Bot 未配置，模拟发送: {text[:80]}...")
             return
 
-        # ── @名字→<at> 标签替换（仅短消息，长文档里的 @名字 是引用而非通知）──
+        # ── @名字→post at / text <at> ──
         _NAME_TO_BOT_KEY = {
             "小柯": "fe", "柯": "fe", "前端": "fe", "AI小柯（前端）": "fe",
             "酱瓜": "be", "瓜": "be", "后端": "be", "AI酱瓜（后端开发工程师）": "be",
             "小吴": "pm", "吴": "pm", "产品经理": "pm", "AI小吴（产品经理）": "pm",
         }
-        if True:  # Agent 写了 @名字 就是要通知，长短都转
-            for name, key in _NAME_TO_BOT_KEY.items():
-                if f"@{name}" in text and key != bot_key:
-                    target_bot = BOTS.get(key, {})
+        post_content = None
+        for name, key in _NAME_TO_BOT_KEY.items():
+            if f"@{name}" in text and key != bot_key:
+                target_bot = BOTS.get(key, {})
+                target_id = target_bot.get("open_id", "")
+                if target_id:
+                    if post_content is None:
+                        post_content = self._text_to_post(text, _NAME_TO_BOT_KEY, bot_key, BOTS)
+                    break
+                else:
+                    # 无 open_id → text <at> 标签兜底
                     target_id = target_bot.get("app_id", "")
+                    display_name = target_bot.get("name", name)
                     if target_id:
-                        text = text.replace(f"@{name}", f'<at user_id="{target_id}">{name}</at>')
-
-        # ── 智能分片 ──
-        chunks = self._smart_split(text, max_len=1800)
+                        text = text.replace(f"@{name}", f'<at user_id="{target_id}">{display_name}</at>')
+        # 有 open_id → post 格式（飞书 @ 通知正确触发），无 → text 兜底
+        if post_content is not None:
+            result = await send_message(
+                app_id=bot["app_id"], app_secret=bot["app_secret"],
+                chat_id=chat_id, text=text, msg_type="post", post_content=post_content,
+            )
+            if not result["success"]:
+                print(f"[orchestrator] {bot_key} Bot post 消息发送失败: {result['msg']}")
+        else:
+            chunks = self._smart_split(text, max_len=1800)
         total = len(chunks)
-
         for i, chunk in enumerate(chunks):
             if total > 1:
                 chunk = f"({i + 1}/{total})\n" + chunk.strip() if i > 0 else chunk
-
             result = await send_message(
                 app_id=bot["app_id"], app_secret=bot["app_secret"],
                 chat_id=chat_id, text=chunk,

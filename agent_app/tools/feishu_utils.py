@@ -17,18 +17,21 @@ BOTS = {
     "pm": {
         "app_id": os.environ.get("FEISHU_PM_APP_ID", ""),
         "app_secret": os.environ.get("FEISHU_PM_APP_SECRET", ""),
+        "open_id": os.environ.get("FEISHU_PM_OPEN_ID", ""),
         "name": "AI小吴（产品经理）",
         "short_name": "小吴",
     },
     "fe": {
         "app_id": os.environ.get("FEISHU_FE_APP_ID", ""),
         "app_secret": os.environ.get("FEISHU_FE_APP_SECRET", ""),
+        "open_id": os.environ.get("FEISHU_FE_OPEN_ID", ""),
         "name": "AI小柯（前端）",
         "short_name": "小柯",
     },
     "be": {
         "app_id": os.environ.get("FEISHU_BE_APP_ID", ""),
         "app_secret": os.environ.get("FEISHU_BE_APP_SECRET", ""),
+        "open_id": os.environ.get("FEISHU_BE_OPEN_ID", ""),
         "name": "AI酱瓜（后端开发工程师）",
         "short_name": "酱瓜",
     },
@@ -72,17 +75,42 @@ async def get_tenant_token(app_id: str, app_secret: str) -> str:
         return ""
 
 
+async def get_bot_open_id(app_id: str, app_secret: str) -> str:
+    """通过飞书 API 获取 Bot 自身的 open_id（ou_xxx 格式，用于 post at 元素）。"""
+    if not app_id or not app_secret:
+        return ""
+    token = await get_tenant_token(app_id, app_secret)
+    if not token:
+        return ""
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                "https://open.feishu.cn/open-apis/bot/v3/info",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            data = resp.json()
+            if data.get("code") == 0:
+                return data.get("bot", {}).get("open_id", "")
+    except Exception:
+        pass
+    return ""
+
+
 async def send_message(
     app_id: str,
     app_secret: str,
     chat_id: str,
     text: str,
     at_users: list[str] | None = None,
+    msg_type: str = "text",
+    post_content: list | None = None,
 ) -> dict:
     """通过飞书 API 发送消息到群聊。
 
     Args:
-        at_users: 要 @ 的用户 ID 列表，支持 open_id/union_id/user_id/app_id
+        at_users: 要 @ 的用户 ID 列表（text 类型时用）
+        msg_type: "text" 或 "post"
+        post_content: post 类型的 content 数组（msg_type="post" 时必传）
 
     Returns:
         {"success": bool, "msg": str}
@@ -94,37 +122,49 @@ async def send_message(
     if not token:
         return {"success": False, "msg": "获取 tenant_access_token 失败"}
 
-    # 构造消息内容。@mention 由调用方在 text 里用 <at user_id="xxx">name</at> 内嵌
-    msg_text = text
-    if at_users:
-        at_tags = " ".join(f'<at user_id="{uid}"></at>' for uid in at_users)
-        msg_text = f"{text} {at_tags}"
+    # 构造消息内容
+    if msg_type == "post" and post_content:
+        content_body = {"zh_cn": {"title": "", "content": [post_content]}}
+    else:
+        msg_text = text
+        if at_users:
+            at_tags = " ".join(f'<at user_id="{uid}"></at>' for uid in at_users)
+            msg_text = f"{text} {at_tags}"
+        content_body = {"text": msg_text}
 
-    content_body = {"text": msg_text}
-
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.post(
-                "https://open.feishu.cn/open-apis/im/v1/messages"
-                "?receive_id_type=chat_id",
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "receive_id": chat_id,
-                    "msg_type": "text",
-                    "content": json.dumps(content_body),
-                },
-            )
-            data = resp.json()
-            code = data.get("code", -1)
-            if code == 0:
-                msg_id = data.get("data", {}).get("message_id", "")
-                return {"success": True, "message_id": msg_id, "msg": "发送成功"}
-            return {"success": False, "message_id": "", "msg": f"飞书 API 返回错误: code={code} msg={data.get('msg', '')}"}
-    except Exception as e:
-        return {"success": False, "msg": f"发送异常: {e}"}
+    last_error = ""
+    for attempt in range(3):
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.post(
+                    "https://open.feishu.cn/open-apis/im/v1/messages"
+                    "?receive_id_type=chat_id",
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "receive_id": chat_id,
+                        "msg_type": msg_type,
+                        "content": json.dumps(content_body),
+                    },
+                )
+                data = resp.json()
+                code = data.get("code", -1)
+                if code == 0:
+                    msg_id = data.get("data", {}).get("message_id", "")
+                    sender_id = data.get("data", {}).get("sender", {}).get("id", "")
+                    return {"success": True, "message_id": msg_id, "sender_id": sender_id, "msg": "发送成功"}
+                # 服务端错误可重试，客户端错误直接返回
+                if code < 500 and code not in (-1, 99991661):
+                    return {"success": False, "message_id": "", "msg": f"飞书 API 错误: code={code} msg={data.get('msg', '')}"}
+                last_error = f"code={code} msg={data.get('msg', '')}"
+        except Exception as e:
+            last_error = str(e)
+        if attempt < 2:
+            import asyncio as _asyncio
+            await _asyncio.sleep(1)
+    return {"success": False, "msg": f"发送失败(重试3次): {last_error}"}
 
 
 async def edit_message(app_id: str, app_secret: str, message_id: str, text: str) -> dict:

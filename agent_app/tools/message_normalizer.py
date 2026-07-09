@@ -24,6 +24,7 @@ class NormalizedMessage:
     mentioned_names: list[str] = field(default_factory=list)  # 被 @ 的人名: ["小吴", "小柯"]
     is_mentioned: bool = False        # 当前 Bot 是否被 @
     sender_is_bot: bool = False       # 发送者是否为另一个 Bot
+    sender_open_id: str = ""          # 发送者的 open_id（用于 Bot 间 @）
     msg_type: str = "text"            # "text" | "file" | "image" | "post"
     attachment_info: str = ""         # 附件描述文本
     raw: dict[str, Any] = field(default_factory=dict)  # 原始消息（debug 用）
@@ -64,14 +65,15 @@ def normalize_feishu_message(
     chat_id = msg.chat_id
     message_id = getattr(msg, "message_id", "") or getattr(raw_event.event, "message_id", "") or ""
 
-    # ── 发送者（Bot 消息的 user_id 可能为空，open_id/union_id 也要取）──
+    # ── 发送者 ─
     sender_id = ""
+    sender_open_id = ""
     if raw_event.event.sender and raw_event.event.sender.sender_id:
         sid = raw_event.event.sender.sender_id
         sender_id = sid.user_id or sid.open_id or sid.union_id or ""
-    # 发送者是否为 Bot：检查 sender_type 或 app_id 匹配
-    sender_type = getattr(raw_event.event.sender, "sender_type", "") if raw_event.event.sender else ""
-    sender_is_bot = (sender_type == "app" or sender_id in all_bot_app_ids)
+        sender_open_id = sid.open_id or ""
+    # 发送者是否为 Bot：检查 sender_id 是否在 bot app_id 集合
+    sender_is_bot = (sender_id in all_bot_app_ids or sender_open_id in all_bot_app_ids)
 
     # ── @mention 解析（必须在 Bot 自过滤之前，因为 Bot 之间要能互相 @）──
     mentions = getattr(msg, "mentions", []) or []
@@ -123,21 +125,25 @@ def normalize_feishu_message(
         attachment_info = "[图片]"
         command = "(用户发了一张图片)"
 
-    elif msg_type == "post":
-        # 富文本消息，提取纯文本
+    elif msg_type == "post" or "content" in content or "title" in content:
+        # 富文本消息（post 或带 title 的 text），提取纯文本
         post_content = content.get("content", [])
         text_parts = []
+        at_count = 0
         for paragraph in post_content:
-            for element in paragraph:
-                if isinstance(element, dict) and element.get("tag") == "text":
-                    text_parts.append(element.get("text", ""))
-                elif isinstance(element, dict) and element.get("tag") == "at":
-                    text_parts.append(f"@{element.get('user_name', '')}")
-                elif isinstance(element, dict) and element.get("tag") == "emoji":
-                    # 飞书自定义表情/表情包 → 保留 emoji_type 标识
-                    text_parts.append(f"[{element.get('emoji_type', 'emoji')}]")
-                elif isinstance(element, dict) and element.get("tag") == "link":
-                    text_parts.append(element.get("text", element.get("href", "[链接]")))
+            if isinstance(paragraph, list):
+                for element in paragraph:
+                    if isinstance(element, dict):
+                        tag = element.get("tag", "")
+                        if tag == "text":
+                            text_parts.append(element.get("text", ""))
+                        elif tag == "at":
+                            text_parts.append(f"@{element.get('user_name', '')}")
+                            at_count += 1
+                        elif tag in ("emoji", "emotion"):
+                            text_parts.append(f"[{element.get('emoji_type', 'emoji')}]")
+                        elif tag == "link":
+                            text_parts.append(element.get("text", element.get("href", "[链接]")))
         text = "".join(text_parts)
         command = text
 

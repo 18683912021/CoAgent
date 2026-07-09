@@ -126,7 +126,7 @@
 ### 第六关：心理构建验证
 - [ ] 在脑中模拟一遍 `npm install && npm run build`——有没有 import 了未安装的包？
 - [ ] 新引入的第三方库已在 `package.json` 中声明
-- [ ] 环境变量有 `.env.example` 模板，且不包含真实密钥
+- [ ] 新增环境变量已记录，不含真实密钥
 - [ ] 如果是 React Native 项目：确认没有使用 Web-only API（`window`/`document`/`localStorage` 等）
 
 ### 自检不通过怎么办

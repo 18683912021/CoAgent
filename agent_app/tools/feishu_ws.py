@@ -29,14 +29,6 @@ def _run_bot_process(bot_key: str, msg_queue, stop_event=None) -> None:
     app_secret = bot["app_secret"]
 
     def handle_message(data: P2ImMessageReceiveV1) -> None:
-        # 打印原始消息结构用于调试
-        msg = data.event.message
-        raw_content = msg.content or "{}"
-        raw_msg_type = getattr(msg, "msg_type", "text") or "text"
-        logger.info(
-            f"[{bot_key}] 收到 WebSocket 推送事件 msg_type={raw_msg_type} "
-            f"content={raw_content[:200]}"
-        )
         try:
             from tools.message_normalizer import normalize_feishu_message
 
@@ -55,16 +47,10 @@ def _run_bot_process(bot_key: str, msg_queue, stop_event=None) -> None:
 
             # 过滤：Bot 自己的消息（text 为空表示应跳过）
             if not nm.text and not nm.attachment_info:
-                logger.info(
-                    f"[{bot_key}] 消息被过滤: text='{nm.text}' attachment='{nm.attachment_info}' "
-                    f"mentioned={nm.is_mentioned} sender_is_bot={nm.sender_is_bot} sender_id={nm.sender_id}"
-                )
                 return
 
             logger.info(
-                f"[{bot_key}] chat={nm.chat_id} msg_id={nm.message_id[:16] if nm.message_id else 'EMPTY'} "
-                f"type={nm.msg_type} mentioned={nm.is_mentioned} sender_is_bot={nm.sender_is_bot} "
-                f"sender_id={nm.sender_id[:15]} others={nm.mentioned_names} "
+                f"[{bot_key}] chat={nm.chat_id[:20]} mentioned={nm.is_mentioned} "
                 f"cmd={nm.text[:80] if nm.text else '(empty)'}"
             )
 
@@ -73,6 +59,7 @@ def _run_bot_process(bot_key: str, msg_queue, stop_event=None) -> None:
                 "chat_id": nm.chat_id,
                 "message_id": nm.message_id,
                 "user_id": nm.sender_id,
+                "sender_open_id": nm.sender_open_id,
                 "command": nm.text,
                 "is_mentioned": nm.is_mentioned,
                 "sender_is_bot": nm.sender_is_bot,
@@ -83,9 +70,14 @@ def _run_bot_process(bot_key: str, msg_queue, stop_event=None) -> None:
         except Exception as e:
             logger.error(f"[{bot_key}] 解析失败: {e}")
 
+    def _noop(data) -> None:
+        pass  # Reaction 事件无需处理，静默忽略
+
     handler = (
         lark.EventDispatcherHandler.builder("", "")
         .register_p2_im_message_receive_v1(handle_message)
+        .register_p2_im_message_reaction_deleted_v1(_noop)
+        .register_p2_im_message_reaction_created_v1(_noop)
         .build()
     )
 
@@ -125,8 +117,7 @@ def _msg_consumer(msg_queue: multiprocessing.Queue, orchestrator: Any, main_loop
             continue
 
         logger.info(
-            f"[consumer] 收到队列消息 bot={msg['bot_key']} sender_is_bot={msg.get('sender_is_bot',False)} "
-            f"mentioned={msg.get('is_mentioned',True)} cmd={msg['command'][:60]}"
+            f"[consumer] bot={msg['bot_key']} cmd={msg['command'][:60]}"
         )
 
         # 调度到主 event loop，非阻塞——三条消息同时入队，三个协程并发执行
@@ -138,6 +129,7 @@ def _msg_consumer(msg_queue: multiprocessing.Queue, orchestrator: Any, main_loop
                 msg.get("mentioned_others", []),
                 msg.get("message_id", ""),
                 sender_is_bot=msg.get("sender_is_bot", False),
+                sender_open_id=msg.get("sender_open_id", ""),
             ),
             main_loop,
         )

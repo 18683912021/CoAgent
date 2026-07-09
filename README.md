@@ -15,7 +15,6 @@
 ```bash
 cd agent_app
 pip install -r requirements.txt
-cp .env.example .env
 # 编辑 .env 填入飞书凭证和 API Key
 python main.py
 ```
@@ -189,7 +188,7 @@ agent_app/
 ├── orchestrator.py            # 调度（路由/意图/Session/Review/委派）
 ├── task_runner.py             # 执行（超时/重试/流式/验证/清理）
 ├── monitor.py                 # 指标 + 日志
-├── .env / .env.example
+├── .env
 ├── agents/                    # Agent 类定义
 │   ├── base.py                #   BaseAgent（LLM调用 + 工具循环 + 记忆管理）
 │   ├── pm.py                  #   PM Agent（小吴）

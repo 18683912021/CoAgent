@@ -154,7 +154,7 @@
 - [ ] 请求体大小有限制（防止大 payload 攻击）
 - [ ] CORS 配置正确（allow_origins 不能是 `["*"]`，生产环境必须指定域名）
 - [ ] Rate Limiting 已配置（登录/注册/短信/支付等敏感接口必加）
-- [ ] `.env.example` 更新了所有新增环境变量，不含真实密钥
+- [ ] 新增环境变量已记录，不含真实密钥
 
 ### 第五关：事务与并发
 - [ ] 写操作（POST/PUT/DELETE）有事务保护（`async with db.begin()`）
