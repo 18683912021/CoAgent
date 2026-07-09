@@ -101,7 +101,6 @@ def execute(command: str, cwd: str = "") -> str:
             env={
                 **os.environ,
                 "CI": "true",
-                "HOME": str(work_dir),
             },
         )
 

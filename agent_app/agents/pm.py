@@ -1,7 +1,7 @@
 """产品经理 Agent"""
 from pathlib import Path
 
-from agents.base import BaseAgent
+from agents.base import BaseAgent, run_async
 from tools.search import SEARCH_TOOL_SPEC, search_web
 from tools.web_fetch import WEB_FETCH_TOOL_SPEC, web_fetch
 from tools.feishu import SEND_MESSAGE_TOOL_SPEC, send_feishu_message
@@ -40,7 +40,6 @@ class PMAgent(BaseAgent):
 
     def _execute_tool(self, name: str, args: dict) -> str:
         """PM Agent 的工具实现"""
-        import asyncio
 
         if name == "read_file":
             return read_file(PROJECT_ROOT, args.get("path", ""))
@@ -49,17 +48,17 @@ class PMAgent(BaseAgent):
         elif name == "list_dir":
             return list_dir(PROJECT_ROOT, args.get("path", "."))
         elif name == "search_web":
-            return asyncio.run(search_web(**args))
+            return run_async(search_web(**args))
         elif name == "web_fetch":
-            return asyncio.run(web_fetch(**args))
+            return run_async(web_fetch(**args))
         elif name == "send_feishu_message":
-            return asyncio.run(send_feishu_message(**args))
+            return run_async(send_feishu_message(**args))
         elif name == "read_feishu_doc":
-            return asyncio.run(read_feishu_doc(**args))
+            return run_async(read_feishu_doc(**args))
         elif name == "read_feishu_bitable":
-            return asyncio.run(read_feishu_bitable(**args))
+            return run_async(read_feishu_bitable(**args))
         elif name == "search_feishu_wiki":
-            return asyncio.run(search_feishu_wiki(**args))
+            return run_async(search_feishu_wiki(**args))
         elif name == "read_feishu_wiki":
-            return asyncio.run(read_feishu_wiki(**args))
+            return run_async(read_feishu_wiki(**args))
         return super()._execute_tool(name, args)

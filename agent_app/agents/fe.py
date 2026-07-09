@@ -1,8 +1,7 @@
 """前端开发 Agent"""
-import asyncio
 from pathlib import Path
 
-from agents.base import BaseAgent
+from agents.base import BaseAgent, run_async
 from tools.code_editor import (
     READ_FILE_TOOL_SPEC, WRITE_FILE_TOOL_SPEC, EDIT_FILE_TOOL_SPEC, LIST_DIR_TOOL_SPEC, DELETE_FILE_TOOL_SPEC,
     read_file, write_file, edit_file, list_dir, delete_file,
@@ -45,9 +44,9 @@ class FEAgent(BaseAgent):
         if name == "read_file":
             return read_file(PROJECT_ROOT, args.get("path", ""))
         elif name == "search_web":
-            return asyncio.run(search_web(**args))
+            return run_async(search_web(**args))
         elif name == "web_fetch":
-            return asyncio.run(web_fetch(**args))
+            return run_async(web_fetch(**args))
         elif name == "write_file":
             return write_file(PROJECT_ROOT, args.get("path", ""), args.get("content", ""))
         elif name == "edit_file":
@@ -62,11 +61,11 @@ class FEAgent(BaseAgent):
         elif name == "check_code":
             return check_code(args.get("path", ""), args.get("content", ""))
         elif name == "read_feishu_doc":
-            return asyncio.run(read_feishu_doc(**args))
+            return run_async(read_feishu_doc(**args))
         elif name == "read_feishu_bitable":
-            return asyncio.run(read_feishu_bitable(**args))
+            return run_async(read_feishu_bitable(**args))
         elif name == "search_feishu_wiki":
-            return asyncio.run(search_feishu_wiki(**args))
+            return run_async(search_feishu_wiki(**args))
         elif name == "read_feishu_wiki":
-            return asyncio.run(read_feishu_wiki(**args))
+            return run_async(read_feishu_wiki(**args))
         return super()._execute_tool(name, args)

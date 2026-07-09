@@ -1,6 +1,8 @@
 """Agent 基类：Anthropic SDK 封装 + 记忆管理 + 工具调用循环"""
-import os
+import asyncio
 import json
+import os
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -18,6 +20,24 @@ _client = Anthropic(
 )
 DEFAULT_MODEL = os.environ.get("ANTHROPIC_MODEL", "deepseek-v4-pro")
 AGENT_TIMEOUT = 1440     # Agent 整体执行超时（秒）
+
+# 线程安全的事件循环：在 ThreadPoolExecutor 子线程中复用同一个 loop，
+# 避免 asyncio.run() 反复创建/销毁 kqueue（macOS）导致 fd 耗尽。
+_thread_loops = threading.local()
+
+
+def _get_thread_loop() -> asyncio.AbstractEventLoop:
+    """获取当前线程的事件循环。每线程只创建一次，后续复用。"""
+    if not hasattr(_thread_loops, "loop") or _thread_loops.loop.is_closed():
+        _thread_loops.loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(_thread_loops.loop)
+    return _thread_loops.loop
+
+
+def run_async(coro):
+    """在同步上下文中安全运行异步协程。线程安全，兼容 ThreadPoolExecutor。"""
+    loop = _get_thread_loop()
+    return loop.run_until_complete(coro)
 # 共享记忆已移除——Agent 之间通过 workspace/shared/ 目录通信更可靠
 
 
