@@ -428,17 +428,22 @@ class Orchestrator:
             extra_be += f"\n{context_inject}"
         be_cmd = f"{session.be_task_pending}\n\n{extra_be}" if extra_be else session.be_task_pending
 
-        # ── 开工确认 ──
-        await self._notify(chat_id, "fe", "收到，开始干活 👨‍💻")
-        await self._notify(chat_id, "be", "收到，开始干活 👨‍💻")
-
         fe_snapshot = self.runner.snapshot_workspace("fe")
         be_snapshot = self.runner.snapshot_workspace("be")
 
-        fe_future = self.runner.run_with_retry(
-            self.fe, fe_cmd, "fe", "pending-dispatch")
-        be_future = self.runner.run_with_retry(
-            self.be, be_cmd, "be", "pending-dispatch")
+        # ── 开工确认（先应一声，再开始干活）──
+        await asyncio.gather(
+            self._notify(chat_id, "fe", "收到，开始干活 👨‍💻"),
+            self._notify(chat_id, "be", "收到，开始干活 👨‍💻"),
+        )
+
+        # FE/BE 并行执行（带进度推送，用户能实时看到干到哪了）
+        fe_future = self._run_agent_streaming(
+            "fe", chat_id, message_id, self.fe, fe_cmd,
+            max_tokens=8192, timeout=WORK_TIMEOUT, max_rounds=360, intent="work")
+        be_future = self._run_agent_streaming(
+            "be", chat_id, message_id, self.be, be_cmd,
+            max_tokens=8192, timeout=WORK_TIMEOUT, max_rounds=360, intent="work")
         fe_result, be_result = await asyncio.gather(fe_future, be_future)
 
         fe_text, fe_ok = self.runner.validate_output("fe", fe_result, fe_snapshot)
@@ -446,7 +451,7 @@ class Orchestrator:
 
         for bk, text, snapshot in [("fe", fe_text, fe_snapshot), ("be", be_text, be_snapshot)]:
             if snapshot:
-                _, new_files = self.runner.verify_output(bk, snapshot)
+                _, new_files, _ = self.runner.verify_output(bk, snapshot)
                 if new_files:
                     file_list = "\n".join(f"  📄 {f}" for f in new_files[:6])
                     ws_name = {"fe": "workspace/fe", "be": "workspace/be"}[bk]
@@ -483,7 +488,7 @@ class Orchestrator:
 
         all_files = []
         for bk, snap in [("fe", fe_snapshot), ("be", be_snapshot)]:
-            _, nf = self.runner.verify_output(bk, snap)
+            _, nf, _ = self.runner.verify_output(bk, snap)
             all_files.extend(nf)
         self._update_session_after_task(chat_id, "pending-dispatch", session.prd_pending, all_files)
 
@@ -614,7 +619,7 @@ class Orchestrator:
     async def _notify_completion(self, chat_id: str, bot_key: str,
                                   snapshot_before: set[str]) -> None:
         """工作完成后主动通知队友。只发一条简短消息，不刷屏。"""
-        _, new_files = self.runner.verify_output(bot_key, snapshot_before)
+        _, new_files, _ = self.runner.verify_output(bot_key, snapshot_before)
         bot_label = {"fe": "小柯", "be": "酱瓜", "pm": "小吴"}.get(bot_key, bot_key)
         teammate_key = {"fe": "be", "be": "fe"}.get(bot_key)
         teammate_name = {"fe": "酱瓜", "be": "小柯"}.get(bot_key, "")
@@ -839,13 +844,13 @@ class Orchestrator:
                 and len(command.strip()) < 50:
             intent = "chat"
         if intent == "chat":
-            max_tokens, max_rounds, timeout = 2048, 12, CHAT_TIMEOUT
+            max_tokens, max_rounds, timeout = 4096, 36, CHAT_TIMEOUT
         elif intent == "read":
-            max_tokens, max_rounds, timeout = 8192, 120, 1440    # 读文档+摘要
+            max_tokens, max_rounds, timeout = 16384, 360, 1440
         elif intent == "plan":
-            max_tokens, max_rounds, timeout = 8192, 120, PM_TIMEOUT
+            max_tokens, max_rounds, timeout = 16384, 360, PM_TIMEOUT
         else:
-            max_tokens, max_rounds, timeout = 16384, 120, PM_TIMEOUT
+            max_tokens, max_rounds, timeout = 16384, 360, PM_TIMEOUT
 
         # ── 审批门：有待审批 PRD + 用户说确认词 → 直接派发 ──
         session = self._get_or_create_session(chat_id, "pm", command, intent)
@@ -894,8 +899,10 @@ class Orchestrator:
         await self._notify(chat_id, "pm", task.prd)
         self._sync_to_teammates("pm", command, task.prd)
 
-        # 如果 PM 回复是聊天/调研（短回复，不含 PRD 结构），不触发 FE/BE
-        if len(task.prd) < 200 and "##" not in task.prd:
+        # 只有包含任务清单结构的回复才进入 PRD 管线；其他（聊天/读文档摘要/调研汇报）到此为止
+        _prd_markers = ["前端任务", "FE 任务", "后端任务", "BE 任务",
+                        "FE 任务清单", "BE 任务清单", "- [ ] 0."]
+        if not any(m in task.prd for m in _prd_markers):
             task.state = State.COMPLETED
             task.completed_at = datetime.now().isoformat()
             self._update_status("pm", "完成", task.prd[:80])
@@ -965,13 +972,13 @@ class Orchestrator:
                 and len(command.strip()) < 50:
             intent = "chat"
         if intent == "chat":
-            max_tokens, max_rounds, timeout = 2048, 12, CHAT_TIMEOUT
+            max_tokens, max_rounds, timeout = 4096, 36, CHAT_TIMEOUT
         elif intent == "read":
-            max_tokens, max_rounds, timeout = 8192, 120, 1440    # 读文档+摘要
+            max_tokens, max_rounds, timeout = 16384, 360, 1440
         elif intent == "plan":
-            max_tokens, max_rounds, timeout = 8192, 120, WORK_TIMEOUT
+            max_tokens, max_rounds, timeout = 16384, 360, WORK_TIMEOUT
         else:
-            max_tokens, max_rounds, timeout = 16384, 120, WORK_TIMEOUT
+            max_tokens, max_rounds, timeout = 16384, 360, WORK_TIMEOUT
 
         # ── 会话管理：如果有活跃会话，注入项目上下文 ──
         session = self._get_or_create_session(chat_id, bot_key, command, intent)
@@ -1002,7 +1009,7 @@ class Orchestrator:
 
         # ── 产出文件列表（用户不用猜代码在哪）──
         if is_valid and snapshot_before:
-            _, new_files = self.runner.verify_output(bot_key, snapshot_before)
+            _, new_files, _ = self.runner.verify_output(bot_key, snapshot_before)
             if new_files:
                 file_list = "\n".join(f"  📄 {f}" for f in new_files[:8])
                 ws_name = {"fe": "workspace/fe", "be": "workspace/be"}.get(bot_key, bot_key)
@@ -1019,7 +1026,7 @@ class Orchestrator:
             await self._notify(chat_id, bot_key, reply)
             # ── 更新会话：记录产出文件 ──
             if snapshot_before:
-                _, created = self.runner.verify_output(bot_key, snapshot_before)
+                _, created, _ = self.runner.verify_output(bot_key, snapshot_before)
                 self._update_session_after_task(chat_id, "", reply, created)
             # ── 清理无用文件 ──
             n = self.runner.cleanup_test_files(bot_key)

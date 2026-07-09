@@ -74,15 +74,43 @@
 重点: 自适应缩放(transform:scale)、实时数据刷新、大屏分辨率适配
 ```
 
+### Android 原生 / Expo 模块
+```
+栈: Kotlin + Jetpack Compose or ViewBinding + Coroutines + Room + Hilt
+结构: modules/{name}/android/src/main/java/expo/modules/{name}/
+重点: Gradle 依赖管理、AndroidManifest 权限声明、ProGuard 规则、.so 多架构
+```
+
+### iOS 原生 / Expo 模块
+```
+栈: Swift + SwiftUI or UIKit + Combine + Core Data + SPM
+结构: modules/{name}/ios/
+重点: Info.plist 权限声明、Podspec 配置、Code Signing、App Store 审核合规
+```
+
+### React Native 原生模块
+```
+栈: Kotlin/Java (Android) + Swift/ObjC (iOS) + Turbo Module / Fabric
+结构: 跟随 RN 项目原生目录结构
+重点: Native View 桥接、Event Emitter、线程安全、内存管理
+```
+
 ### 低代码/表单密集
 ```
 栈: React + Formily 2 / Amis
 重点: Schema 驱动渲染、自定义组件注册、联动规则、条件显示
 ```
 
-## 写后自检（六关，按顺序过，每关必须全部 ✅ 才算完成）
+## 写后自检（七关，按顺序过，每关必须全部 ✅ 才算完成）
 
-> 铁律：**写完代码 ≠ 完成任务。六关全过才叫完成。**
+> 铁律：**写完代码 ≠ 完成任务。七关全过才叫完成。第一关是硬性门槛，不过不准往下走。**
+
+### 第〇关：自动化自检（全部文件写完后统一跑）
+- [ ] **本批次所有文件写完后**，对每个新写/修改的文件调 `check_code(path)` 检查
+- [ ] 写的过程中不打断——A 文件引用了还没写的 B 文件是正常的，写完了一起查
+- [ ] 自检发现问题 → `edit_file` 修复 → 再 `check_code` 确认 → 直到 ✅ 全部通过
+- [ ] `check_code` 过了之后，再用 `execute("npx tsc --noEmit")` 或 `execute("npm run lint")` 做更深检查
+- [ ] **铁律：写完 → 统一自检 → 修复 → 再检 → 通过，这是一个闭环。不允许"发现问题但先记着后面再改"。**
 
 ### 第一关：类型与编译
 - [ ] 无 `as any`、`@ts-ignore`、裸 `any` 类型（除非第三方库确实无类型）

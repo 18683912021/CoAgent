@@ -35,7 +35,7 @@ class TestStaticMethods:
     def test_verify_output_consistent(self):
         """同一快照前后对比应无变化。"""
         snap = TaskRunner.snapshot_workspace("fe")
-        has_new, files = TaskRunner.verify_output("fe", snap)
+        has_new, files, _ = TaskRunner.verify_output("fe", snap)
         assert has_new is False
         assert files == []
 

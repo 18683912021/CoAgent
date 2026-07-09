@@ -50,6 +50,18 @@ EDIT_FILE_TOOL_SPEC = {
     },
 }
 
+DELETE_FILE_TOOL_SPEC = {
+    "name": "delete_file",
+    "description": "删除工作区内的文件或空目录。用于清理临时文件、测试文件、不再需要的代码等。非空目录需要先清空里面的文件再删。",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "相对于工作目录的文件或目录路径"},
+        },
+        "required": ["path"],
+    },
+}
+
 LIST_DIR_TOOL_SPEC = {
     "name": "list_dir",
     "description": "列出工作目录下的文件",
@@ -92,8 +104,8 @@ def read_file(workspace: str, rel_path: str) -> str:
         if not target.exists():
             return f"[read_file] 文件不存在: {rel_path}"
         content = target.read_text(encoding="utf-8")
-        if len(content) > 5000:
-            content = content[:5000] + f"\n...(截断，共 {len(content)} 字符)"
+        if len(content) > 25000:
+            content = content[:25000] + f"\n...(截断，共 {len(content)} 字符)"
         return content
     except PermissionError as e:
         return f"[read_file] 权限错误: {e}"
@@ -182,6 +194,27 @@ def edit_file(workspace: str, rel_path: str, old_string: str, new_string: str) -
         return f"[edit_file] 权限错误: {e}"
     except Exception as e:
         return f"[edit_file] 编辑失败: {e}"
+
+
+def delete_file(workspace: str, rel_path: str) -> str:
+    """删除工作区内的文件或空目录。非空目录拒绝删除（安全保护）。"""
+    try:
+        target = _resolve(workspace, rel_path)
+        if not target.exists():
+            return f"[delete_file] 不存在: {rel_path}"
+        if target.is_dir():
+            if any(target.iterdir()):
+                items = list(target.iterdir())[:5]
+                names = ", ".join(i.name for i in items)
+                return f"[delete_file] 目录非空: {rel_path}（包含 {names} 等），需先清空后再删"
+            target.rmdir()
+            return f"[delete_file] 已删除空目录: {rel_path}"
+        target.unlink()
+        return f"[delete_file] 已删除: {rel_path}"
+    except PermissionError as e:
+        return f"[delete_file] 权限错误: {e}"
+    except Exception as e:
+        return f"[delete_file] 删除失败: {e}"
 
 
 def list_dir(workspace: str, rel_path: str = ".") -> str:

@@ -28,7 +28,7 @@
 
 ## 收到产品需求
 1. **解析** → 判断完整性
-2. **调研** → search_web 查竞品/行业 → read_feishu_doc 读内部文档
+2. **调研** → 先 `read_file` 读本地 `product-description/` 和 `workspace/shared/` → 外部信息用 search_web 搜竞品/行业。飞书文档只在用户给了链接时用 `read_feishu_doc` 打开
 3. **追问**（不完整时）→ 2-3 个关键问题
 4. **出 PRD** → 按 SKILL.md 模板输出
 5. **验收** → FE/BE 产出后对照 PRD 检查
@@ -196,7 +196,7 @@
 - 老板验收时说"这不是我想要的" → 需求理解有偏差，回到用户故事重新对齐
 
 ## 遇到阻塞
-1. **查资料** — search_web 搜竞品 → read_feishu_doc 读内部文档 → search_feishu_wiki 搜知识库
+1. **查资料** — 先 `read_file` 读本地 `product-description/` 和 `workspace/shared/` → 找不到再用 search_web 搜外部信息
 2. **自己试** — 换角度分析 → 追问用户 → 用数据验证假设
 3. **求助** — 仍解决不了才告知用户，附带：已确认了什么 + 不确定的是什么
 
@@ -204,6 +204,8 @@
 
 > ⚠️ 铁律：**不读 source of truth 不出任务**。产品规划在 `product-description/tasks.md`，
 > 所有任务文档必须严格对齐它——编号一致、阶段一致、内容一致。凭印象干活 = 返工。
+
+**触发词**：老板说「派任务 X / 把 X 派出去 / 创建任务文档 / 派给前后端」→ 按以下流程执行，**禁止使用 search_feishu_wiki 或 search_web**，一切信息在本地 `product-description/tasks.md` 里。
 
 1. **读源文档** → `read_file` 读 `product-description/tasks.md`，找到对应阶段的子任务
 2. **查已有文件** → `list_dir` 看 `workspace/shared/tasks/` 下是否已有同名任务（防重复）

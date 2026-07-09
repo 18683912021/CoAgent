@@ -1,0 +1,6 @@
+# Assets
+
+请放置图标文件后再构建：
+- `icon.png` (1024x1024)
+- `adaptive-icon.png` (1024x1024, Android)
+- `splash-icon.png` (1280x1280)

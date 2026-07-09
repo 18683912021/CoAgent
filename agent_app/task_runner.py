@@ -94,14 +94,15 @@ class TaskRunner:
         return TaskRunner._walk_files(ws)
 
     @staticmethod
-    def verify_output(bot_key: str, before: set[str]) -> tuple[bool, list[str]]:
-        """验证产出：对比快照，返回 (是否有新文件, 文件列表)。"""
+    def verify_output(bot_key: str, before: set[str]) -> tuple[bool, list[str], list[str]]:
+        """验证产出：对比快照，返回 (有变化, 新增文件, 删除文件)。"""
         ws = WORKSPACE_ROOT / bot_key
         if not ws.exists():
-            return False, []
+            return False, [], []
         after = TaskRunner._walk_files(ws)
         new_files = sorted(after - before)
-        return len(new_files) > 0, new_files
+        deleted_files = sorted(before - after)
+        return (len(new_files) > 0 or len(deleted_files) > 0), new_files, deleted_files
 
     @staticmethod
     def is_empty_result(result_text: str) -> bool:
@@ -273,7 +274,7 @@ class TaskRunner:
         # 文件产出验证
         has_output, new_files = False, []
         if snapshot_before:
-            has_output, new_files = self.verify_output(bot_key, snapshot_before)
+            has_output, new_files, deleted_files = self.verify_output(bot_key, snapshot_before)
             if self.claimed_done(text) and not has_output:
                 text += (
                     "\n\n⚠️ [系统验证] workspace 里没有新文件。"

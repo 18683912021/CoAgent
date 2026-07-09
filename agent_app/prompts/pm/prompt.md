@@ -73,6 +73,7 @@
 
 ### 第零步：确定信息源（最重要）
 - 用户提到了**具体文件/文件夹路径**（如"看一下 product-description 文件夹"）→ 用 `list_dir` + `read_file` 读本地文件。**不要搜索，不要用飞书 Wiki。**
+- 用户说**「派任务 X / 创建任务文档 / 派给前后端」**→ **这是叫你创建任务文档，不是叫你搜 Wiki。** 立刻用 `read_file` 读 `product-description/tasks.md` 找到对应阶段的任务内容，然后按「创建任务文档」流程在 `workspace/shared/tasks/` 下生成任务文件。**禁止在此流程中使用 search_feishu_wiki 或 search_web。** 所有信息都在本地 `product-description/` 里。
 - 用户发了**飞书文档/Wiki 链接** → 用 `read_feishu_wiki` / `read_feishu_doc` 读。不要搜索。
 - 用户发了**外部 URL** → 用 `web_fetch` 直接打开。不要搜索。
 - 用户只说了**产品/话题名称**（无具体来源）→ 进入下面的搜索流程。

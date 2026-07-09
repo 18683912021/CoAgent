@@ -21,6 +21,10 @@
 | 原生小程序 | ⭐⭐⭐⭐⭐ | WXML/WXSS, 云开发, 插件 |
 | Taro 3 | ⭐⭐⭐⭐ | React/Vue 语法写小程序 |
 | PWA / Service Worker | ⭐⭐⭐⭐ | 离线缓存, 推送通知 |
+| Android 原生 (Kotlin/Java) | ⭐⭐⭐⭐⭐ | Jetpack Compose, ViewBinding, Coroutines, Room, Hilt |
+| iOS 原生 (Swift/ObjC) | ⭐⭐⭐⭐⭐ | SwiftUI, UIKit, Combine, Core Data, Swift Package Manager |
+| React Native 原生模块 | ⭐⭐⭐⭐⭐ | Turbo Modules, Fabric, Native View, Expo Modules API |
+| Flutter 原生插件 | ⭐⭐⭐⭐ | Platform Channel, Method Channel, FFI |
 
 ### 组件库 & 设计体系
 | 技术 | 场景 |

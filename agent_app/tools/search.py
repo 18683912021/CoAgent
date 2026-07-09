@@ -11,7 +11,8 @@ load_dotenv()
 
 SEARCH_TOOL_SPEC = {
     "name": "search_web",
-    "description": "搜索互联网获取最新信息。返回结果列表（标题+摘要+URL+内容），最多 8 条。",
+    "description": "搜索互联网获取最新信息。返回 10 条结果（标题+摘要+URL）。"
+                   "⚠️ 搜索完后必须用 web_fetch 打开全部结果的链接读全文，不能只看摘要就下结论。",
     "input_schema": {
         "type": "object",
         "properties": {
@@ -24,7 +25,7 @@ SEARCH_TOOL_SPEC = {
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
 
 
-async def search_web(query: str, max_results: int = 8) -> str:
+async def search_web(query: str, max_results: int = 10) -> str:
     """搜索互联网。优先用 Tavily，未配置时回退 DuckDuckGo。"""
     if TAVILY_API_KEY:
         return await _search_tavily(query, max_results)
@@ -42,8 +43,9 @@ async def _search_tavily(query: str, max_results: int) -> str:
                     "api_key": TAVILY_API_KEY,
                     "query": query,
                     "max_results": min(max_results, 10),
-                    "search_depth": "basic",
+                    "search_depth": "advanced",
                     "include_answer": True,
+                    "include_raw_content": True,
                 },
             )
             data = resp.json()
@@ -61,7 +63,7 @@ async def _search_tavily(query: str, max_results: int) -> str:
 
             for i, r in enumerate(results, 1):
                 title = r.get("title", "")[:120]
-                content = r.get("content", "")[:300]
+                content = r.get("content", "")[:500]
                 url = r.get("url", "")
                 lines.append(f"{i}. {title}")
                 lines.append(f"   {content}")

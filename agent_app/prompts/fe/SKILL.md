@@ -335,6 +335,111 @@ const fullName = useMemo(() => `${firstName} ${lastName}`, [firstName, lastName]
 - 全局通用类型：`src/shared/types/index.ts`
 - API 响应类型：与 API 调用同文件，如 `features/users/api.ts`
 
+## 原生开发（Android / iOS / 原生模块）
+
+### Android 原生（Kotlin + Jetpack Compose）
+```
+场景: Expo 原生模块、React Native Turbo Module、原生 SDK 封装
+技术栈: Kotlin + Coroutines + Room + Hilt + Retrofit
+重点: AndroidManifest 权限、Gradle 依赖管理、ProGuard 混淆、多架构 so 库
+```
+
+### Android 模块模板（Expo Modules API）
+```kotlin
+// modules/audio-capture/android/src/main/java/expo/modules/audiocapture/AudioCaptureModule.kt
+package expo.modules.audiocapture
+
+import expo.modules.kotlin.modules.Module
+import expo.modules.kotlin.modules.ModuleDefinition
+
+class AudioCaptureModule : Module() {
+  override fun definition() = ModuleDefinition {
+    Name("AudioCapture")
+
+    Function("startCapture") { options: Map<String, Any> ->
+      // 原生音频采集逻辑
+      return@Function mapOf("status" to "started")
+    }
+
+    Function("stopCapture") {
+      return@Function mapOf("status" to "stopped")
+    }
+
+    View(AudioCaptureView::class) {
+      Events("onAudioData")
+      Prop("sampleRate") { view: AudioCaptureView, rate: Int ->
+        view.setSampleRate(rate)
+      }
+    }
+  }
+}
+```
+
+### iOS 原生（Swift + SwiftUI）
+```
+场景: Expo 原生模块、RN Native View、原生 SDK 封装
+技术栈: Swift + SwiftUI + Combine + Core Data + SPM
+重点: Info.plist 权限声明、Podspec 配置、Framework 签名、App Store 审核
+```
+
+### iOS 模块模板（Expo Modules API）
+```swift
+// modules/audio-capture/ios/AudioCaptureModule.swift
+import ExpoModulesCore
+
+public class AudioCaptureModule: Module {
+  public func definition() -> ModuleDefinition {
+    Name("AudioCapture")
+
+    Function("startCapture") { (options: [String: Any]) -> [String: Any] in
+      // 原生音频采集逻辑
+      return ["status": "started"]
+    }
+
+    Function("stopCapture") { () -> [String: Any] in
+      return ["status": "stopped"]
+    }
+
+    View(AudioCaptureView.self) {
+      Events("onAudioData")
+      Prop("sampleRate") { (view: AudioCaptureView, rate: Int) in
+        view.setSampleRate(rate)
+      }
+    }
+  }
+}
+```
+
+### Expo 原生模块配置
+```json
+// modules/audio-capture/expo-module.config.json
+{
+  "platforms": ["ios", "android"],
+  "ios": {
+    "modules": ["AudioCaptureModule"],
+    "appDelegateSubscribers": []
+  },
+  "android": {
+    "modules": ["expo.modules.audiocapture.AudioCaptureModule"]
+  }
+}
+```
+
+### 原生 View 桥接（React Native）
+```kotlin
+// android: ViewManager + FrameLayout
+class AudioCaptureView(context: Context) : FrameLayout(context) {
+  fun setSampleRate(rate: Int) { ... }
+}
+```
+
+```swift
+// ios: UIView subclass
+class AudioCaptureView: UIView {
+  @objc func setSampleRate(_ rate: Int) { ... }
+}
+```
+
 ## 文件结构规范
 ```
 workspace/fe/{project-name}/

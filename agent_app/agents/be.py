@@ -4,11 +4,13 @@ from pathlib import Path
 
 from agents.base import BaseAgent
 from tools.code_editor import (
-    READ_FILE_TOOL_SPEC, WRITE_FILE_TOOL_SPEC, EDIT_FILE_TOOL_SPEC, LIST_DIR_TOOL_SPEC,
-    read_file, write_file, edit_file, list_dir,
+    READ_FILE_TOOL_SPEC, WRITE_FILE_TOOL_SPEC, EDIT_FILE_TOOL_SPEC, LIST_DIR_TOOL_SPEC, DELETE_FILE_TOOL_SPEC,
+    read_file, write_file, edit_file, list_dir, delete_file,
 )
 from tools.search import SEARCH_TOOL_SPEC, search_web
 from tools.web_fetch import WEB_FETCH_TOOL_SPEC, web_fetch
+from tools.terminal import EXECUTE_TOOL_SPEC, execute
+from tools.code_check import CHECK_TOOL_SPEC, check_code
 from tools.feishu_docs import (
     READ_DOC_TOOL_SPEC, READ_BITABLE_TOOL_SPEC, SEARCH_WIKI_TOOL_SPEC, READ_WIKI_TOOL_SPEC,
     read_feishu_doc, read_feishu_bitable, search_feishu_wiki, read_feishu_wiki,
@@ -30,8 +32,8 @@ class BEAgent(BaseAgent):
             name="BE",
             system_prompt=system_prompt,
             memory_file=str(MEMORY_FILE),
-            tools=[READ_FILE_TOOL_SPEC, WRITE_FILE_TOOL_SPEC, EDIT_FILE_TOOL_SPEC, LIST_DIR_TOOL_SPEC,
-                   SEARCH_TOOL_SPEC, WEB_FETCH_TOOL_SPEC,
+            tools=[READ_FILE_TOOL_SPEC, WRITE_FILE_TOOL_SPEC, EDIT_FILE_TOOL_SPEC, LIST_DIR_TOOL_SPEC, DELETE_FILE_TOOL_SPEC,
+                   SEARCH_TOOL_SPEC, WEB_FETCH_TOOL_SPEC, EXECUTE_TOOL_SPEC, CHECK_TOOL_SPEC,
                    READ_DOC_TOOL_SPEC, READ_BITABLE_TOOL_SPEC, SEARCH_WIKI_TOOL_SPEC,
                    READ_WIKI_TOOL_SPEC],
             workspace=str(Path(__file__).parent.parent / "workspace" / "be"),
@@ -53,6 +55,12 @@ class BEAgent(BaseAgent):
                              args.get("old_string", ""), args.get("new_string", ""))
         elif name == "list_dir":
             return list_dir(PROJECT_ROOT, args.get("path", "."))
+        elif name == "delete_file":
+            return delete_file(PROJECT_ROOT, args.get("path", ""))
+        elif name == "execute":
+            return execute(args.get("command", ""), args.get("cwd", ""))
+        elif name == "check_code":
+            return check_code(args.get("path", ""), args.get("content", ""))
         elif name == "read_feishu_doc":
             return asyncio.run(read_feishu_doc(**args))
         elif name == "read_feishu_bitable":
