@@ -87,12 +87,14 @@ def _resolve(workspace: str, rel_path: str) -> Path:
     else:
         base = (WORKSPACE_ROOT / ws).resolve()
 
-    # ── 防嵌套：如果 Agent 误写了 workspace/fe/xxx，自动去掉冗余前缀 ──
-    workspace_name = ws.name if not ws.is_absolute() else ws.parts[-1]
-    redundant = f"workspace/{workspace_name}/"
-    while redundant in rel_path:
-        idx = rel_path.index(redundant)
-        rel_path = rel_path[:idx] + rel_path[idx + len(redundant):]
+    # ── 防嵌套：Agent 可能误加 workspace/fe/ 或 workspace/workspace/fe/ 前缀 ──
+    parts = rel_path.replace("\\", "/").split("/")
+    while len(parts) >= 2 and parts[0] == "workspace":
+        if parts[1] in ("fe", "be", "prd", "shared", "workspace"):
+            parts = parts[2:]  # 去掉 workspace/fe/ 这层
+        else:
+            parts = parts[1:]  # 只去掉 workspace/
+    rel_path = "/".join(parts)
 
     return (base / rel_path).resolve()
 
