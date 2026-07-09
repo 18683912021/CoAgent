@@ -16,7 +16,7 @@ FAILED_TASKS_LOG = LOGS_DIR / "failed_tasks.jsonl"
 
 # ── 超时常量 ──────────────────────────────────────────
 
-CHAT_TIMEOUT = 240      # 闲聊：4 分钟
+CHAT_TIMEOUT = 960      # 闲聊：16 分钟（含被误判 chat 的 work 保障）
 WORK_TIMEOUT = 1440     # 单个 Agent 工作：24 分钟
 PM_TIMEOUT = 960        # PM 分析+调研：16 分钟
 RETRY_TIMEOUT = 1800    # 重试总超时：30 分钟

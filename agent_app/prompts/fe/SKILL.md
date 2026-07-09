@@ -335,6 +335,183 @@ const fullName = useMemo(() => `${firstName} ${lastName}`, [firstName, lastName]
 - 全局通用类型：`src/shared/types/index.ts`
 - API 响应类型：与 API 调用同文件，如 `features/users/api.ts`
 
+## CSS 样式实战
+
+### 响应式断点系统
+```css
+/* 移动优先 */
+:root {
+  --bp-sm: 640px;
+  --bp-md: 768px;
+  --bp-lg: 1024px;
+  --bp-xl: 1280px;
+  --bp-2xl: 1536px;
+}
+
+/* Tailwind 风格 */
+@custom-media --sm (min-width: 640px);
+@custom-media --md (min-width: 768px);
+@custom-media --lg (min-width: 1024px);
+
+@media (--md) { /* 平板及以上 */ }
+```
+
+### 流体排版 (clamp)
+```css
+h1 { font-size: clamp(1.5rem, 4vw, 3rem); }
+p  { font-size: clamp(1rem, 1.5vw, 1.25rem); }
+```
+
+### Flexbox 常用布局
+```css
+/* 水平垂直居中 */
+.center { display: flex; justify-content: center; align-items: center; }
+
+/* 两端对齐 */
+.header { display: flex; justify-content: space-between; align-items: center; }
+
+/* 等分列 */
+.grid-3 { display: flex; gap: 1rem; }
+.grid-3 > * { flex: 1; }
+
+/* 圣杯布局 */
+.holy-grail { display: flex; flex-direction: column; min-height: 100vh; }
+.holy-grail main { flex: 1; }
+```
+
+### Grid 常用布局
+```css
+/* 响应式卡片网格 */
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 1.5rem;
+}
+
+/* 仪表盘布局 */
+.dashboard {
+  display: grid;
+  grid-template-areas:
+    "stats  stats  stats"
+    "chart  chart  sidebar"
+    "table  table  sidebar";
+  grid-template-columns: 1fr 1fr 300px;
+  gap: 1rem;
+}
+```
+
+### 暗黑模式 (Design Token + CSS 变量)
+```css
+:root {
+  --color-bg: #ffffff;
+  --color-text: #1a1a2e;
+  --color-primary: #6366f1;
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.05);
+}
+
+[data-theme="dark"] {
+  --color-bg: #0f172a;
+  --color-text: #e2e8f0;
+  --color-primary: #818cf8;
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.3);
+}
+
+/* 跟随系统 */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { /* 自动暗黑 */ }
+}
+```
+
+### 常用动画
+```css
+/* 淡入 + 上移 */
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.fade-in { animation: fadeInUp 0.3s ease-out both; }
+
+/* 骨架屏闪烁 */
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.skeleton {
+  background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+}
+
+/* 入场交错 */
+.stagger > * { opacity: 0; animation: fadeInUp 0.3s ease-out forwards; }
+.stagger > *:nth-child(1) { animation-delay: 0.05s; }
+.stagger > *:nth-child(2) { animation-delay: 0.10s; }
+.stagger > *:nth-child(3) { animation-delay: 0.15s; }
+```
+
+### 移动端适配
+```css
+/* 安全区域 */
+.safe-bottom { padding-bottom: env(safe-area-inset-bottom, 16px); }
+.safe-top    { padding-top: env(safe-area-inset-top, 0px); }
+
+/* 1px 边框（Retina 屏） */
+.hairline {
+  position: relative;
+  &::after {
+    content: '';
+    position: absolute; left: 0; bottom: 0; right: 0;
+    height: 1px;
+    transform: scaleY(0.5);
+    background: #e5e7eb;
+  }
+}
+
+/* 滚动平滑 */
+.scroll-container {
+  -webkit-overflow-scrolling: touch;
+  scroll-behavior: smooth;
+  overscroll-behavior: contain;
+}
+```
+
+### 性能优化
+```css
+/* 减少重绘 */
+.optimized {
+  will-change: transform, opacity;          /* GPU 加速 */
+  contain: layout style paint;              /* 隔离渲染 */
+  content-visibility: auto;                 /* 虚拟滚动 */
+}
+
+/* 图片渲染优化 */
+img {
+  image-rendering: -webkit-optimize-contrast;
+  content-visibility: auto;
+  aspect-ratio: attr(width) / attr(height); /* CLS 防护 */
+}
+
+/* 异步字体加载 */
+@font-face {
+  font-family: 'Custom';
+  src: url('/fonts/custom.woff2') format('woff2');
+  font-display: swap; /* 先显示回退字体 */
+}
+```
+
+### Tailwind 4 自定义 Design Token
+```css
+@theme {
+  --color-primary: #6366f1;
+  --color-primary-light: #818cf8;
+  --color-surface: #ffffff;
+  --color-surface-alt: #f8fafc;
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
+  --shadow-card: 0 1px 3px rgba(0,0,0,0.1), 0 1px 2px rgba(0,0,0,0.06);
+}
+```
+
 ## 原生开发（Android / iOS / 原生模块）
 
 ### Android 原生（Kotlin + Jetpack Compose）

@@ -1,5 +1,5 @@
 import { requireNativeModule } from 'expo-modules-core';
-import type { AudioCaptureConfig } from './AudioCapture.types';
+import type { AudioCaptureConfig, AudioLevels, CaptureSource } from './AudioCapture.types';
 
 const MODULE_NAME = 'AudioCapture';
 
@@ -19,7 +19,7 @@ class AudioCaptureModule {
     }
   }
 
-  /** 检查当前设备是否支持系统音频采集 */
+  /** 检查当前设备是否支持系统音频采集 (Android 10+) */
   async isSupported(): Promise<boolean> {
     if (!this.nativeModule) return false;
     try {
@@ -27,6 +27,41 @@ class AudioCaptureModule {
     } catch {
       return false;
     }
+  }
+
+  /** 是否已获得 MediaProjection 授权 */
+  async hasMediaProjection(): Promise<boolean> {
+    if (!this.nativeModule) return false;
+    try {
+      return await this.nativeModule.hasMediaProjection();
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * 请求系统音频采集授权（弹出系统级对话框）
+   * @returns true=用户同意授权, false=用户拒绝
+   */
+  async requestMediaProjection(): Promise<boolean> {
+    if (!this.nativeModule) {
+      throw new Error('原生模块不可用，请在真机上运行');
+    }
+    return this.nativeModule.requestMediaProjection();
+  }
+
+  /** 设置采集源 */
+  async setCaptureSource(source: CaptureSource): Promise<void> {
+    if (!this.nativeModule) {
+      throw new Error('原生模块不可用，请在真机上运行');
+    }
+    return this.nativeModule.setCaptureSource(source);
+  }
+
+  /** 获取当前采集源 */
+  async getCaptureSource(): Promise<CaptureSource> {
+    if (!this.nativeModule) return 'mic';
+    return this.nativeModule.getCaptureSource();
   }
 
   /** 配置采集参数（必须在 start() 之前调用） */
@@ -37,7 +72,7 @@ class AudioCaptureModule {
     return this.nativeModule.configure(config);
   }
 
-  /** 开始采集系统音频 */
+  /** 开始采集 */
   async start(): Promise<void> {
     if (!this.nativeModule) {
       throw new Error('原生模块不可用，请在真机上运行');
@@ -51,13 +86,13 @@ class AudioCaptureModule {
     return this.nativeModule.stop();
   }
 
-  /** 获取当前音量等级 (0.0 ~ 1.0) */
-  async getAudioLevel(): Promise<number> {
-    if (!this.nativeModule) return 0;
+  /** 获取双路音量电平 (0.0 ~ 1.0) */
+  async getAudioLevels(): Promise<AudioLevels> {
+    if (!this.nativeModule) return { mic: 0, system: 0 };
     try {
-      return await this.nativeModule.getAudioLevel();
+      return await this.nativeModule.getAudioLevels();
     } catch {
-      return 0;
+      return { mic: 0, system: 0 };
     }
   }
 }

@@ -37,6 +37,11 @@ const appConfig: ExpoConfig = {
       foregroundImage: './assets/images/adaptive-icon.png',
       backgroundColor: '#ffffff',
     },
+    permissions: [
+      'android.permission.RECORD_AUDIO',
+      'android.permission.FOREGROUND_SERVICE',
+      'android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION',
+    ],
   },
 
   updates: {

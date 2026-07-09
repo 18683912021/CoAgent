@@ -846,7 +846,7 @@ class Orchestrator:
         if intent == "chat":
             max_tokens, max_rounds, timeout = 4096, 36, CHAT_TIMEOUT
         elif intent == "read":
-            max_tokens, max_rounds, timeout = 16384, 360, 1440
+            max_tokens, max_rounds, timeout = 16384, 360, 1440  # read intent
         elif intent == "plan":
             max_tokens, max_rounds, timeout = 16384, 360, PM_TIMEOUT
         else:
@@ -974,7 +974,7 @@ class Orchestrator:
         if intent == "chat":
             max_tokens, max_rounds, timeout = 4096, 36, CHAT_TIMEOUT
         elif intent == "read":
-            max_tokens, max_rounds, timeout = 16384, 360, 1440
+            max_tokens, max_rounds, timeout = 16384, 360, 1440  # read intent
         elif intent == "plan":
             max_tokens, max_rounds, timeout = 16384, 360, WORK_TIMEOUT
         else:

@@ -67,6 +67,16 @@
 重点: SEO (OG/meta/structured data)、首屏性能、响应式、i18n
 ```
 
+### Design System / 样式工程
+```
+栈: Tailwind 4 + Design Tokens + CSS 变量 + 暗黑模式
+结构: src/design/tokens/ → colors.ts, typography.ts, spacing.ts
+      src/styles/ → globals.css, theme.css, animations.css
+      tailwind.config.ts → 扩展 theme
+流程: 定义 Token → CSS 变量映射 → Tailwind 扩展 → 组件消费
+重点: 可配置、可换肤、暗黑模式、响应式、性能
+```
+
 ### 数据可视化大屏
 ```
 栈: React + ECharts 5 + 自适应缩放

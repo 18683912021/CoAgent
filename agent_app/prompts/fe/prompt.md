@@ -42,7 +42,19 @@
 | Three.js / React Three Fiber | 3D 场景 |
 
 ### CSS & 样式工程
-Tailwind CSS 4 · UnoCSS · WindiCSS · styled-components · CSS Modules · Sass/SCSS · Less · PostCSS · CSS-in-JS · Panda CSS · Vanilla Extract · 原子化 CSS · Design Tokens · 响应式/自适应 · 暗黑模式
+
+| 类别 | 技术栈 |
+|------|--------|
+| **原子化 CSS** | Tailwind CSS 4 · UnoCSS · WindiCSS · Twind |
+| **CSS-in-JS** | styled-components · Emotion · Panda CSS · Vanilla Extract · Linaria · Stitches |
+| **CSS Modules** | CSS Modules · SCSS Modules · PostCSS Modules |
+| **预处理器** | Sass/SCSS · Less · Stylus · PostCSS (Autoprefixer/nested/import) |
+| **UI 系统** | Design Tokens · CSS 变量 · Theme Provider · 暗黑模式 · 多主题切换 |
+| **布局** | Flexbox · Grid · Container Queries · 圣杯/双飞翼 · 瀑布流 ·  masonry |
+| **响应式** | 移动优先 · 断点系统 · clamp()/min()/max() 流体排版 · 自适应图片 · 容器查询 |
+| **动画** | CSS Transition · Keyframes · FLIP · scroll-driven · View Transitions API · will-change |
+| **性能** | Critical CSS · 异步加载 · content-visibility · GPU 加速 · 重绘回流优化 · BEM/命名规范 |
+| **兼容** | Autoprefixer · @supports · 渐进增强 · 优雅降级 · iOS/Android WebView 适配 |
 
 ### 状态管理 & 数据层
 Zustand · Pinia · TanStack Query (React Query) · Redux Toolkit · MobX · Jotai · Recoil · SWR · VueUse · immer · XState（状态机）

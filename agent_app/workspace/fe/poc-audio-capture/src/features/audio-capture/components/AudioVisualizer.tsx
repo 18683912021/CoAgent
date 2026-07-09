@@ -13,21 +13,29 @@ interface AudioVisualizerProps {
   level: number;
   /** 是否正在采集中 */
   isActive: boolean;
+  /** 标签（如 "麦克风" / "系统音频"） */
+  label: string;
+  /** 配色方案 */
+  colorScheme: 'warm' | 'cool';
 }
 
-const BAR_COLORS = ['#FF6B6B', '#FFA94D', '#FFD43B', '#69DB7C', '#4DABF7'];
+const WARM_COLORS = ['#FF6B6B', '#FFA94D', '#FFD43B', '#FCC419', '#FF922B'];
+const COOL_COLORS = ['#4DABF7', '#748FFC', '#9775FA', '#5C7CFA', '#3BC9DB'];
 
 /**
  * 均衡器风格音频可视化
- * 5根柱子随音量跳动，采集中有波浪动画
+ * 5根柱子随音量跳动
  */
 export default function AudioVisualizer({
   level,
   isActive,
+  label,
+  colorScheme,
 }: AudioVisualizerProps): React.ReactElement {
-  // ===== 所有 Hook 在组件顶层调用，不在循环/回调中 =====
+  const colors = colorScheme === 'warm' ? WARM_COLORS : COOL_COLORS;
+  const indicatorColor = colorScheme === 'warm' ? '#FF6B6B' : '#4DABF7';
 
-  // 5 根柱子独立共享值
+  // 5 根柱子独立共享值 — 必须在组件顶层调用
   const h0 = useSharedValue(0.05);
   const h1 = useSharedValue(0.05);
   const h2 = useSharedValue(0.05);
@@ -35,7 +43,6 @@ export default function AudioVisualizer({
   const h4 = useSharedValue(0.05);
   const barHeights = [h0, h1, h2, h3, h4];
 
-  // 5 根柱子的 animated style，也在顶层
   const barStyle0 = useAnimatedStyle(() => ({ height: `${h0.value * 100}%` }));
   const barStyle1 = useAnimatedStyle(() => ({ height: `${h1.value * 100}%` }));
   const barStyle2 = useAnimatedStyle(() => ({ height: `${h2.value * 100}%` }));
@@ -43,7 +50,6 @@ export default function AudioVisualizer({
   const barStyle4 = useAnimatedStyle(() => ({ height: `${h4.value * 100}%` }));
   const barStyles = [barStyle0, barStyle1, barStyle2, barStyle3, barStyle4];
 
-  // 每次 level 变化时，驱动柱子跳动（加微小随机偏移做出波浪感）
   useEffect(() => {
     if (!isActive) {
       barHeights.forEach((h) => {
@@ -72,7 +78,6 @@ export default function AudioVisualizer({
       pulseOpacity.value = 0;
       return;
     }
-    // 脉冲呼吸效果
     const loop = () => {
       pulseOpacity.value = withTiming(1, { duration: 600 }, () => {
         pulseOpacity.value = withTiming(0.4, { duration: 600 }, () => {
@@ -89,13 +94,16 @@ export default function AudioVisualizer({
 
   return (
     <View style={styles.container}>
-      {/* 脉冲指示器 */}
-      <View style={styles.indicatorRow}>
-        {isActive && (
-          <Animated.View style={[styles.pulseDot, pulseStyle]} />
-        )}
+      {/* 标签行 */}
+      <View style={styles.headerRow}>
+        <View style={styles.indicatorRow}>
+          {isActive && (
+            <Animated.View style={[styles.pulseDot, { backgroundColor: indicatorColor }, pulseStyle]} />
+          )}
+          <Text style={styles.labelText}>{label}</Text>
+        </View>
         <Text style={styles.levelText}>
-          {isActive ? `🔴 采集中 · ${(level * 100).toFixed(0)}%` : '⏸️ 未采集'}
+          {isActive ? `${(level * 100).toFixed(0)}%` : '—'}
         </Text>
       </View>
 
@@ -107,7 +115,7 @@ export default function AudioVisualizer({
               style={[
                 styles.bar,
                 barStyles[i],
-                { backgroundColor: BAR_COLORS[i] },
+                { backgroundColor: colors[i] },
               ]}
             />
           </View>
@@ -121,36 +129,49 @@ const styles = StyleSheet.create({
   container: {
     backgroundColor: '#1a1a2e',
     borderRadius: 16,
-    padding: 20,
+    padding: 16,
     alignItems: 'center',
+    flex: 1,
+  },
+  headerRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    width: '100%',
+    marginBottom: 12,
   },
   indicatorRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 20,
     gap: 8,
   },
   pulseDot: {
     width: 10,
     height: 10,
     borderRadius: 5,
-    backgroundColor: '#FF3B30',
+  },
+  labelText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
   },
   levelText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '600',
+    color: '#aaa',
+    fontSize: 14,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
   },
   barContainer: {
     flexDirection: 'row',
     alignItems: 'flex-end',
     justifyContent: 'center',
-    height: 120,
-    gap: 8,
+    height: 100,
+    gap: 6,
+    width: '100%',
   },
   barTrack: {
     flex: 1,
-    maxWidth: 40,
+    maxWidth: 36,
     height: '100%',
     justifyContent: 'flex-end',
     backgroundColor: 'rgba(255,255,255,0.05)',
