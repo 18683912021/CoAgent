@@ -2,10 +2,31 @@
 import json
 import logging
 import multiprocessing
+import ssl
+import sys
 import time
 from typing import Any
 
+import lark_oapi.ws.client as _lark_ws_client
 from tools.feishu_utils import BOTS
+
+# Monkey-patch：macOS 在公司代理/VPN 环境下，系统证书链缺少公司 CA，
+# 导致 websockets 库的 SSL 验证失败。Windows 域控通过组策略自动推送
+# CA 证书，不存在此问题，因此只在 macOS 上跳过 WebSocket 证书验证。
+if sys.platform == "darwin":
+    _original_ws_connect_kwargs = _lark_ws_client._ws_connect_kwargs
+
+
+    def _patched_ws_connect_kwargs():
+        kwargs = _original_ws_connect_kwargs()
+        ssl_context = ssl.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+        kwargs["ssl"] = ssl_context
+        return kwargs
+
+
+    _lark_ws_client._ws_connect_kwargs = _patched_ws_connect_kwargs
 
 logger = logging.getLogger(__name__)
 
