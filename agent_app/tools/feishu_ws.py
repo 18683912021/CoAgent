@@ -59,7 +59,6 @@ def _run_bot_process(bot_key: str, msg_queue, stop_event=None) -> None:
                 "chat_id": nm.chat_id,
                 "message_id": nm.message_id,
                 "user_id": nm.sender_id,
-                "sender_open_id": nm.sender_open_id,
                 "command": nm.text,
                 "is_mentioned": nm.is_mentioned,
                 "sender_is_bot": nm.sender_is_bot,
@@ -129,7 +128,6 @@ def _msg_consumer(msg_queue: multiprocessing.Queue, orchestrator: Any, main_loop
                 msg.get("mentioned_others", []),
                 msg.get("message_id", ""),
                 sender_is_bot=msg.get("sender_is_bot", False),
-                sender_open_id=msg.get("sender_open_id", ""),
             ),
             main_loop,
         )
