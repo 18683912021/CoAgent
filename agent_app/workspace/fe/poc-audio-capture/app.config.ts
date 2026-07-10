@@ -49,9 +49,7 @@ const appConfig: ExpoConfig = {
       'expo-channel-name': 'production',
     },
   },
-  runtimeVersion: {
-    policy: 'appVersion',
-  },
+  runtimeVersion: '1.0.0',
 
   extra: {
     eas: {
