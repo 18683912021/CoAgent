@@ -83,6 +83,10 @@
     {
       "role": "system",
       "content": "[队友动态] 用户对小柯说：「See https://docs.swmansion.com/react-native-reanimated/docs/」→ 小柯回复：「好，分析完了，两个错误的根因和修复如下：  ---  ## 诊断  | # | 错误 | 根因 | |---|------|------| | **1** | 」"
+    },
+    {
+      "role": "system",
+      "content": "[队友动态] 用户对小柯说：「See https://docs.swmansion.com/react-native-reanimated/docs/」→ 小柯回复：「改动完成。总结一下两个修复：  ---  ## 改了什么  ### 错误 ①：MediaProjection 前台服务崩溃  **文件**：`AudioCapt」"
     }
   ],
   "facts": [
