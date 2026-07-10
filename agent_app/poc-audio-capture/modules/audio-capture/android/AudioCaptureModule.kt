@@ -260,6 +260,10 @@ class AudioCaptureModule(
                         } else if (read == AudioRecord.ERROR_BAD_VALUE) {
                             Log.e(TAG, "AudioRecord read ERROR_BAD_VALUE")
                             break
+                        } else if (read < 0) {
+                            // 兜底所有未知错误码（含 ERROR_DEAD_OBJECT = -6）
+                            Log.e(TAG, "AudioRecord read error code: $read")
+                            break
                         }
                     } catch (e: Exception) {
                         if (isCapturing) {
@@ -271,7 +275,7 @@ class AudioCaptureModule(
                 Log.d(TAG, "采集线程退出，共读取 $totalBytes bytes")
             }.apply {
                 name = "AudioCapture"
-                priority = Thread.MAX_PRIORITY
+                priority = Thread.NORM_PRIORITY + 2  // 避免 MAX_PRIORITY 在低端机压 UI 线程
                 start()
             }
 
@@ -286,6 +290,7 @@ class AudioCaptureModule(
             promise.reject("BAD_CONFIG", "采集参数不合法: ${e.message}")
         } catch (e: Exception) {
             Log.e(TAG, "start 未知异常", e)
+            stopCapture()  // 回滚已创建的资源（AudioRecord、isCapturing 等）
             promise.reject("START_FAILED", e.message ?: "启动失败")
         }
     }
@@ -346,8 +351,9 @@ class AudioCaptureModule(
     // ═══════════════════════════════════════════
 
     override fun onCatalystInstanceDestroy() {
-        stopCapture()
+        // 先移除 Activity 事件监听，避免 stopCapture 过程中触发新的回调
         reactApplicationContext.removeActivityEventListener(this)
+        stopCapture()
         super.onCatalystInstanceDestroy()
     }
 }

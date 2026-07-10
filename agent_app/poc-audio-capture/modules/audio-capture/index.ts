@@ -38,15 +38,11 @@ async function requestRecordPermission(): Promise<boolean> {
     return true;
   }
   try {
-    const apiLevel = Platform.Version as number;
-    if (apiLevel >= 33) {
-      const result = await PermissionsAndroid.request(
-        'android.permission.RECORD_AUDIO' as any,
-      );
-      return result === 'granted';
-    }
-    // Android < 13：可能在模块内部处理
-    return requireNative().requestRecordPermission();
+    // Android 6+ 统一走 PermissionsAndroid.request()，不区分 API level
+    const result = await PermissionsAndroid.request(
+      'android.permission.RECORD_AUDIO' as any,
+    );
+    return result === 'granted';
   } catch (e) {
     console.error('[AudioCapture] requestRecordPermission 异常:', e);
     throw e;
