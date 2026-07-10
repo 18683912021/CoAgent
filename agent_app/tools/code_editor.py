@@ -19,7 +19,7 @@ READ_FILE_TOOL_SPEC = {
 
 WRITE_FILE_TOOL_SPEC = {
     "name": "write_file",
-    "description": "在工作区内创建或覆盖文件。路径相对于工作区根目录，直接写项目名即可（如 rn-app-shell/package.json），不要加 workspace/fe/ 前缀。",
+    "description": "在工作区内创建或覆盖文件。路径相对于工作区根目录（直接写项目名/文件名即可，如 rn-app-shell/package.json）。",
     "input_schema": {
         "type": "object",
         "properties": {
@@ -75,6 +75,25 @@ LIST_DIR_TOOL_SPEC = {
 }
 
 
+def _strip_workspace_prefix(workspace: str, rel_path: str) -> str:
+    """剥离 Agent 误加的 workspace/{fe,be,pm,shared}/ 前缀。
+
+    只有当 workspace base 自身就是 workspace/{name} 目录时才剥离——
+    此时 rel_path 中的 workspace/{name}/ 前缀会导致双重嵌套。
+
+    对于 PM（workspace = PROJECT_ROOT），workspace/shared/ 是合法路径，
+    不会被误剥离。
+    """
+    ws = Path(workspace)
+    parts = rel_path.replace("\\", "/").split("/")
+
+    # 只有当 workspace base 本身就在 workspace/{name} 下时，才剥离前缀
+    if len(parts) >= 2 and parts[0] == "workspace" and parts[1] in ("fe", "be", "pm", "shared"):
+        if ws.name == parts[1] and ws.parent.name == "workspace":
+            return "/".join(parts[2:])
+    return rel_path
+
+
 def _resolve(workspace: str, rel_path: str) -> Path:
     """解析路径。绝对路径直接使用，相对路径基于 workspace 解析。"""
     p = Path(rel_path)
@@ -87,16 +106,27 @@ def _resolve(workspace: str, rel_path: str) -> Path:
     else:
         base = (WORKSPACE_ROOT / ws).resolve()
 
-    # ── 防嵌套：Agent 可能误加 workspace/fe/ 或 workspace/workspace/fe/ 前缀 ──
-    parts = rel_path.replace("\\", "/").split("/")
-    while len(parts) >= 2 and parts[0] == "workspace":
-        if parts[1] in ("fe", "be", "prd", "shared", "workspace"):
-            parts = parts[2:]  # 去掉 workspace/fe/ 这层
-        else:
-            parts = parts[1:]  # 只去掉 workspace/
-    rel_path = "/".join(parts)
-
     return (base / rel_path).resolve()
+
+
+def _resolve_writable(workspace: str, rel_path: str) -> Path:
+    """解析写操作路径：剥离冗余 workspace 前缀 + 校验目标在 workspace 内。"""
+    cleaned = _strip_workspace_prefix(workspace, rel_path)
+    target = _resolve(workspace, cleaned)
+
+    # 安全检查：写操作的目标路径必须在 workspace 目录内
+    ws_path = Path(workspace).resolve()
+    try:
+        target.relative_to(ws_path)
+    except ValueError:
+        raise PermissionError(
+            f"禁止写入 workspace 外的路径: {rel_path} → {target}\n"
+            f"  workspace 根目录: {ws_path}\n"
+            f"  请检查路径是否正确。提示：write_file 的 path 相对于工作区根目录，"
+            f"不要加 workspace/fe/ 或 workspace/be/ 前缀。"
+        )
+
+    return target
 
 
 def read_file(workspace: str, rel_path: str) -> str:
@@ -118,7 +148,7 @@ def read_file(workspace: str, rel_path: str) -> str:
 def write_file(workspace: str, rel_path: str, content: str) -> str:
     """写入文件"""
     try:
-        target = _resolve(workspace, rel_path)
+        target = _resolve_writable(workspace, rel_path)
         # 防止 Agent 误传空路径或目录路径
         if target.is_dir():
             return f"[write_file] 路径是目录不是文件: {rel_path} → 请指定具体文件名，如 '{rel_path}/tasks.md'"
@@ -141,7 +171,7 @@ def edit_file(workspace: str, rel_path: str, old_string: str, new_string: str) -
     - 新旧必须不同 → 相同报错
     """
     try:
-        target = _resolve(workspace, rel_path)
+        target = _resolve_writable(workspace, rel_path)
         if not target.exists():
             return f"[edit_file] 文件不存在: {rel_path}"
         if target.is_dir():
@@ -201,7 +231,7 @@ def edit_file(workspace: str, rel_path: str, old_string: str, new_string: str) -
 def delete_file(workspace: str, rel_path: str) -> str:
     """删除工作区内的文件或空目录。非空目录拒绝删除（安全保护）。"""
     try:
-        target = _resolve(workspace, rel_path)
+        target = _resolve_writable(workspace, rel_path)
         if not target.exists():
             return f"[delete_file] 不存在: {rel_path}"
         if target.is_dir():
@@ -222,7 +252,7 @@ def delete_file(workspace: str, rel_path: str) -> str:
 def list_dir(workspace: str, rel_path: str = ".") -> str:
     """列出目录"""
     try:
-        target = _resolve(workspace, rel_path)
+        target = _resolve_writable(workspace, rel_path)
         if not target.exists():
             return f"[list_dir] 目录不存在: {rel_path}"
         if not target.is_dir():

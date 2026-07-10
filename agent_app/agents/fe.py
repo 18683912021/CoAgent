@@ -49,14 +49,14 @@ class FEAgent(BaseAgent):
         elif name == "web_fetch":
             return run_async(web_fetch(**args))
         elif name == "write_file":
-            return write_file(PROJECT_ROOT, args.get("path", ""), args.get("content", ""))
+            return write_file(str(self.workspace), args.get("path", ""), args.get("content", ""))
         elif name == "edit_file":
-            return edit_file(PROJECT_ROOT, args.get("path", ""),
+            return edit_file(str(self.workspace), args.get("path", ""),
                              args.get("old_string", ""), args.get("new_string", ""))
         elif name == "list_dir":
-            return list_dir(PROJECT_ROOT, args.get("path", "."))
+            return list_dir(str(self.workspace), args.get("path", "."))
         elif name == "delete_file":
-            return delete_file(PROJECT_ROOT, args.get("path", ""))
+            return delete_file(str(self.workspace), args.get("path", ""))
         elif name == "execute":
             return execute(args.get("command", ""), args.get("cwd", ""))
         elif name == "check_code":
