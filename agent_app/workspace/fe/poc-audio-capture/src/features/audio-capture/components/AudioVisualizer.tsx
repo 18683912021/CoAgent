@@ -5,7 +5,9 @@ import Animated, {
   useAnimatedStyle,
   withTiming,
   withDelay,
+  withRepeat,
   Easing,
+  cancelAnimation,
 } from 'react-native-reanimated';
 
 interface AudioVisualizerProps {
@@ -50,6 +52,7 @@ export default function AudioVisualizer({
   const barStyle4 = useAnimatedStyle(() => ({ height: `${h4.value * 100}%` }));
   const barStyles = [barStyle0, barStyle1, barStyle2, barStyle3, barStyle4];
 
+  // ── 柱子动画（用 useEffect + JS 线程驱动，避免 worklet 里调非 worklet 函数） ──
   useEffect(() => {
     if (!isActive) {
       barHeights.forEach((h) => {
@@ -71,21 +74,23 @@ export default function AudioVisualizer({
     });
   }, [level, isActive, barHeights]);
 
-  const pulseOpacity = useSharedValue(0.4);
+  // ── 脉冲呼吸动画：直接在 JS 线程启动 withRepeat，避免 worklet 回调 ──
+  const pulseOpacity = useSharedValue(0);
 
   useEffect(() => {
     if (!isActive) {
-      pulseOpacity.value = 0;
+      cancelAnimation(pulseOpacity);
+      pulseOpacity.value = withTiming(0, { duration: 200 });
       return;
     }
-    const loop = () => {
-      pulseOpacity.value = withTiming(1, { duration: 600 }, () => {
-        pulseOpacity.value = withTiming(0.4, { duration: 600 }, () => {
-          if (isActive) loop();
-        });
-      });
-    };
-    loop();
+
+    // 先跳到 0.4，再从 0.4↔1.0 无限脉冲（反向循环）
+    pulseOpacity.value = 0.4;
+    pulseOpacity.value = withRepeat(
+      withTiming(1, { duration: 600, easing: Easing.inOut(Easing.quad) }),
+      -1,   // 无限循环
+      true, // 反向（0.4 → 1 → 0.4 → 1 ...）
+    );
   }, [isActive, pulseOpacity]);
 
   const pulseStyle = useAnimatedStyle(() => ({

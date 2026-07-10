@@ -67,14 +67,20 @@ class AudioCaptureModule : Module() {
     // ═══════════════════════════════════════════
     OnActivityResult { _, payload ->
       if (payload.requestCode == MEDIA_PROJECTION_REQUEST_CODE) {
-        val data: Intent? = payload.data  // 显式可空类型，让 Kotlin 能 smart-cast
+        val data: Intent? = payload.data
         if (payload.resultCode == Activity.RESULT_OK && data != null) {
-          val ctx = appContext.reactContext
-          if (ctx != null) {
-            val manager = ctx.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-            mediaProjection = manager.getMediaProjection(payload.resultCode, data)
-            Log.d(TAG, "✅ MediaProjection 授权成功")
+          val ctx = appContext.reactContext ?: run {
+            Log.e(TAG, "React context is null — 无法获取 MediaProjection")
+            synchronized(mediaProjectionLock) {
+              mediaProjectionResult = false
+              mediaProjectionLock.notifyAll()
+            }
+            return@OnActivityResult
           }
+
+          val manager = ctx.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+          mediaProjection = manager.getMediaProjection(payload.resultCode, data)
+          Log.d(TAG, "✅ MediaProjection 授权成功")
           synchronized(mediaProjectionLock) {
             mediaProjectionResult = true
             mediaProjectionLock.notifyAll()
@@ -108,6 +114,11 @@ class AudioCaptureModule : Module() {
     AsyncFunction("requestMediaProjection") {
       val activity = appContext.currentActivity
         ?: return@AsyncFunction false
+
+      // ── Android 14+: 在弹授权对话框前先启动前台服务 ──
+      // 这样当 OnActivityResult 拿到 MediaProjection 时，服务已经在运行
+      startMediaProjectionService(activity)
+
       val manager = activity.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
       activity.startActivityForResult(
         manager.createScreenCaptureIntent(),
@@ -116,6 +127,10 @@ class AudioCaptureModule : Module() {
       Log.d(TAG, "📺 MediaProjection 授权对话框已弹出")
       synchronized(mediaProjectionLock) {
         mediaProjectionLock.wait()
+      }
+      // 如果用户拒绝授权，停止前台服务
+      if (mediaProjectionResult != true) {
+        stopMediaProjectionService()
       }
       mediaProjectionResult ?: false
     }
@@ -204,6 +219,9 @@ class AudioCaptureModule : Module() {
       audioRecordSystem = null
       lastMicLevel = 0f
       lastSystemLevel = 0f
+
+      // ── 停止 MediaProjection 前台服务 ──
+      stopMediaProjectionService()
 
       Log.d(TAG, "已停止。MIC PCM: ${micOutputFile?.absolutePath}, SYSTEM PCM: ${systemOutputFile?.absolutePath}")
     }
@@ -315,7 +333,6 @@ class AudioCaptureModule : Module() {
     fos: FileOutputStream?,
     isMic: Boolean
   ) {
-    // 用于 RMS 计算的短缓冲区
     val rmsBuf = ShortArray(256)
 
     try {
@@ -329,7 +346,6 @@ class AudioCaptureModule : Module() {
 
           // 计算 RMS 电平
           val shortCount = minOf(read / 2, rmsBuf.size)
-          // 用 ByteBuffer 手动转 Short（避免 java.nio 在部分设备上的问题）
           var sum = 0L
           for (i in 0 until shortCount) {
             val lo = buffer[i * 2].toInt() and 0xFF
@@ -361,5 +377,26 @@ class AudioCaptureModule : Module() {
     "pcm_8bit" -> AudioFormat.ENCODING_PCM_8BIT
     "pcm_float" -> AudioFormat.ENCODING_PCM_FLOAT
     else       -> AudioFormat.ENCODING_PCM_16BIT
+  }
+
+  // ═══════════════════════════════════════════════
+  // Foreground Service 管理（Android 14+ 要求）
+  // ═══════════════════════════════════════════════
+
+  private fun startMediaProjectionService(context: Context) {
+    val intent = Intent(context, MediaProjectionService::class.java)
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+      context.startForegroundService(intent)
+    } else {
+      context.startService(intent)
+    }
+    Log.d(TAG, "🔔 MediaProjection 前台服务已启动")
+  }
+
+  private fun stopMediaProjectionService() {
+    val ctx = appContext.reactContext ?: return
+    val intent = Intent(ctx, MediaProjectionService::class.java)
+    ctx.stopService(intent)
+    Log.d(TAG, "🔕 MediaProjection 前台服务已停止")
   }
 }

@@ -111,6 +111,10 @@
     {
       "role": "system",
       "content": "[队友动态] 用户对小柯说：「See https://docs.swmansion.com/react-native-reanimated/docs/」→ 小柯回复：「好，Reanimated 装上了，Babel 插件也配好了。来分析下你这两个报错：  ---  ## 错误分析  两个错误其实**同一根因**：`react-n」"
+    },
+    {
+      "role": "system",
+      "content": "[队友动态] 用户对小柯说：「See https://docs.swmansion.com/react-native-reanimated/docs/」→ 小柯回复：「好，分析完了，两个错误的根因和修复如下：  ---  ## 诊断  | # | 错误 | 根因 | |---|------|------| | **1** | 」"
     }
   ],
   "facts": [

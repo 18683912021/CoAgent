@@ -1,15 +1,52 @@
+const { withAndroidManifest } = require('@expo/config-plugins');
+
 /**
  * AudioCapture Expo Config Plugin
  *
- * 注入必要的 Android 权限和 iOS 配置。
- * 在 app.config.ts 的 plugins 数组中引用。
+ * 注入必要的 Android 权限、前台服务声明（Android 14+ MediaProjection 要求）
+ * 和 iOS 配置。
  */
 const withAudioCapture = (config) => {
-  // Android 权限 & SDK 版本
+  // ── Android Manifest：注册 MediaProjectionService ──
+  config = withAndroidManifest(config, (modConfig) => {
+    const manifest = modConfig.modResults.manifest;
+
+    // 确保 application 数组存在
+    const applications = manifest.application;
+    if (!applications || applications.length === 0) {
+      // 正常情况下 expo prebuild 会生成，这里兜底
+      manifest.application = [{ $: {}, service: [] }];
+    }
+
+    const app = manifest.application[0];
+
+    // 确保 service 数组存在
+    if (!app.service) {
+      app.service = [];
+    }
+
+    // 检查是否已注册（幂等）
+    const already = app.service.some(
+      (s) => s?.$?.['android:name'] === 'expo.modules.audiocapture.MediaProjectionService'
+    );
+
+    if (!already) {
+      app.service.push({
+        $: {
+          'android:name': 'expo.modules.audiocapture.MediaProjectionService',
+          'android:foregroundServiceType': 'mediaProjection',
+          'android:exported': 'false',
+        },
+      });
+    }
+
+    return modConfig;
+  });
+
+  // ── Android 权限 ──
   if (!config.android) config.android = {};
   if (!config.android.permissions) config.android.permissions = [];
 
-  // AudioPlaybackCapture API 硬需求，覆盖 Expo 默认的 minSdk 24
   config.android.minSdkVersion = 29;
 
   const androidPermissions = [
@@ -24,7 +61,7 @@ const withAudioCapture = (config) => {
     }
   }
 
-  // iOS 权限
+  // ── iOS ──
   if (!config.ios) config.ios = {};
   if (!config.ios.infoPlist) config.ios.infoPlist = {};
 
