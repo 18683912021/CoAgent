@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Users/Administrator/AppData/Local/Temp/PUA_temp/skills/pua/references/**)",
+      "PowerShell(Remove-Item -Recurse -Force $env:TEMP\\\\OpenMOSS_temp -ErrorAction SilentlyContinue; cd $env:TEMP; git clone --depth 1 --single-branch --branch main https://github.com/uluckyXH/OpenMOSS.git OpenMOSS_temp 2>&1 | Select-Object -First 5)",
+      "PowerShell(python -m pytest F:\\\\CoAgent\\\\agent_app\\\\tests\\\\ -v --tb=line 2>&1)"
+    ]
+  }
+}
