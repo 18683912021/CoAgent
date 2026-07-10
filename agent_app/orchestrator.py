@@ -844,7 +844,7 @@ class Orchestrator:
                 and len(command.strip()) < 50:
             intent = "chat"
         if intent == "chat":
-            max_tokens, max_rounds, timeout = 4096, 36, CHAT_TIMEOUT
+            max_tokens, max_rounds, timeout = 4096, 72, CHAT_TIMEOUT
         elif intent == "read":
             max_tokens, max_rounds, timeout = 16384, 360, 1440  # read intent
         elif intent == "plan":
@@ -972,7 +972,7 @@ class Orchestrator:
                 and len(command.strip()) < 50:
             intent = "chat"
         if intent == "chat":
-            max_tokens, max_rounds, timeout = 4096, 36, CHAT_TIMEOUT
+            max_tokens, max_rounds, timeout = 4096, 72, CHAT_TIMEOUT
         elif intent == "read":
             max_tokens, max_rounds, timeout = 16384, 360, 1440  # read intent
         elif intent == "plan":
