@@ -36,6 +36,7 @@ class PMAgent(BaseAgent):
                    READ_WIKI_TOOL_SPEC],
             workspace=PROJECT_ROOT,
             model=model,
+            core_system_prompt=agents_md,  # Lazy Context: chat 模式只加载核心人格
         )
 
     def _execute_tool(self, name: str, args: dict) -> str:

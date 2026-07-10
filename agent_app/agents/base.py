@@ -44,6 +44,10 @@ def run_async(coro):
 class BaseAgent:
     """所有 Agent 的基类。封装 LLM 调用、记忆管理和工具循环。"""
 
+    # ── Prompt Cache 开关 ─────────────────────────────
+    # 设为 False 可关闭 cache_control（兼容不支持缓存的 API 端点）
+    ENABLE_PROMPT_CACHE = True
+
     def __init__(
         self,
         name: str,
@@ -52,9 +56,13 @@ class BaseAgent:
         tools: list[dict] | None = None,
         workspace: str | None = None,
         model: str | None = None,
+        core_system_prompt: str | None = None,
     ):
         self.name = name
-        self.system_prompt = system_prompt
+        self.system_prompt = system_prompt              # 完整 prompt（backward compat）
+        self._core_system_prompt = core_system_prompt or system_prompt  # 裁剪版（chat 用）
+        self._full_system_prompt = system_prompt        # 完整版（work/plan/read 用）
+        self._static_system_prompt = system_prompt      # 当前生效的静态 prompt（run 时根据 intent 切换）
         self.memory_file = Path(memory_file)
         self.tools = tools or []
         self.workspace = Path(workspace) if workspace else None
@@ -112,11 +120,11 @@ class BaseAgent:
         self._save_memory()
 
     def _compact_memory(self) -> None:
-        """OpenClaw 风格 LLM 摘要压缩。用模型理解能力替代粗暴截断拼接。
+        """上下文压缩：文本拼接立即生效 + 后台 LLM 摘要异步升级。
 
         1. 提取旧消息中的文本内容（工具调用转为简短描述）
-        2. 调 LLM 生成 ≤200 字的结构化中文摘要
-        3. 摘要替换最旧 15 条消息
+        2. 当前轮：纯文本拼接（瞬时，不阻塞 Agent）
+        3. 后台：daemon 线程跑 LLM 摘要，完成后替换（下一轮受益）
         """
         old_entries = self._memory[:15]
 
@@ -150,13 +158,34 @@ class BaseAgent:
             self._memory = self._memory[15:]
             return
 
-        # ── 调 LLM 生成语义摘要 ──
+        # ── 当前轮：文本拼接，瞬时完成 ──
         summary = self._summarize_messages(text_entries)
         compacted = {
             "role": "system",
             "content": f"[上下文压缩] {summary}",
         }
         self._memory = [compacted] + self._memory[15:]
+
+        # ── 后台：LLM 语义摘要，完成后自动替换（下一轮受益）──
+        threading.Thread(
+            target=self._async_upgrade_compact,
+            args=(text_entries,),
+            daemon=True,
+        ).start()
+
+    def _async_upgrade_compact(self, entries: list[str]) -> None:
+        """后台线程：用 LLM 摘要升级已压缩的条目。线程安全（只改一条记录）。"""
+        llm_summary = self._compact_memory_with_llm(entries)
+        if llm_summary is None:
+            return
+        try:
+            for m in self._memory:
+                if m.get("role") == "system" and "[上下文压缩]" in str(m.get("content", "")):
+                    m["content"] = f"[上下文压缩] {llm_summary}"
+                    self._save_memory()
+                    return
+        except Exception:
+            pass  # 后台任务失败静默忽略
 
     def _summarize_messages(self, entries: list[str]) -> str:
         """将消息列表摘要为纯文本拼接（不调 LLM，避免阻塞 Agent 执行）。
@@ -275,6 +304,97 @@ class BaseAgent:
                 deduped.append(d)
         return deduped[:3]
 
+    # ── Lazy Context: 按意图切换 prompt ───────────────
+
+    def _set_intent(self, intent: str) -> None:
+        """根据意图选择 system prompt：chat 用裁剪版（省 token），其余用完整版。
+
+        这是 Claude Code Lazy Context 策略的体现：不需要的时候不加载全部技能表。
+        """
+        if intent == "chat" and self._core_system_prompt != self._full_system_prompt:
+            self._static_system_prompt = self._core_system_prompt
+        else:
+            self._static_system_prompt = self._full_system_prompt
+
+    # ── Prompt Cache: 构建带 cache_control 的 system blocks ──
+
+    def _build_system_blocks(self) -> list[dict]:
+        """构建 system prompt blocks，最后一个 block 带 cache_control 断点。
+
+        Anthropic API 的 cache 对前缀生效：system 最后一个 block 标记 cache_control
+        → 整个 system prompt 被缓存。后续调用只要 system 不变，API 自动复用缓存，
+        不需要重新计算这部分 token。
+        """
+        blocks = [{"type": "text", "text": self._static_system_prompt}]
+        if self.ENABLE_PROMPT_CACHE:
+            blocks[-1]["cache_control"] = {"type": "ephemeral"}
+        return blocks
+
+    @staticmethod
+    def _build_ephemeral_prefix(intent: str) -> str:
+        """构建动态前缀（mode_reminder），作为 ephemeral user 消息注入。
+
+        为什么放在 user 消息而不是 system prompt？
+        - System prompt 必须完全不变，cache 才有效
+        - mode_reminder 按 intent 动态变化（chat/read/plan/work 各不同）
+        - 放在 user 消息末尾不破坏前缀缓存
+        """
+        if intent == "chat":
+            return "[Chat Budget] 闲聊模式。回复控制在3句话以内，不要展开分析或追问需求。"
+        elif intent == "read":
+            return ("[Read 模式] 先判断用户要你读什么："
+                    "1) 用户提到了具体文件/文件夹路径 → 用 list_dir + read_file 直接读本地文件，不要搜索"
+                    "2) 用户发了飞书文档链接 → 用 read_feishu_wiki / read_feishu_doc 读，不要搜索"
+                    "3) 用户想了解某个话题/产品（无具体文件）→ 用 search_web 搜索 + web_fetch 读全文"
+                    "读完给摘要，不要写代码。")
+        elif intent == "plan":
+            return "[Plan 模式] 只出分析和方案，不要写代码。说明思路、架构、选型理由即可。"
+        return ""
+
+    # ── Token 估算 ─────────────────────────────────────
+
+    def _estimate_tokens(self) -> int:
+        """估算当前上下文的 token 数（粗略：4 char ≈ 1 token）。
+
+        用于日志监控和压缩阈值判断，不需要精确。
+        """
+        total = len(self._static_system_prompt) // 4
+        for m in self._memory:
+            content = m.get("content", "")
+            if isinstance(content, str):
+                total += len(content) // 4
+            elif isinstance(content, list):
+                total += sum(len(str(c)) // 4 for c in content)
+        return total
+
+    # ── 上下文压缩（升级：LLM 语义摘要 + 文本 fallback）──
+
+    def _compact_memory_with_llm(self, entries: list[str]) -> str | None:
+        """用 LLM 生成高质量上下文摘要。失败/超时返回 None，调用方 fallback 到文本拼接。
+
+        使用独立短超时（15s），不阻塞 Agent 主流程。
+        """
+        if len(entries) < 3:
+            return None
+        joined = "\n".join(f"- {e[:300]}" for e in entries[:12])
+        prompt = (
+            "将以下对话历史总结为 ≤200 字的结构化中文摘要。"
+            "保留：关键决策、文件变更、用户偏好、未完成事项。"
+            "去掉：问候寒暄、工具调用细节、重复内容。\n\n"
+            f"{joined}"
+        )
+        try:
+            response = _client.messages.create(
+                model=self.model,
+                max_tokens=512,
+                messages=[{"role": "user", "content": prompt}],
+                timeout=15.0,
+            )
+            text = response.content[0].text if response.content else ""
+            return text[:300] if text else None
+        except Exception:
+            return None
+
     # ── 缓存友好的 Prompt 构建 ────────────────────────
 
     def _build_mode_reminder(self, intent: str) -> str:
@@ -334,6 +454,8 @@ class BaseAgent:
                 }
                 for t in tool_list
             ]
+            if self.ENABLE_PROMPT_CACHE and anthropic_tools:
+                anthropic_tools[-1]["cache_control"] = {"type": "ephemeral"}
 
         # ── Honcho 风格：注入长期记忆 ──
         facts_preamble = self._build_facts_preamble()
@@ -342,7 +464,7 @@ class BaseAgent:
         response = _client.messages.create(
             model=self.model,
             max_tokens=max_tokens,
-            system=self.system_prompt,
+            system=self._build_system_blocks(),
             tools=anthropic_tools,
             messages=self._build_messages(augmented_message),
         )
@@ -400,17 +522,27 @@ class BaseAgent:
         self._stuck_count = 0
         self._last_stuck_key = ""
 
-        # ── 注入个人记忆 + 今日日志 ──
+        # ── Lazy Context：按意图选择 prompt 大小 ──
+        self._set_intent(intent)
+
+        # ── 注入个人记忆 + 今日日志 + 模式提示到用户消息（不破坏 system cache）──
         facts_preamble = self._build_facts_preamble()
         daily_preamble = self._build_daily_preamble()
-        preamble = (facts_preamble + daily_preamble).strip()
-        augmented_message = f"{preamble}\n\n{user_message}" if preamble else user_message
+        ephemeral = self._build_ephemeral_prefix(intent)
+        preamble_parts = [p for p in [ephemeral, facts_preamble, daily_preamble] if p]
+        preamble = "\n\n".join(preamble_parts).strip()
+        augmented_message = f"{preamble}\n\n---\n用户指令: {user_message}" if preamble else user_message
 
         # 添加用户消息到记忆
         self._add_to_memory("user", user_message)
 
-        # 模式提示（动态区，每次可能不同）
-        mode_reminder = self._build_mode_reminder(intent)
+        # ── System blocks（带 cache_control 断点）──
+        system_blocks = self._build_system_blocks()
+
+        # ── Token 估算（日志用）──
+        est_tokens = self._estimate_tokens()
+        if est_tokens > 8000:
+            print(f"[{self.name}] ⚠️ 上下文较大：约 {est_tokens} tokens")
 
         for _round in range(max_rounds):
             # ── 进度：开始第 N 轮思考 ──
@@ -430,11 +562,14 @@ class BaseAgent:
                     }
                     for t in tool_list
                 ]
+                # 最后一个 tool 标记 cache_control：system + tools 前缀被缓存
+                if self.ENABLE_PROMPT_CACHE and anthropic_tools:
+                    anthropic_tools[-1]["cache_control"] = {"type": "ephemeral"}
 
             response = _client.messages.create(
                 model=self.model,
                 max_tokens=max_tokens,
-                system=self.system_prompt + mode_reminder,
+                system=system_blocks,
                 tools=anthropic_tools,
                 messages=messages,
             )
