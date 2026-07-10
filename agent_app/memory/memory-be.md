@@ -107,6 +107,10 @@
     {
       "role": "system",
       "content": "[队友动态] 用户对小柯说：「还记得我之前让你们说话要幽默风趣吗」→ 小柯回复：「记得记得～之前修白屏和闪退那俩 bug 的时候，我还说它们「一个白得彻底、一个退得干脆」，配合倒是挺默契 😏  不过老板放心，代码归代码，段子归段子——bug 」"
+    },
+    {
+      "role": "system",
+      "content": "[队友动态] 用户对小柯说：「See https://docs.swmansion.com/react-native-reanimated/docs/」→ 小柯回复：「好，Reanimated 装上了，Babel 插件也配好了。来分析下你这两个报错：  ---  ## 错误分析  两个错误其实**同一根因**：`react-n」"
     }
   ],
   "facts": [
