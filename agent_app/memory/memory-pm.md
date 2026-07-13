@@ -87,6 +87,10 @@
     {
       "role": "system",
       "content": "[队友动态] 用户对小柯说：「See https://docs.swmansion.com/react-native-reanimated/docs/」→ 小柯回复：「改动完成。总结一下两个修复：  ---  ## 改了什么  ### 错误 ①：MediaProjection 前台服务崩溃  **文件**：`AudioCapt」"
+    },
+    {
+      "role": "system",
+      "content": "[队友动态] 用户对小柯说：「There was a problem loading theproject.This development buil」→ 小柯回复：「现在总结诊断和修复。  ---  ## 逐层排查结果  | 层 | 文件 | 结论 | |---|------|------| | AndroidManifes」"
     }
   ],
   "facts": [

@@ -119,6 +119,20 @@ class AudioCaptureModule : Module() {
       // 这样当 OnActivityResult 拿到 MediaProjection 时，服务已经在运行
       startMediaProjectionService(activity)
 
+      // Wait up to 3 seconds for the service's startForeground() to complete.
+      // Without this the system may reject the MediaProjection because
+      // startForegroundService() is async and startForeground() may not have run yet.
+      val deadline = System.currentTimeMillis() + 3000
+      while (!MediaProjectionService.isRunning && System.currentTimeMillis() < deadline) {
+        Thread.sleep(50)
+      }
+      if (!MediaProjectionService.isRunning) {
+        Log.e(TAG, "MediaProjectionService failed to start within deadline")
+        stopMediaProjectionService()
+        return@AsyncFunction false
+      }
+      Log.d(TAG, "MediaProjectionService confirmed running, showing dialog")
+
       val manager = activity.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
       activity.startActivityForResult(
         manager.createScreenCaptureIntent(),
@@ -221,6 +235,8 @@ class AudioCaptureModule : Module() {
       lastSystemLevel = 0f
 
       // ── 停止 MediaProjection 前台服务 ──
+      // Brief delay to let capture threads finish before killing the foreground service
+      Thread.sleep(200)
       stopMediaProjectionService()
 
       Log.d(TAG, "已停止。MIC PCM: ${micOutputFile?.absolutePath}, SYSTEM PCM: ${systemOutputFile?.absolutePath}")
