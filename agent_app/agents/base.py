@@ -114,6 +114,7 @@ class BaseAgent:
             for dec in self._extract_decisions(content):
                 if dec not in self._facts:
                     self._facts.append(dec)
+                self.write_notes(dec)  # 每轮写 notes，不等到压缩
         # 上下文压缩：超 30 条时调 LLM 做语义摘要（OpenClaw 风格）
         if len(self._memory) > 30:
             self._compact_memory()
@@ -127,14 +128,6 @@ class BaseAgent:
         3. 后台：daemon 线程跑 LLM 摘要，完成后替换（下一轮受益）
         """
         old_entries = self._memory[:15]
-
-        # ── Memory flush：压缩前先把重要决策记入 notes ──
-        for entry in old_entries:
-            c = entry.get("content", "")
-            role = entry.get("role", "")
-            if role == "assistant" and isinstance(c, str) and len(c) > 200:
-                for dec in self._extract_decisions(c):
-                    self.write_notes(dec)
 
         # ── 构建摘要材料 ──
         text_entries: list[str] = []
@@ -217,8 +210,10 @@ class BaseAgent:
             if 5 < len(line) < 200 and any(s in line for s in fact_signals):
                 if line not in self._facts:
                     self._facts.append(line)
-        # 最多保留 15 条
+        # 最多保留 15 条，旧 fact 归档到 notes 再删除
         if len(self._facts) > 15:
+            for old_fact in self._facts[:-15]:
+                self.write_notes(f"[归档] {old_fact}")
             self._facts = self._facts[-15:]
 
         self._save_memory()
@@ -247,8 +242,13 @@ class BaseAgent:
         ts = datetime.now().strftime("%m-%d %H:%M")
         entry = f"- **[{ts}]** {content.strip()}\n"
         existing = self._notes_file.read_text(encoding="utf-8") if self._notes_file.exists() else ""
-        # 超过 60 行时裁剪旧条目
         lines = existing.split("\n") if existing else []
+        # 简单去重：检查最近 3 条笔记是否已含相同内容（前 30 字匹配则跳过）
+        content_prefix = content.strip()[:30]
+        recent_entries = [l for l in lines[-6:] if l.startswith("- **[")]
+        if any(content_prefix in l for l in recent_entries):
+            return
+        # 超过 60 行时裁剪旧条目
         if len(lines) > 60:
             lines = lines[:2] + lines[-58:]  # 保留标题 + 最近 58 行
         lines.append(entry)
@@ -277,6 +277,14 @@ class BaseAgent:
                 parts.append(content[-1500:])  # 只取最近 1500 字
         if parts:
             return "[今日日志] 最近的工作记录：\n" + "\n---\n".join(parts) + "\n"
+        return ""
+
+    def _build_notes_preamble(self) -> str:
+        """加载精选笔记到上下文。和 _build_daily_preamble 相同模式。"""
+        if self._notes_file.exists():
+            content = self._notes_file.read_text(encoding="utf-8")
+            recent = content[-2000:] if len(content) > 2000 else content
+            return f"[长期记忆] 你之前记录的重要事项：\n{recent}\n"
         return ""
 
     def _extract_decisions(self, text: str) -> list[str]:
@@ -528,8 +536,9 @@ class BaseAgent:
         # ── 注入个人记忆 + 今日日志 + 模式提示到用户消息（不破坏 system cache）──
         facts_preamble = self._build_facts_preamble()
         daily_preamble = self._build_daily_preamble()
+        notes_preamble = self._build_notes_preamble()
         ephemeral = self._build_ephemeral_prefix(intent)
-        preamble_parts = [p for p in [ephemeral, facts_preamble, daily_preamble] if p]
+        preamble_parts = [p for p in [ephemeral, facts_preamble, daily_preamble, notes_preamble] if p]
         preamble = "\n\n".join(preamble_parts).strip()
         augmented_message = f"{preamble}\n\n---\n用户指令: {user_message}" if preamble else user_message
 

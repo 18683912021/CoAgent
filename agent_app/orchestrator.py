@@ -213,9 +213,7 @@ class Orchestrator:
         """更新共享任务状态表。保留其他 Bot 的状态，不覆盖。"""
         from datetime import datetime as dt
         now = dt.now().strftime("%H:%M")
-        # 清理：换行→空格，去掉 |（防表格炸裂），截断 60 字
-        clean = output_summary.replace("\n", " ").replace("|", "/") if output_summary else ""
-        summary = clean[:60] if clean else "-"
+        summary = self._extract_summary(output_summary) if output_summary else "-"
         self._bot_status[bot_key] = {"status": status, "summary": summary, "time": now}
 
         status_path = SHARED_DIR / "STATUS.md"
@@ -232,6 +230,30 @@ class Orchestrator:
             lines.append(f"| {label} | {s['status']} | {s['summary']} | {s['time']} |")
 
         status_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    @staticmethod
+    def _extract_summary(text: str) -> str:
+        """从 agent 回复中提取第一句有意义的话作为状态摘要。
+        跳过 markdown 标记、表格、代码块，取第一个自然语言句子。
+        """
+        for line in text.split("\n"):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            # 跳过 markdown 标记和表格
+            if stripped.startswith(("#", "|", "```", "---", ">", "  ")):
+                continue
+            # 取第一句（到第一个句号或 60 字）
+            clean = stripped.replace("|", "/")
+            # 找第一个句子结束符
+            for sep in ("。", "！", "？", ". ", "! ", "? "):
+                idx = clean.find(sep)
+                if idx > 5:  # 至少 5 个字才算有效句子
+                    return clean[:idx + len(sep)][:60]
+            return clean[:60]
+        # 没找到有效行，fallback
+        clean = text.replace("\n", " ").replace("|", "/")
+        return clean[:60]
 
     # ── PM 入口 ─────────────────────────────────────────
 
@@ -1176,25 +1198,42 @@ class Orchestrator:
     # ── 跨 Agent 对话同步 ──────────────────────────────
 
     def _sync_to_teammates(self, source_key: str, user_msg: str, reply: str) -> None:
-        """将当前 Agent 与用户的对话摘要同步到队友记忆中。
+        """将当前 Agent 的工作摘要同步到队友笔记中。
 
-        不传完整对话——只传一句话摘要，让队友知道"刚才发生了什么"。
-        比共享文件更可靠：不需要 Agent 主动读文件，下次调用自动注入。
+        写入 notes（持久层），不写 memory（避免污染队友的对话上下文）。
+        notes 会在队友下次 run() 时通过 _build_notes_preamble 自动注入，
+        同时 write_notes 内置去重防止重复通知。
         """
         if len(reply) < 50:
-            return  # 太短的不值得同步（闲聊/嗯/在的）
+            return
 
-        agents = {"pm": self.pm, "fe": self.fe, "be": self.be}
+        agents_map = {"pm": self.pm, "fe": self.fe, "be": self.be}
         source_name = {"pm": "小吴", "fe": "小柯", "be": "酱瓜"}.get(source_key, source_key)
 
-        # 摘要：用户说了什么 + Agent 做了什么
-        user_brief = user_msg[:60].replace("\n", " ")
-        reply_brief = reply[:80].replace("\n", " ")
-        summary = f"[队友动态] 用户对{source_name}说：「{user_brief}」→ {source_name}回复：「{reply_brief}」"
+        # 提取任务摘要（复用 _extract_summary）
+        task_summary = self._extract_summary(reply)
 
-        for key, agent in agents.items():
+        # 提取文件变更（从 reply 中的 📄 标记）
+        files = []
+        for line in reply.split("\n"):
+            if "📄" in line:
+                fname = line.split("📄")[-1].strip()
+                if fname:
+                    files.append(fname)
+
+        # 构建笔记
+        if files:
+            file_str = "、".join(files[:5])
+            if len(files) > 5:
+                file_str += f" 等{len(files)}个文件"
+            note = f"[队友] {source_name} 完成「{task_summary}」— {file_str}"
+        else:
+            note = f"[队友] {source_name} 完成「{task_summary}」"
+
+        # 写入队友 notes（不污染 memory）
+        for key, agent in agents_map.items():
             if key != source_key:
-                agent._add_to_memory("system", summary)
+                agent.write_notes(note)
 
     # ── 消息发送（OpenClaw 风格）─────────────────────────
 
