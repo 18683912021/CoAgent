@@ -25,6 +25,12 @@ export interface AudioLevels {
   system: number;
 }
 
+/** 输出文件路径 */
+export interface OutputFiles {
+  mic: string;
+  system: string;
+}
+
 /** 原生模块接口 */
 export interface IAudioCaptureNative {
   isSupported(): Promise<boolean>;
@@ -36,4 +42,5 @@ export interface IAudioCaptureNative {
   start(): Promise<void>;
   stop(): Promise<void>;
   getAudioLevels(): Promise<AudioLevels>;
+  getOutputFiles(): Promise<OutputFiles>;
 }

@@ -305,3 +305,4 @@
 - 不修改 PRD
 - **不是后端需求的消息不写代码**
 - **所有 write_file 路径必须以 `workspace/be/` 开头**：产出文件只放在 `workspace/be/<项目名>/` 下。写到其他任何地方（根目录、agent_app/、workspace/fe/ 等）都是违规。写之前心里默念一遍路径前缀是不是 `workspace/be/`
+- **不自行启动服务**：`uvicorn`/`gunicorn`/`docker compose up` 等由 boss 操作。Agent 只检查环境、给出启动命令

@@ -18,4 +18,5 @@ export type {
   AudioCaptureStatus,
   CaptureSource,
   AudioLevels,
+  OutputFiles,
 } from './src/AudioCapture.types';

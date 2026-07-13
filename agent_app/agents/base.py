@@ -2,6 +2,7 @@
 import asyncio
 import json
 import os
+import re
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -129,7 +130,7 @@ class BaseAgent:
         """
         old_entries = self._memory[:15]
 
-        # ── 构建摘要材料 ──
+        # ── 1. 构建摘要材料（含 tool_result，之前只取 tool_use）──
         text_entries: list[str] = []
         for entry in old_entries:
             c = entry.get("content", "")
@@ -138,6 +139,12 @@ class BaseAgent:
                 tools = [t.get("name", "") for t in c if isinstance(t, dict) and t.get("type") == "tool_use"]
                 if tools:
                     text_entries.append(f"[{role}] 调用: {', '.join(tools[:5])}")
+                # 也收集 tool_result（其中常含文件列表、环境信息）
+                for t in c:
+                    if isinstance(t, dict) and t.get("type") == "tool_result":
+                        r = t.get("content", "")
+                        if isinstance(r, str) and len(r) > 10:
+                            text_entries.append(f"[tool_result] {r[:400]}")
                 continue
             if isinstance(c, str) and len(c.strip()) >= 3:
                 clean = c.replace("[群呼上下文]", "").replace("[长期记忆]", "")\
@@ -147,12 +154,18 @@ class BaseAgent:
                 if clean:
                     text_entries.append(f"[{role}] {clean[:400]}")
 
+        # ── 2. 压缩前锚点写入 notes（即使压缩后忘了，下次启动也能记起）──
+        anchor = self._extract_anchor_facts(text_entries)
+        anchor_note = self._format_anchor_summary(anchor)
+        if anchor_note and not anchor_note.startswith("；"):
+            self.write_notes(f"[压缩锚点] {anchor_note}")
+
         if len(text_entries) < 3:
             self._memory = self._memory[15:]
             return
 
-        # ── 当前轮：文本拼接，瞬时完成 ──
-        summary = self._summarize_messages(text_entries)
+        # ── 3. 结构化摘要替代纯文本拼接 ──
+        summary = anchor_note if anchor_note else self._summarize_messages(text_entries)
         compacted = {
             "role": "system",
             "content": f"[上下文压缩] {summary}",
@@ -181,12 +194,126 @@ class BaseAgent:
             pass  # 后台任务失败静默忽略
 
     def _summarize_messages(self, entries: list[str]) -> str:
-        """将消息列表摘要为纯文本拼接（不调 LLM，避免阻塞 Agent 执行）。
+        """结构化摘要——从待压缩消息中提取锚点事实，保证关键信息不丢失。
 
-        用分号拼接前 8 条的关键片段，保证压缩是瞬时操作。
-        每条消息取 ] 之后的内容（去掉 role 前缀），截断 100 字。
+        不再做盲目的文本拼接，而是识别消息里的实体（文件路径、端口、
+        工具调用结果、关键决策），输出人类可读的结构化摘要。
         """
-        return "；".join(e.split("] ", 1)[-1][:100] for e in entries[:8])
+        anchor = self._extract_anchor_facts(entries)
+        return self._format_anchor_summary(anchor)
+
+    # ── 锚点事实提取（防失忆核心）──────────────────────
+
+    def _extract_anchor_facts(self, entries: list[str]) -> dict:
+        """从一批消息中提取不会过期的锚点事实。
+
+        这些事实在压缩后仍然保留，防止 agent 忘记：
+        - 自己写过/改过哪些文件
+        - 启动了哪些服务、用了什么端口
+        - 环境里有什么（Python/Docker/npm 版本等）
+        - boss 的关键指令
+        - 其他 agent 的动态
+        """
+        anchor: dict[str, set[str]] = {
+            "files": set(),       # 文件路径
+            "ports": set(),       # 端口
+            "services": set(),    # 服务
+            "env": set(),         # 环境信息
+            "commands": set(),    # boss 关键指令
+            "teammates": set(),   # 队友动态
+            "decisions": set(),   # 技术决策
+        }
+
+        for entry_text in entries:
+            # ── 文件路径提取 ──
+            # 匹配: workspace/fe/xxx, workspace/be/xxx, src/xxx, modules/xxx
+            for m in re.finditer(
+                r"(?:workspace/)?(?:fe|be|shared|pm)/[\w/\-\.]+|"
+                r"(?:src|modules|app|components|hooks|services)/[\w/\-\.]+",
+                entry_text,
+            ):
+                path = m.group(0)
+                if len(path) > 8 and not path.endswith((".", ",")):
+                    anchor["files"].add(path)
+
+            # ── 端口提取 ──
+            for m in re.finditer(r"(?:port|端口)\s*[：:=]\s*(\d{4,5})", entry_text, re.IGNORECASE):
+                anchor["ports"].add(m.group(1))
+            for m in re.finditer(r"(?:localhost|127\.0\.0\.1|0\.0\.0\.0):(\d{4,5})", entry_text):
+                anchor["ports"].add(m.group(1))
+
+            # ── 服务启动检测 ──
+            for kw in ["uvicorn", "gunicorn", "flask", "fastapi", "expo", "docker", "npm run"]:
+                if kw in entry_text.lower():
+                    anchor["services"].add(kw)
+
+            # ── 环境信息 ──
+            for m in re.finditer(
+                r"(?:Python|python|Python3)\s*[\d.]+|"
+                r"(?:Node|node)(?:\.js)?\s*v?[\d.]+|"
+                r"(?:npm|pip|yarn)\s*[\d.]+|"
+                r"Docker\s*(?:version\s*)?[\d.]+|"
+                r"(?:已安装|已装|已就绪|not found|未安装|没装|不可用)",
+                entry_text,
+            ):
+                anchor["env"].add(m.group(0))
+
+            # ── boss 指令 ──
+            for m in re.finditer(
+                r"(?:boss|用户|老板)\s*[：:]\s*(.{10,80}?)(?:$|\n)",
+                entry_text,
+            ):
+                anchor["commands"].add(m.group(1)[:80])
+
+            # ── 队友动态 ──
+            if "[队友动态]" in entry_text:
+                for m in re.finditer(r"(?:小柯|小吴|酱瓜).{5,60}", entry_text):
+                    anchor["teammates"].add(m.group(0)[:60])
+
+            # ── 关键决策 ──
+            for kw in ["决定", "选型", "确认", "锁定", "拍板", "约定", "铁律"]:
+                if kw in entry_text:
+                    # 取包含关键词的片段
+                    idx = entry_text.find(kw)
+                    snippet = entry_text[max(0, idx - 10):idx + 60].strip()
+                    if len(snippet) > 10:
+                        anchor["decisions"].add(snippet)
+
+        return anchor
+
+    def _format_anchor_summary(self, anchor: dict) -> str:
+        """将锚点事实格式化为紧凑摘要。"""
+        parts: list[str] = []
+
+        if anchor["files"]:
+            files_list = "、".join(sorted(anchor["files"])[:12])
+            parts.append(f"📁 文件: {files_list}")
+        if anchor["ports"]:
+            parts.append(f"🔌 端口: {', '.join(sorted(anchor['ports']))}")
+        if anchor["services"]:
+            parts.append(f"⚙️ 服务: {', '.join(sorted(anchor['services']))}")
+        if anchor["env"]:
+            env_list = "、".join(sorted(anchor["env"])[:6])
+            parts.append(f"🖥 环境: {env_list}")
+        if anchor["commands"]:
+            cmd_list = "；".join(sorted(anchor["commands"])[:5])
+            parts.append(f"👤 boss: {cmd_list}")
+        if anchor["teammates"]:
+            tm_list = "；".join(sorted(anchor["teammates"])[:5])
+            parts.append(f"👥 队友: {tm_list}")
+        if anchor["decisions"]:
+            dec_list = "；".join(sorted(anchor["decisions"])[:5])
+            parts.append(f"✍️ 决策: {dec_list}")
+
+        if not parts:
+            # fallback：没有任何锚点时用旧逻辑
+            return "；".join(
+                e.split("] ", 1)[-1][:100] for e in
+                [f"[fallback] {e[:100]}" for e in
+                 sorted([str(v) for vs in anchor.values() for v in vs])[:8]]
+            )
+
+        return "\n".join(parts)
 
     # ── Honcho 风格事实提取 ──────────────────────────
 
@@ -219,11 +346,24 @@ class BaseAgent:
         self._save_memory()
 
     def _build_facts_preamble(self) -> str:
-        """构建记忆注入：个人长期记忆。"""
-        if not self._facts:
-            return ""
-        facts_text = "\n".join(f"- {f}" for f in self._facts[-8:])
-        return f"[个人记忆] 你记得以下关于用户的事：\n{facts_text}\n"
+        """构建记忆注入：个人长期记忆 + 最近锚点事实。"""
+        parts: list[str] = []
+
+        # ── 个人事实 ──
+        if self._facts:
+            facts_text = "\n".join(f"- {f}" for f in self._facts[-8:])
+            parts.append(f"[个人记忆] 你记得以下关于用户的事：\n{facts_text}")
+
+        # ── 最近锚点（从 notes 文件尾部提取压缩锚点，防跨轮遗忘）──
+        if self._notes_file.exists():
+            notes = self._notes_file.read_text(encoding="utf-8")
+            anchor_lines = [l for l in notes.split("\n") if "[压缩锚点]" in l]
+            if anchor_lines:
+                recent = anchor_lines[-3:]  # 最近 3 条锚点
+                anchor_text = "\n".join(l.strip("- []") for l in recent)
+                parts.append(f"[项目锚点] 你最近做过的关键操作：\n{anchor_text}")
+
+        return "\n\n".join(parts) + "\n" if parts else ""
 
     # ── OpenClaw 风格：Markdown 记忆文件 ─────────────────
 

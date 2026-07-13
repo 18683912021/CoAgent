@@ -130,11 +130,37 @@ def _resolve_writable(workspace: str, rel_path: str) -> Path:
 
 
 def read_file(workspace: str, rel_path: str) -> str:
-    """读取文件"""
+    """读取文件。当路径未命中时自动尝试常见前缀（workspace/、workspace/be/、workspace/fe/ 等）。
+
+    背景：Agent 的 list_dir 和 read_file 使用了不同的根目录，导致 list_dir 列出
+    "poc-audio-capture/" 但 read_file 需要完整的 "workspace/be/poc-audio-capture/"。
+    自动回退消除了这个认知负担。
+    """
     try:
         target = _resolve(workspace, rel_path)
         if not target.exists():
-            return f"[read_file] 文件不存在: {rel_path}"
+            # ── 自动回退：尝试常见前缀 ──
+            fallback_prefixes = [
+                "workspace",
+                "workspace/be", "workspace/fe", "workspace/shared", "workspace/pm",
+            ]
+            found = None
+            for prefix in fallback_prefixes:
+                # 避免重复拼接（如果路径本身已包含该前缀）
+                if rel_path.startswith(prefix + "/") or rel_path == prefix:
+                    continue
+                candidate = _resolve(workspace, f"{prefix}/{rel_path}")
+                if candidate.exists():
+                    found = candidate
+                    break
+
+            if found:
+                target = found
+            else:
+                # 列出尝试过的路径帮助排查
+                tried = [str(_resolve(workspace, rel_path))]
+                tried += [str(_resolve(workspace, f"{p}/{rel_path}")) for p in fallback_prefixes[:3]]
+                return f"[read_file] 文件不存在: {rel_path}\n  尝试过: {', '.join(tried[:4])}"
         content = target.read_text(encoding="utf-8")
         if len(content) > 25000:
             content = content[:25000] + f"\n...(截断，共 {len(content)} 字符)"
@@ -173,7 +199,23 @@ def edit_file(workspace: str, rel_path: str, old_string: str, new_string: str) -
     try:
         target = _resolve_writable(workspace, rel_path)
         if not target.exists():
-            return f"[edit_file] 文件不存在: {rel_path}"
+            # ── 自动回退：尝试常见前缀（同 read_file）──
+            fallback_prefixes = [
+                "workspace",
+                "workspace/be", "workspace/fe", "workspace/shared", "workspace/pm",
+            ]
+            found = None
+            for prefix in fallback_prefixes:
+                if rel_path.startswith(prefix + "/") or rel_path == prefix:
+                    continue
+                candidate = _resolve_writable(workspace, f"{prefix}/{rel_path}")
+                if candidate.exists():
+                    found = candidate
+                    break
+            if found:
+                target = found
+            else:
+                return f"[edit_file] 文件不存在: {rel_path}"
         if target.is_dir():
             return f"[edit_file] 路径是目录不是文件: {rel_path}"
 
@@ -229,11 +271,28 @@ def edit_file(workspace: str, rel_path: str, old_string: str, new_string: str) -
 
 
 def delete_file(workspace: str, rel_path: str) -> str:
-    """删除工作区内的文件或空目录。非空目录拒绝删除（安全保护）。"""
+    """删除工作区内的文件或空目录。非空目录拒绝删除（安全保护）。
+    当路径未命中时自动尝试常见前缀（与 read_file 一致）。"""
     try:
         target = _resolve_writable(workspace, rel_path)
         if not target.exists():
-            return f"[delete_file] 不存在: {rel_path}"
+            # ── 自动回退：尝试常见前缀 ──
+            fallback_prefixes = [
+                "workspace",
+                "workspace/be", "workspace/fe", "workspace/shared", "workspace/pm",
+            ]
+            found = None
+            for prefix in fallback_prefixes:
+                if rel_path.startswith(prefix + "/") or rel_path == prefix:
+                    continue
+                candidate = _resolve_writable(workspace, f"{prefix}/{rel_path}")
+                if candidate.exists():
+                    found = candidate
+                    break
+            if found:
+                target = found
+            else:
+                return f"[delete_file] 不存在: {rel_path}"
         if target.is_dir():
             if any(target.iterdir()):
                 items = list(target.iterdir())[:5]
@@ -250,11 +309,27 @@ def delete_file(workspace: str, rel_path: str) -> str:
 
 
 def list_dir(workspace: str, rel_path: str = ".") -> str:
-    """列出目录"""
+    """列出目录。当路径未命中时自动尝试常见前缀。"""
     try:
         target = _resolve_writable(workspace, rel_path)
         if not target.exists():
-            return f"[list_dir] 目录不存在: {rel_path}"
+            # ── 自动回退：尝试常见前缀（与 read_file 一致）──
+            fallback_prefixes = [
+                "workspace",
+                "workspace/be", "workspace/fe", "workspace/shared", "workspace/pm",
+            ]
+            found = None
+            for prefix in fallback_prefixes:
+                if rel_path.startswith(prefix + "/") or rel_path == prefix:
+                    continue
+                candidate = _resolve_writable(workspace, f"{prefix}/{rel_path}")
+                if candidate.exists():
+                    found = candidate
+                    break
+            if found:
+                target = found
+            else:
+                return f"[list_dir] 目录不存在: {rel_path}"
         if not target.is_dir():
             return f"[list_dir] 不是目录: {rel_path}"
 

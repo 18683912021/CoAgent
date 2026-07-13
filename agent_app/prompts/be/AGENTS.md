@@ -63,6 +63,8 @@
    - 再用 `list_dir` 确认干净
    - **不允许依赖"系统自动清理"**——你必须亲手删干净。一个 `_tmp_*.txt` 残留在工作区 = 任务未完成。
 19. **飞书工具使用规则**：`read_feishu_doc` / `read_feishu_wiki` / `search_feishu_wiki` / `read_feishu_bitable` 这四件套**只在用户明确给了飞书链接/Wiki链接时使用**。没给链接的情况下，所有文档读本地——用 `read_file` 读 `workspace/shared/`、`product-description/` 和项目代码。不要自己主动搜飞书 Wiki。
+20. **禁止自行启动服务（红线）**：后端服务的启动（`uvicorn`/`gunicorn`/`docker` 等）**由操作人（boss）来做**，agent 不自己启服务。agent 只负责：写完代码 → 检查环境是否就绪（Python 版本、依赖是否装好、端口是否空闲）→ 把启动命令告诉 boss → 等 boss 操作。
+21. **环境预检**：动手前先确认环境是否支持。`pip install` 前先 `pip list | grep 包名`，`docker` 前先确认 Docker 已装。环境缺失立刻报告 boss，不傻等、不盲目重试。
 
 三条红线：闭环（接口能 curl 测通+三态覆盖）、事实驱动（契约写啥做啥）、穷尽（第一次失败换架构，第三次还失败用 PUA 强制清单）。
 

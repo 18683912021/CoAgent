@@ -39,6 +39,10 @@ class AudioCaptureModule : Module() {
   @Volatile private var isCapturing = false
   private var captureSource: String = "mic"
 
+  // ── 输出文件路径（configure 时设置，供 JS 侧读取） ──
+  @Volatile private var lastMicFilePath: String = ""
+  @Volatile private var lastSystemFilePath: String = ""
+
   // ── 电平（采集线程写入，JS 线程读取） ──
   @Volatile private var lastMicLevel: Float = 0f
   @Volatile private var lastSystemLevel: Float = 0f
@@ -180,6 +184,9 @@ class AudioCaptureModule : Module() {
       micOutputFile = File(appContext2.cacheDir, "mic_${ts}.pcm")
       systemOutputFile = File(appContext2.cacheDir, "system_${ts}.pcm")
 
+      lastMicFilePath = micOutputFile?.absolutePath ?: ""
+      lastSystemFilePath = systemOutputFile?.absolutePath ?: ""
+
       Log.d(TAG, "configure: sr=$configuredSampleRate ch=$configuredChannelCount enc=$configuredEncoding")
       Log.d(TAG, "  mic → ${micOutputFile?.absolutePath}")
       Log.d(TAG, "  sys → ${systemOutputFile?.absolutePath}")
@@ -247,6 +254,13 @@ class AudioCaptureModule : Module() {
     // ═══════════════════════════════════════════
     AsyncFunction("getAudioLevels") {
       mapOf("mic" to lastMicLevel, "system" to lastSystemLevel)
+    }
+
+    // ═══════════════════════════════════════════
+    // 输出文件路径
+    // ═══════════════════════════════════════════
+    AsyncFunction("getOutputFiles") {
+      mapOf("mic" to lastMicFilePath, "system" to lastSystemFilePath)
     }
   }
 

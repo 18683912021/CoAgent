@@ -1,5 +1,5 @@
 import { requireNativeModule } from 'expo-modules-core';
-import type { AudioCaptureConfig, AudioLevels, CaptureSource } from './AudioCapture.types';
+import type { AudioCaptureConfig, AudioLevels, CaptureSource, OutputFiles } from './AudioCapture.types';
 
 const MODULE_NAME = 'AudioCapture';
 
@@ -93,6 +93,16 @@ class AudioCaptureModule {
       return await this.nativeModule.getAudioLevels();
     } catch {
       return { mic: 0, system: 0 };
+    }
+  }
+
+  /** 获取最后写入的 PCM 输出文件路径 */
+  async getOutputFiles(): Promise<OutputFiles> {
+    if (!this.nativeModule) return { mic: '', system: '' };
+    try {
+      return await this.nativeModule.getOutputFiles();
+    } catch {
+      return { mic: '', system: '' };
     }
   }
 }

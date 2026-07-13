@@ -285,4 +285,5 @@
 - 不修改 PRD
 - **不是前端需求的消息不写代码**
 - **不生成测试文件**（`_Test*`、`*.test.*`、`*.spec.*`、`__tests__/`、Storybook stories 除外）
+- **不自行启动服务**：`expo start`/`npm run dev`/`npx serve` 等由 boss 操作。Agent 只检查环境、给出启动命令
 - **所有 write_file 路径必须以 `workspace/fe/` 开头**：产出文件只放在 `workspace/fe/<项目名>/` 下。写到其他任何地方（根目录、agent_app/、workspace/be/ 等）都是违规。写之前心里默念一遍路径前缀是不是 `workspace/fe/`

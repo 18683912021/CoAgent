@@ -13,11 +13,17 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import AudioCapture, {
   type AudioCaptureConfig,
-  type AudioCaptureStatus,
   type CaptureSource,
   type AudioLevels,
+  type OutputFiles,
 } from '../../../modules/audio-capture';
 import AudioVisualizer from './components/AudioVisualizer';
+import StatusLight, { type LightStatus } from './components/StatusLight';
+import Timer from './components/Timer';
+import VolumeBar from './components/VolumeBar';
+import FileInfo from './components/FileInfo';
+import StreamingControl from './components/StreamingControl';
+import { useAudioStreamer } from './hooks/useAudioStreamer';
 
 const SOURCES: { key: CaptureSource; label: string; desc: string }[] = [
   { key: 'mic', label: '🎤 麦克风', desc: '仅采集使用者声音' },
@@ -31,7 +37,14 @@ const TEST_CONFIG: AudioCaptureConfig = {
   encoding: 'pcm_16bit',
 };
 
-type AppStatus = AudioCaptureStatus | 'need_auth' | 'authorizing';
+type AppStatus = 'idle' | 'need_auth' | 'authorizing' | 'starting' | 'capturing' | 'error' | 'stopping';
+
+/** AppStatus → StatusLight 的 LightStatus */
+function toLightStatus(s: AppStatus): LightStatus {
+  if (s === 'capturing') return 'capturing';
+  if (s === 'need_auth' || s === 'authorizing') return 'waiting';
+  return 'stopped';
+}
 
 export default function AudioCaptureScreen(): React.ReactElement {
   const [status, setStatus] = useState<AppStatus>('idle');
@@ -40,7 +53,17 @@ export default function AudioCaptureScreen(): React.ReactElement {
   const [hasAuth, setHasAuth] = useState<boolean>(false);
   const [levels, setLevels] = useState<AudioLevels>({ mic: 0, system: 0 });
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const sourceRef = useRef<CaptureSource>('mic'); // 防闭包过期
+  const [outputFiles, setOutputFiles] = useState<OutputFiles | null>(null);
+  const sourceRef = useRef<CaptureSource>('mic');
+
+  // ── WebSocket streaming ──
+  const {
+    state: streamerState,
+    stats: streamerStats,
+    connect: streamerConnect,
+    disconnect: streamerDisconnect,
+    streamPcmFile,
+  } = useAudioStreamer();
 
   // ── 初始化 ──
   useEffect(() => {
@@ -54,20 +77,18 @@ export default function AudioCaptureScreen(): React.ReactElement {
     setCaptureSource(source);
     sourceRef.current = source;
     setErrorMsg(null);
+    setOutputFiles(null);
 
     try {
       await AudioCapture.setCaptureSource(source);
     } catch {
-      // 非关键路径，忽略
+      // 非关键路径
     }
 
-    // 切换到 system/both 时检查是否已授权
     if (source === 'system' || source === 'both') {
       const authed = await AudioCapture.hasMediaProjection();
       setHasAuth(authed);
-      if (!authed) {
-        setStatus('need_auth');
-      }
+      if (!authed) setStatus('need_auth');
     } else {
       setHasAuth(false);
       setStatus('idle');
@@ -79,10 +100,8 @@ export default function AudioCaptureScreen(): React.ReactElement {
     try {
       setStatus('authorizing');
       setErrorMsg(null);
-
       const ok = await AudioCapture.requestMediaProjection();
       setHasAuth(ok);
-
       if (ok) {
         setStatus('idle');
       } else {
@@ -100,8 +119,8 @@ export default function AudioCaptureScreen(): React.ReactElement {
   const handleStart = useCallback(async () => {
     try {
       setErrorMsg(null);
+      setOutputFiles(null);
 
-      // Android 运行时权限
       if (Platform.OS === 'android') {
         const granted = await PermissionsAndroid.request(
           PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
@@ -119,10 +138,8 @@ export default function AudioCaptureScreen(): React.ReactElement {
       }
 
       setStatus('starting');
-
       await AudioCapture.configure(TEST_CONFIG);
       await AudioCapture.start();
-
       setStatus('capturing');
     } catch (err: any) {
       setStatus('error');
@@ -134,35 +151,57 @@ export default function AudioCaptureScreen(): React.ReactElement {
   // ── 停止采集 ──
   const handleStop = useCallback(async () => {
     try {
+      setStatus('stopping');
       await AudioCapture.stop();
+      // 获取输出文件路径
+      const files = await AudioCapture.getOutputFiles();
+      setOutputFiles(files);
       setStatus('idle');
       setLevels({ mic: 0, system: 0 });
     } catch (err: any) {
       setErrorMsg(err.message ?? '停止失败');
+      setStatus('error');
     }
   }, []);
 
   // ── 电平轮询 ──
   useEffect(() => {
     if (status !== 'capturing') return;
-
     const timer = setInterval(() => {
       AudioCapture.getAudioLevels()
         .then(setLevels)
         .catch(() => {});
     }, 100);
-
     return () => clearInterval(timer);
   }, [status]);
 
   // ── 派生状态 ──
-  const isBusy = status === 'starting' || status === 'capturing';
+  const isBusy = status === 'starting' || status === 'capturing' || status === 'stopping';
   const isActive = status === 'capturing';
-  const needsAuth =
-    (captureSource === 'system' || captureSource === 'both') && !hasAuth;
-  const canStart =
-    (status === 'idle' || status === 'error') && !needsAuth;
+  const needsAuth = (captureSource === 'system' || captureSource === 'both') && !hasAuth;
+  const canStart = (status === 'idle' || status === 'error') && !needsAuth;
+
+  // WebSocket streaming: send PCM file
+  const handleStreamFile = useCallback(async (source: 'mic' | 'system') => {
+    if (!outputFiles) return;
+    const fileUri = outputFiles[source];
+    if (!fileUri) return;
+    try {
+      await streamPcmFile(fileUri);
+    } catch (e) {
+      console.error('[Stream]', e);
+    }
+  }, [outputFiles, streamPcmFile]);
   const showDualViz = captureSource === 'both';
+  const lightStatus = toLightStatus(status);
+
+  // VolumeBar 使用的电平：根据采集源选 mic/system，both 取 max
+  const volumeLevel =
+    captureSource === 'mic'
+      ? levels.mic
+      : captureSource === 'system'
+        ? levels.system
+        : Math.max(levels.mic, levels.system);
 
   return (
     <SafeAreaView style={styles.container}>
@@ -170,6 +209,12 @@ export default function AudioCaptureScreen(): React.ReactElement {
         {/* 标题 */}
         <Text style={styles.title}>🎙️ Audio Capture PoC</Text>
         <Text style={styles.subtitle}>双路音频采集验证（麦克风 + 系统内部音频）</Text>
+
+        {/* ── 状态灯 + 计时器 ── */}
+        <View style={styles.statusRow}>
+          <StatusLight status={lightStatus} />
+          <Timer isActive={isActive} />
+        </View>
 
         {/* ── 采集源选择 ── */}
         <Text style={styles.sectionTitle}>采集源</Text>
@@ -195,7 +240,7 @@ export default function AudioCaptureScreen(): React.ReactElement {
           })}
         </View>
 
-        {/* ── MediaProjection 授权（system/both 模式需要） ── */}
+        {/* ── MediaProjection 授权横幅 ── */}
         {needsAuth && status !== 'authorizing' && (
           <View style={styles.authBanner}>
             <Text style={styles.authBannerIcon}>🔐</Text>
@@ -207,6 +252,11 @@ export default function AudioCaptureScreen(): React.ReactElement {
             </TouchableOpacity>
           </View>
         )}
+
+        {/* ── 音量条 ── */}
+        <View style={styles.volumeSection}>
+          <VolumeBar level={volumeLevel} isActive={isActive} />
+        </View>
 
         {/* ── 可视化区域 ── */}
         {showDualViz ? (
@@ -295,6 +345,42 @@ export default function AudioCaptureScreen(): React.ReactElement {
           </View>
         </View>
 
+        {/* ── 文件信息 ── */}
+        <FileInfo files={outputFiles} captureSource={captureSource} />
+
+        {/* ── WebSocket Streaming ── */}
+        <StreamingControl
+          streamerState={streamerState}
+          stats={streamerStats}
+          onConnect={streamerConnect}
+          onDisconnect={streamerDisconnect}
+          disabled={isBusy}
+        />
+
+        {/* Stream PCM button: visible when WS connected and files ready */}
+        {streamerState === 'connected' && outputFiles && (
+          <View style={styles.streamButtons}>
+            {outputFiles.mic ? (
+              <TouchableOpacity
+                style={[styles.button, styles.buttonStream]}
+                onPress={() => handleStreamFile('mic')}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.buttonText}>{'📤 Stream MIC PCM'}</Text>
+              </TouchableOpacity>
+            ) : null}
+            {outputFiles.system ? (
+              <TouchableOpacity
+                style={[styles.button, styles.buttonStream]}
+                onPress={() => handleStreamFile('system')}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.buttonText}>{'📤 Stream System PCM'}</Text>
+              </TouchableOpacity>
+            ) : null}
+          </View>
+        )}
+
         {/* ── 控制按钮 ── */}
         {isBusy ? (
           <TouchableOpacity
@@ -353,10 +439,25 @@ const styles = StyleSheet.create({
     color: '#888',
     textAlign: 'center',
     marginTop: 4,
-    marginBottom: 24,
+    marginBottom: 20,
   },
 
-  // ── 采集源选择 ──
+  // ── 状态灯 + 计时器行 ──
+  statusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#fff',
+    borderRadius: 14,
+    padding: 16,
+    marginBottom: 20,
+    shadowColor: '#000',
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+
+  // ── 采集源 ──
   sectionTitle: {
     fontSize: 12,
     fontWeight: '600',
@@ -405,7 +506,12 @@ const styles = StyleSheet.create({
     color: 'rgba(255,255,255,0.7)',
   },
 
-  // ── 授权横幅 ──
+  // ── 音量条区域 ──
+  volumeSection: {
+    marginBottom: 16,
+  },
+
+  // ── 授权 ──
   authBanner: {
     backgroundColor: '#FFF9E6',
     borderRadius: 12,
@@ -575,5 +681,16 @@ const styles = StyleSheet.create({
     color: '#FF9500',
     textAlign: 'center',
     lineHeight: 18,
+  },
+
+  // ── Stream buttons ──
+  streamButtons: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 12,
+  },
+  buttonStream: {
+    backgroundColor: '#8B5CF6',
+    flex: 1,
   },
 });
