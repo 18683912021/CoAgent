@@ -67,10 +67,17 @@
     {
       "role": "system",
       "content": "[队友动态] 用户对小柯说：「There was a problem loading theproject.This development buil」→ 小柯回复：「现在总结诊断和修复。  ---  ## 逐层排查结果  | 层 | 文件 | 结论 | |---|------|------| | AndroidManifes」"
+    },
+    {
+      "role": "user",
+      "content": "[任务延续] 你的上一个任务是「还记得我们现在在做什么项目吗，还记得产出放哪儿吗，什么都不要做，我就是帮你们回忆一下，不要去」\n\n如果用户的新指令与这个项目相关，在上面文件的基础上直接修改，不需要重新创建项目。\n\n---\n用户指令: [群呼] 用户也 @ 了 AI小柯（前端）、AI小吴（产品经理）、洋洋得意。还记得我们现在在做什么项目吗，还记得产出放哪儿吗，什么都不要做，我就是帮你们回忆一下，不要去"
+    },
+    {
+      "role": "assistant",
+      "content": "哈哈 boss，这哪能忘——\n\n**项目**：`poc-audio-capture`，音频采集 PoC，小柯那边正在跟原生层死磕（Kotlin 编译、白屏、闪退三件套，他头发都快薅没了 😂）。\n\n**产出规则**：按项目分好，各回各家——我的后端产出放 `workspace/be/` 下对应项目目录，小柯的前端在 `workspace/fe/`，小吴的文档在 `workspace/shared/`。\n\n我这边的刀还亮着呢，就等你啥时候喊一声\"酱瓜开干\"。目前后端还是块处女地，一行业务代码都没写～"
     }
   ],
   "facts": [
-    "┌──────────┐   JS 调用    ┌──────────────────┐   原生 API    ┌─────────────┐",
     "- iOS: startCapture() → 引导用户从控制中心启动 Extension → SampleHandler.processSampleBuffer() 丢视频/留音频 → 写 App Group 共享文件 → 主 App 每 200ms 轮询 → 推事件到 JS",
     "【⚠️ 需要知道的三个坑】",
     "3. iOS Extension 内存 50MB 硬限制——当前实现只追加写 PCM，不编码不压缩，内存安全。但如果后续加 AI 降噪之类的，需要在 Extension 外做。",
@@ -84,6 +91,7 @@
     "用户指令: [群呼] 用户也 @ 了 AI小柯（前端）。任务文档已更新。产品侧确认两句话：",
     "2. 产出位置确认。 workspace/fe/poc-audio-capture/ 已就位，和 rn-app-shell 同级，干净。",
     "用户指令: 已经在 workspace/fe/poc-audio-capture/ 了，boss。刚才 list_dir 确认过——全乎的：",
-    "1. 叫 boss ☑️"
+    "1. 叫 boss ☑️",
+    "用户指令: [群呼] 用户也 @ 了 AI小柯（前端）、AI小吴（产品经理）、洋洋得意。还记得我们现在在做什么项目吗，还记得产出放哪儿吗，什么都不要做，我就是帮你们回忆一下，不要去"
   ]
 }
