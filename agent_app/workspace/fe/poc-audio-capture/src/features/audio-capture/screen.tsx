@@ -9,8 +9,10 @@ import {
   ScrollView,
   ActivityIndicator,
   PermissionsAndroid,
+  useColorScheme,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { StatusBar } from 'react-native';
 import AudioCapture, {
   type AudioCaptureConfig,
   type CaptureSource,
@@ -203,8 +205,14 @@ export default function AudioCaptureScreen(): React.ReactElement {
         ? levels.system
         : Math.max(levels.mic, levels.system);
 
+  const isDark = useColorScheme() === 'dark';
+
   return (
     <SafeAreaView style={styles.container}>
+      <StatusBar
+        barStyle={isDark ? 'light-content' : 'dark-content'}
+        backgroundColor={isDark ? '#0a0a0a' : '#f0f2f5'}
+      />
       <ScrollView contentContainerStyle={styles.content}>
         {/* 标题 */}
         <Text style={styles.title}>🎙️ Audio Capture PoC</Text>
