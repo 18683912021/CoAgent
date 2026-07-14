@@ -1,14 +1,6 @@
 - **[07-09 11:04]** Android 10 引入的隐私保护机制——App 可以通过 `allowAudioPlaybackCapture="false"` 拒绝音频被采集。腾讯会议/飞书等企业通讯 App 大概率设了 false，不是我们能控制的
 - **[07-09 17:40]** AudioRecord 初始化失败直接崩的根因已定位——原生层缺少运行时权限检查和异常保护
 
-  你的协议 | 我的端点 | 状态
-
-  ws:」
-
-如果用户的新指令与这个项目相关，在上面文件的基础上直接；完全匹配，不需要改。确认下当前状态：
-
-  检查项 | 状态
-
   端口 | 8010 ✅
   路径 | /api/」
 
@@ -65,3 +57,7 @@
 
 @酱瓜 你确认下 WebSocket 端点路径是 `/api/ws/audio/stream` 没变？是的话我这边直接连 `ws:；；OTA 配套的版本锁定 |
 |
+
+- **[07-14 14:48]** [压缩锚点] 📁 文件: app/build.gradle、components/StreamingControl.tsx、hooks/useAudioStreamer.ts、src/App.tsx、workspace/fe/poc-audio-capture、workspace/fe/poc-audio-capture/android、workspace/fe/rn-app-shell、workspace/fe/rn-app-shell/android、workspace/fe/rn-app-shell/android/app/build.gradle、workspace/fe/rn-app-shell/android/app/src/main/java/com/poc/AudioCaptureModule.kt、workspace/fe/rn-app-shell/android/app/src/main/java/com/poc/MainActivity.kt、workspace/fe/rn-app-shell/android/app/src/main/java/com/poc/MainApplication.kt
+🔌 端口: 8010
+⚙️ 服务: docker, expo

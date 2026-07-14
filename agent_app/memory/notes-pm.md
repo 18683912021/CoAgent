@@ -1,9 +1,5 @@
 
 
-- **[07-13 15:51]** [归档] 1. Android 侧先做一个小 PoC — 从模板复制项目，写一个最小 AudioPlaybackCapture Demo，拿一台真机装腾讯会议/飞书，实际测一下能不能抓到音频。这个验证两天就能出结果——跑通了皆大欢喜，跑不通立刻换方案。
-
-- **[07-13 15:55]** [归档] 3. 备选方案兜底 — 如果两端都翻车，还有一个终极方案：让用户用蓝牙/有线耳机接面试，Copilot 从麦克风通道采集。虽然不如系统音频干净，但配上 AI 降噪，对面试场景够用。
-
 - **[07-13 16:02]** [队友] 小柯 完成「格式完全 OK，没异议。」— poc-audio-capture\src\features\audio-capture\components\FileInfo.tsx、poc-audio-capture\src\features\audio-capture\components\StatusLight.tsx、poc-audio-capture\src\features\audio-capture\components\Timer.tsx、poc-audio-capture\src\features\audio-capture\components\VolumeBar.tsx
 
 - **[07-13 16:47]** [队友] 酱瓜 完成「——」
@@ -59,3 +55,7 @@
 - **[07-14 13:50]** [队友] 小柯 完成「可以试试，但**大概率不够**。」
 
 - **[07-14 14:19]** [队友] 小柯 完成「搞定。两个 `companion object` 已合并为一个，全部 5 个常量都在同一处：」
+
+- **[07-14 14:49]** [队友] 小柯 完成「好，分析完了。」
+
+- **[07-14 14:56]** [队友] 小柯 完成「TypeScript 编译通过 ✅。」
