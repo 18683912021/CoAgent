@@ -1,4 +1,4 @@
-package expo.modules.audiocapture
+package com.poc.audiocapture
 
 import android.app.Notification
 import android.app.NotificationChannel

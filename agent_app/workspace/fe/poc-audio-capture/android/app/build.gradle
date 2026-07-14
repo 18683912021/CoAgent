@@ -78,7 +78,5 @@ dependencies {
         implementation jscFlavor
     }
 
-    // in-project native module (Expo Module API)
-    implementation project(':expo-modules-core')
     implementation project(':audio-capture')
 }

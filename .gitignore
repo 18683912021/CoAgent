@@ -7,3 +7,13 @@ node_modules/
 logs/
 .DS_Store
 .idea
+ios/Pods/
+android/.gradle/
+android/app/build/
+android/app/.cxx/
+android/build/
+android/.idea/
+modules/*/android/build/
+modules/*/android/.cxx/
+modules/*/android/.gradle/
+
