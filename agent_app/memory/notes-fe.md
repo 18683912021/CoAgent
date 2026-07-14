@@ -1,9 +1,5 @@
 - **[07-09 11:04]** Android 10 引入的隐私保护机制——App 可以通过 `allowAudioPlaybackCapture="false"` 拒绝音频被采集。腾讯会议/飞书等企业通讯 App 大概率设了 false，不是我们能控制的
 - **[07-09 17:40]** AudioRecord 初始化失败直接崩的根因已定位——原生层缺少运行时权限检查和异常保护
-
-  端口 | 8010 ✅
-  路径 | /api/」
-
 如果用户的新指令与
 
 - **[07-14 10:01]** [归档] 如果用户的新指令与这个项目相关，在上面文件的基础上直接修改，不需要重新创建项目。
@@ -61,3 +57,5 @@
 - **[07-14 14:48]** [压缩锚点] 📁 文件: app/build.gradle、components/StreamingControl.tsx、hooks/useAudioStreamer.ts、src/App.tsx、workspace/fe/poc-audio-capture、workspace/fe/poc-audio-capture/android、workspace/fe/rn-app-shell、workspace/fe/rn-app-shell/android、workspace/fe/rn-app-shell/android/app/build.gradle、workspace/fe/rn-app-shell/android/app/src/main/java/com/poc/AudioCaptureModule.kt、workspace/fe/rn-app-shell/android/app/src/main/java/com/poc/MainActivity.kt、workspace/fe/rn-app-shell/android/app/src/main/java/com/poc/MainApplication.kt
 🔌 端口: 8010
 ⚙️ 服务: docker, expo
+
+- **[07-14 17:52]** [归档] 0.2.5 等你打完包出 PCM 文件我就接着做质量评估，现在架子摆好了，就缺你的 .pcm 喂进来～ 🎤
