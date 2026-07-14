@@ -1,7 +1,5 @@
 
 
-- **[07-13 16:02]** [队友] 小柯 完成「格式完全 OK，没异议。」— poc-audio-capture\src\features\audio-capture\components\FileInfo.tsx、poc-audio-capture\src\features\audio-capture\components\StatusLight.tsx、poc-audio-capture\src\features\audio-capture\components\Timer.tsx、poc-audio-capture\src\features\audio-capture\components\VolumeBar.tsx
-
 - **[07-13 16:47]** [队友] 酱瓜 完成「——」
 
 - **[07-13 17:18]** [队友] 酱瓜 完成「boss，重新仔细查了一遍，**上次确实错判了**，抱歉 🙇：」
@@ -59,3 +57,5 @@
 - **[07-14 14:49]** [队友] 小柯 完成「好，分析完了。」
 
 - **[07-14 14:56]** [队友] 小柯 完成「TypeScript 编译通过 ✅。」
+
+- **[07-14 17:48]** [队友] 小柯 完成「**根因：Node.js 21 + `connect` 包不兼容。」
