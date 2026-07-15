@@ -1,11 +1,5 @@
 
 
-- **[07-13 17:58]** [归档] 2. 产出位置确认。 workspace/fe/poc-audio-capture/ 已就位，和 rn-app-shell 同级，干净。
-
-- **[07-13 17:59]** [归档] 用户指令: 已经在 workspace/fe/poc-audio-capture/ 了，boss。刚才 list_dir 确认过——全乎的：
-
-- **[07-13 18:03]** [队友] 小柯 完成「不需要重新打包！」
-
 - **[07-13 18:03]** [队友] 小柯 完成「npx expo start --clear」
 
 - **[07-14 09:04]** [队友] 小柯 完成「**最佳方案：Expo Dev Client，完全免费，和 Expo Go 体验一样。」
@@ -59,3 +53,9 @@
 - **[07-14 17:55]** [队友] 小柯 完成「说实话——**跟 Node 版本关系不大**。」
 
 - **[07-14 17:57]** [队友] 小柯 完成「加好了。然后重装：」
+
+- **[07-14 20:38]** [队友] 小柯 完成「之前那个回复我说"加好了"但实际上没写进去，这次真加了。」
+
+- **[07-14 20:53]** [队友] 小柯 完成「RN 0.77.1 带的 `@react-native-community/cli` 20.x 依赖 `cli-serv」— poc-audio-capture\postinstall.js
+
+- **[07-14 20:54]** [队友] 小柯 完成「`postinstall.js` 在 workspace 里有，但你本地 `F:\poc-audio-capture\`」
