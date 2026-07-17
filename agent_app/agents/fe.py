@@ -40,8 +40,17 @@ class FEAgent(BaseAgent):
             core_system_prompt=agents_md,  # Lazy Context: chat 模式只加载核心人格
         )
 
+    def _pick_workspace(self, path: str) -> str:
+        """根据路径前缀自动选择 workspace：
+        - fe-app/xxx → F:/CoAgent/fe-app/
+        - 其他 → workspace/fe/
+        """
+        if path.startswith("fe-app/") or path == "fe-app":
+            return str(Path(__file__).parent.parent.parent / "fe-app")
+        return str(self.workspace)
+
     def _execute_tool(self, name: str, args: dict) -> str:
-        """FE Agent 的工具实现 —— 读全局，写 workspace/fe/"""
+        """FE Agent 的工具实现 —— 读全局，写 workspace/fe/ 或 fe-app/"""
         if name == "read_file":
             return read_file(PROJECT_ROOT, args.get("path", ""))
         elif name == "search_web":
@@ -49,14 +58,18 @@ class FEAgent(BaseAgent):
         elif name == "web_fetch":
             return run_async(web_fetch(**args))
         elif name == "write_file":
-            return write_file(str(self.workspace), args.get("path", ""), args.get("content", ""))
+            path = args.get("path", "")
+            return write_file(self._pick_workspace(path), path, args.get("content", ""))
         elif name == "edit_file":
-            return edit_file(str(self.workspace), args.get("path", ""),
+            path = args.get("path", "")
+            return edit_file(self._pick_workspace(path), path,
                              args.get("old_string", ""), args.get("new_string", ""))
         elif name == "list_dir":
-            return list_dir(str(self.workspace), args.get("path", "."))
+            path = args.get("path", ".")
+            return list_dir(self._pick_workspace(path), path)
         elif name == "delete_file":
-            return delete_file(str(self.workspace), args.get("path", ""))
+            path = args.get("path", "")
+            return delete_file(self._pick_workspace(path), path)
         elif name == "execute":
             return execute(args.get("command", ""), args.get("cwd", ""))
         elif name == "check_code":

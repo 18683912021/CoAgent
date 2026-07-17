@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 WORKSPACE_ROOT = Path(__file__).parent.parent / "workspace"
+FE_APP_ROOT = Path(__file__).parent.parent.parent / "fe-app"
 
 # ── 平台检测 ───────────────────────────────────────────
 _IS_WINDOWS = sys.platform == "win32" or os.name == "nt"
@@ -328,12 +329,18 @@ def execute(command: str, cwd: str = "") -> str:
             f"允许的命令前缀: {', '.join(_ALLOWED_PREFIXES[:10])} 等"
         )
 
-    # ── 路径解析 ──
+    # ── 路径解析（支持 workspace/ 和 fe-app/ 两个工作区）──
     work_dir = WORKSPACE_ROOT
     if cwd:
-        target = (WORKSPACE_ROOT / cwd).resolve()
+        # fe-app/ 前缀 → 映射到 F:/CoAgent/fe-app/
+        if cwd.startswith("fe-app/") or cwd == "fe-app":
+            clean = cwd[7:] if cwd.startswith("fe-app/") else ""
+            target = (FE_APP_ROOT / clean).resolve() if clean else FE_APP_ROOT.resolve()
+        else:
+            target = (WORKSPACE_ROOT / cwd).resolve()
         # 防止逃逸
-        if str(target).startswith(str(WORKSPACE_ROOT.resolve())):
+        if str(target).startswith(str(WORKSPACE_ROOT.resolve())) or \
+           str(target).startswith(str(FE_APP_ROOT.resolve())):
             work_dir = target
         else:
             return f"[execute] 工作目录越界: {cwd}"

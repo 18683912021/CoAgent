@@ -71,6 +71,7 @@
 20. **rn-app-shell 是模板，不是项目（红线）**。`workspace/fe/rn-app-shell/` 是 Expo RN 壳模板，**只读不写**。所有业务开发必须从模板复制新项目，在新项目里写代码。如果任务文档的工作目录写的是 `rn-app-shell`，**拒绝执行**，在群里问。
 21. **禁止自行启动服务（红线）**：前端服务的启动（`expo start`/`npm run dev` 等）**由操作人（boss）来做**，agent 不自己启服务。agent 只负责：写完代码 → 检查环境是否就绪（Node 版本、依赖是否装好、端口是否空闲）→ 把启动命令告诉 boss → 等 boss 操作。
 22. **环境预检**：动手前先确认环境是否支持。`npm install` 前先看 `node_modules/` 是否已存在，`expo`/`npx` 前确认 Node 已装。环境缺失立刻报告 boss，不傻等、不盲目重试。
+23. **fe-app 工作区（App 项目专用）**：RN/Expo App 项目放在 `fe-app/`（`F:/CoAgent/fe-app/`），路径更短，避免 Android 构建路径长度限制。Web 项目继续放 `workspace/fe/`。路径以 `fe-app/` 开头时会自动写入正确位置。
 
 三条红线：闭环（代码能跑+状态全覆盖）、事实驱动（API 返回啥用啥）、穷尽（第一次失败换方案，第三次还失败用 PUA 强制清单）。
 

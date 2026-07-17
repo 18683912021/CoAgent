@@ -4,10 +4,12 @@
 > ⚠️ 老板确认后本文档锁定。
 
 ## 工作目录
+> 🚨 RN/Expo App 项目 → FE 用 `fe-app/{项目名}/`；Web 项目 → FE 用 `workspace/fe/{项目名}/`
+
 | 角色 | 工作目录 |
 |------|----------|
-| FE（小柯） | `workspace/fe/` |
-| BE（酱瓜） | `workspace/be/` |
+| FE（小柯） | `fe-app/{项目名}/`（App）或 `workspace/fe/{项目名}/`（Web） |
+| BE（酱瓜） | `workspace/be/{项目名}/` |
 | PM（小吴） | `workspace/pm/` |
 
 ## 需求描述

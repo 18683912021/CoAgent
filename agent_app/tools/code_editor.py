@@ -4,6 +4,8 @@ from pathlib import Path
 
 # 工作区根目录
 WORKSPACE_ROOT = Path(__file__).parent.parent / "workspace"
+# RN/Expo App 独立工作区（路径更短，避免 Android 构建路径长度限制）
+FE_APP_ROOT = Path(__file__).parent.parent.parent / "fe-app"
 
 READ_FILE_TOOL_SPEC = {
     "name": "read_file",
@@ -109,21 +111,36 @@ def _resolve(workspace: str, rel_path: str) -> Path:
     return (base / rel_path).resolve()
 
 
-def _resolve_writable(workspace: str, rel_path: str) -> Path:
-    """解析写操作路径：剥离冗余 workspace 前缀 + 校验目标在 workspace 内。"""
+def _resolve_writable(workspace: str, rel_path: str, extra_roots: list[Path] | None = None) -> Path:
+    """解析写操作路径：剥离冗余 workspace 前缀 + 校验目标在允许的目录内。
+
+    extra_roots: 额外允许的根目录（如 FE_APP_ROOT），用于多 workspace 场景。
+    """
     cleaned = _strip_workspace_prefix(workspace, rel_path)
     target = _resolve(workspace, cleaned)
 
-    # 安全检查：写操作的目标路径必须在 workspace 目录内
-    ws_path = Path(workspace).resolve()
-    try:
-        target.relative_to(ws_path)
-    except ValueError:
+    # 安全检查：写操作必须在 workspace 或额外根目录内
+    allowed_roots = [Path(workspace).resolve()]
+    if extra_roots:
+        allowed_roots.extend(r.resolve() for r in extra_roots)
+    # 也允许 FE_APP_ROOT 如果尚未在列表中
+    if FE_APP_ROOT.resolve() not in allowed_roots:
+        allowed_roots.append(FE_APP_ROOT.resolve())
+
+    ok = False
+    for root in allowed_roots:
+        try:
+            target.relative_to(root)
+            ok = True
+            break
+        except ValueError:
+            continue
+
+    if not ok:
         raise PermissionError(
-            f"禁止写入 workspace 外的路径: {rel_path} → {target}\n"
-            f"  workspace 根目录: {ws_path}\n"
-            f"  请检查路径是否正确。提示：write_file 的 path 相对于工作区根目录，"
-            f"不要加 workspace/fe/ 或 workspace/be/ 前缀。"
+            f"禁止写入允许范围外的路径: {rel_path} → {target}\n"
+            f"  允许的根目录: {[str(r) for r in allowed_roots]}\n"
+            f"  请检查路径是否正确。"
         )
 
     return target
@@ -141,6 +158,7 @@ def read_file(workspace: str, rel_path: str) -> str:
         if not target.exists():
             # ── 自动回退：尝试常见前缀 ──
             fallback_prefixes = [
+                "fe-app",
                 "workspace",
                 "workspace/be", "workspace/fe", "workspace/shared", "workspace/pm",
             ]
@@ -201,6 +219,7 @@ def edit_file(workspace: str, rel_path: str, old_string: str, new_string: str) -
         if not target.exists():
             # ── 自动回退：尝试常见前缀（同 read_file）──
             fallback_prefixes = [
+                "fe-app",
                 "workspace",
                 "workspace/be", "workspace/fe", "workspace/shared", "workspace/pm",
             ]
@@ -278,6 +297,7 @@ def delete_file(workspace: str, rel_path: str) -> str:
         if not target.exists():
             # ── 自动回退：尝试常见前缀 ──
             fallback_prefixes = [
+                "fe-app",
                 "workspace",
                 "workspace/be", "workspace/fe", "workspace/shared", "workspace/pm",
             ]
@@ -315,6 +335,7 @@ def list_dir(workspace: str, rel_path: str = ".") -> str:
         if not target.exists():
             # ── 自动回退：尝试常见前缀（与 read_file 一致）──
             fallback_prefixes = [
+                "fe-app",
                 "workspace",
                 "workspace/be", "workspace/fe", "workspace/shared", "workspace/pm",
             ]
