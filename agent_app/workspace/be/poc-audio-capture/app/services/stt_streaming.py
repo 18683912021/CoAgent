@@ -19,7 +19,6 @@ from app.services.stt_service import (
     decode_server_response,
     encode_audio_frame,
     encode_client_request,
-    generate_token,
 )
 
 logger = logging.getLogger("stt_streaming")
@@ -47,12 +46,11 @@ class StreamingASRSession:
         self._running = False
 
     async def connect(self) -> None:
-        token = generate_token(self._ak, self._sk)
         self._ws = await websockets.connect(
             WS_ENDPOINT,
             additional_headers={
                 "X-Api-App-Key": self._app_id,
-                "X-Api-Access-Key": token,
+                "X-Api-Access-Key": self._ak,
                 "X-Api-Resource-Id": RESOURCE_ID,
                 "X-Api-Connect-Id": str(uuid.uuid4()),
             },

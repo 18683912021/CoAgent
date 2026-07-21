@@ -166,7 +166,6 @@ async def transcribe_pcm(
     2. 整个 PCM 文件分片发送（200ms/包），最后一帧带结束标志
     3. 接收所有识别结果，拼接为完整文本
     """
-    token = generate_token(access_key_id, secret_access_key)
     connect_id = str(uuid.uuid4())
     started_at = time.monotonic()
 
@@ -174,7 +173,7 @@ async def transcribe_pcm(
         WS_ENDPOINT,
         additional_headers={
             "X-Api-App-Key": app_id,
-            "X-Api-Access-Key": token,
+            "X-Api-Access-Key": access_key_id,
             "X-Api-Resource-Id": RESOURCE_ID,
             "X-Api-Connect-Id": connect_id,
         },
