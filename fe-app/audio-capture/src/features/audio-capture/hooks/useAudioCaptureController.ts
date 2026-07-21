@@ -171,7 +171,10 @@ export function useAudioCaptureController() {
       AudioCapture.onStreamStats(value =>
         dispatch({type: 'streamStats', value}),
       ),
-      AudioCapture.onError(value => dispatch({type: 'error', value})),
+      AudioCapture.onError(value => {
+        console.error(`[AudioCapture] ${value.code} (${value.stage})`, value.message);
+        dispatch({type: 'error', value});
+      }),
     ];
 
     const appStateSubscription = AppState.addEventListener('change', next => {
@@ -196,15 +199,14 @@ export function useAudioCaptureController() {
       dispatch({type: 'projection', value: granted});
       dispatch({type: 'captureState', value: 'idle'});
       if (!granted) {
-        dispatch({
-          type: 'error',
-          value: {
-            code: 'E_PROJECTION_DENIED',
-            stage: 'consent',
-            recoverable: true,
-            message: '系统音频权限未获得授权。',
-          },
-        });
+        const err: NativeCaptureError = {
+          code: 'E_PROJECTION_DENIED',
+          stage: 'consent',
+          recoverable: true,
+          message: '系统音频权限未获得授权。',
+        };
+        console.error(`[AudioCapture] ${err.code} (${err.stage})`, err.message);
+        dispatch({type: 'error', value: err});
       }
       return granted;
     } catch (error) {
@@ -218,11 +220,13 @@ export function useAudioCaptureController() {
     try {
       await requestRuntimePermissions();
       if (state.source !== 'mic' && !state.projectionGranted) {
-        throw createError(
+        const err = createError(
           'E_PROJECTION_REQUIRED',
           'consent',
           '开始采集前请先授权系统音频。',
         );
+        console.error(`[AudioCapture] ${err.code} (${err.stage})`, err.message);
+        throw err;
       }
       operationCounter.current += 1;
       const operationId = `${Date.now()}-${operationCounter.current}`;
@@ -337,11 +341,13 @@ async function requestRuntimePermissions(): Promise<void> {
     PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
   );
   if (recordResult !== PermissionsAndroid.RESULTS.GRANTED) {
-    throw createError(
+    const err = createError(
       'E_RECORD_PERMISSION',
       'permission',
       '麦克风权限是音频采集的必要条件。',
     );
+    console.error(`[AudioCapture] ${err.code} (${err.stage})`, err.message);
+    throw err;
   }
 
   if (Number(Platform.Version) >= 33) {
@@ -353,13 +359,15 @@ async function requestRuntimePermissions(): Promise<void> {
 
 function normalizeError(error: unknown, fallbackCode: string): NativeCaptureError {
   const value = error as Partial<NativeCaptureError> & {message?: string};
-  return {
+  const normalized: NativeCaptureError = {
     code: value.code ?? fallbackCode,
     stage: value.stage ?? 'javascript',
     source: value.source,
     recoverable: value.recoverable ?? true,
     message: value.message ?? String(error),
   };
+  console.error(`[AudioCapture] ${normalized.code} (${normalized.stage})`, normalized.message, error);
+  return normalized;
 }
 
 function createError(
