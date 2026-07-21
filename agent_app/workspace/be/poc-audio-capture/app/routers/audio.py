@@ -93,7 +93,19 @@ async def audio_stream(ws: WebSocket):
             if text is not None:
                 try:
                     payload = json.loads(text)
+                    was_new = v1_session is None
                     v1_session = await handle_control_message(ws, payload, v1_session)
+                    # 新会话建立后，立即创建 ASR 连接
+                    if was_new and v1_session is not None and _ASR_READY and asr_session is None:
+                        try:
+                            asr_session = StreamingASRSession(
+                                api_key=_VOLC_API_KEY,
+                                on_text=lambda t, f: _enqueue_asr_result(t, f, ws),
+                            )
+                            await asr_session.connect()
+                            logger.info("实时 ASR 已启动")
+                        except Exception:
+                            logger.exception("ASR 连接失败，本次会话无实时识别")
                 except (ProtocolError, ValidationError, ValueError, json.JSONDecodeError) as error:
                     code = error.code if isinstance(error, ProtocolError) else "E_CONTROL_MESSAGE"
                     await send_error(ws, code, str(error))
@@ -192,19 +204,6 @@ async def handle_control_message(
             storage_root=storage_root(),
             started_at=message.started_at or datetime.now(timezone.utc),
         )
-        # 如果有 ASR 凭据，自动启动实时语音识别
-        # ASR 失败不影响主流程——音频照样采集和存储
-        if _ASR_READY:
-            try:
-                asr_session = StreamingASRSession(
-                    api_key=_VOLC_API_KEY,
-                    on_text=lambda text, is_final: _enqueue_asr_result(text, is_final, ws),
-                )
-                await asr_session.connect()
-                logger.info("实时 ASR 已随会话启动")
-            except Exception:
-                logger.exception("ASR 连接失败，本次会话无实时识别")
-                asr_session = None
         await ws.send_json(
             {
                 "type": "session_ready",
