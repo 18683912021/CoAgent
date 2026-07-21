@@ -1,4 +1,11 @@
 import logging
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+# 自动加载 CoAgent 项目根目录的 .env
+_env_path = Path(__file__).resolve().parents[4] / ".env"
+load_dotenv(_env_path)
 
 from fastapi import FastAPI
 
