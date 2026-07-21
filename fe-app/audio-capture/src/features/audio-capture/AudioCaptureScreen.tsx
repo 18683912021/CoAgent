@@ -30,7 +30,7 @@ export default function AudioCaptureScreen(): React.JSX.Element {
   const {state} = controller;
   const dark = useColorScheme() === 'dark';
   const [streamUrl, setStreamUrl] = useState(
-    __DEV__ ? 'ws://10.0.2.2:8010/api/ws/audio/stream' : '',
+    __DEV__ ? 'ws://192.168.7.149:8010/api/ws/audio/stream' : '',
   );
 
   const active = state.captureState === 'capturing';
@@ -184,7 +184,9 @@ export default function AudioCaptureScreen(): React.JSX.Element {
         {state.error ? (
           <View style={styles.errorCard} accessibilityRole="alert">
             <View style={styles.errorHeader}>
-              <Text style={styles.errorTitle}>{state.error.code}</Text>
+              <Text style={styles.errorTitle}>
+                [AudioCapture] {state.error.code}
+              </Text>
               <TouchableOpacity onPress={controller.clearError} accessibilityRole="button">
                 <Text style={styles.errorDismiss}>关闭</Text>
               </TouchableOpacity>

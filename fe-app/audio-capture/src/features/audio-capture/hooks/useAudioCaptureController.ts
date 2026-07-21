@@ -186,12 +186,10 @@ export function useAudioCaptureController() {
       ),
       AudioCapture.onError(value => {
         console.error(
-          `\n══════════ [AudioCapture] ${value.code} (原生) ══════════`,
+          `\n[AudioCapture] ${value.code}`,
           `\n  阶段: ${value.stage}`,
           `\n  消息: ${value.message}`,
           value.source ? `\n  来源: ${value.source}` : '',
-          `\n  (来自 Android 原生层)`,
-          `\n══════════════════════════════════════════`,
         );
         dispatch({type: 'error', value});
       }),
@@ -382,23 +380,40 @@ async function requestRuntimePermissions(): Promise<void> {
 
 function normalizeError(error: unknown, fallbackCode: string): NativeCaptureError {
   const value = error as Partial<NativeCaptureError> & {message?: string};
+  const code = value.code ?? fallbackCode;
+  const stage = value.stage ?? _inferStage(code);
   const normalized: NativeCaptureError = {
-    code: value.code ?? fallbackCode,
-    stage: value.stage ?? 'javascript',
+    code,
+    stage,
     source: value.source,
     recoverable: value.recoverable ?? true,
     message: value.message ?? String(error),
   };
+  // 终端和手机显示完全一致的错误信息
   const stack = error instanceof Error ? error.stack : new Error().stack;
   console.error(
-    `\n══════════ [AudioCapture] ${normalized.code} ══════════`,
+    `\n[AudioCapture] ${normalized.code}`,
     `\n  阶段: ${normalized.stage}`,
     `\n  消息: ${normalized.message}`,
     normalized.source ? `\n  来源: ${normalized.source}` : '',
     `\n  堆栈:\n${stack?.replace(/^/gm, '    ') ?? '  (无堆栈)'}`,
-    `\n══════════════════════════════════════════`,
   );
   return normalized;
+}
+
+function _inferStage(code: string): string {
+  if (code.startsWith('E_WS_')) return 'connect';
+  if (code.startsWith('E_CAPTURE_')) return 'capture';
+  if (code.startsWith('E_PROJECTION')) return 'consent';
+  if (code.startsWith('E_RECORD_')) return 'permission';
+  if (code.startsWith('E_BACKFILL')) return 'backfill';
+  if (code.startsWith('E_FILE_')) return 'file';
+  if (code.startsWith('E_SNAPSHOT')) return 'snapshot';
+  if (code.startsWith('E_CAPABILITIES')) return 'capabilities';
+  if (code.startsWith('E_STREAM_') || code.startsWith('E_STREAMING')) return 'stream';
+  if (code.startsWith('E_SESSION_') || code.startsWith('E_CONTROL_')) return 'protocol';
+  if (code.startsWith('E_WEBSOCKET')) return 'websocket';
+  return 'unknown';
 }
 
 function createError(
