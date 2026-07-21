@@ -125,7 +125,6 @@ export function useAudioCaptureController() {
         value: {
           captureState: snapshot.captureState,
           streamState: snapshot.streamState,
-          source: snapshot.source ?? state.source,
           levels: snapshot.levels,
           streamStats: snapshot.streamStats,
           startedAtUtc: snapshot.startedAtUtc ?? null,
@@ -153,7 +152,6 @@ export function useAudioCaptureController() {
           value: {
             captureState: event.state,
             streamState: event.streamState,
-            source: event.source,
             levels: event.levels,
             streamStats: event.streamStats,
             startedAtUtc: event.startedAtUtc ?? null,
