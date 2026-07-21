@@ -124,6 +124,20 @@ cd android
 .\gradlew.bat bundleRelease
 ```
 
+## 采集文件
+
+采集完成后文件保存在设备 `/data/data/com.poc.audiocapture/files/captures/{sessionId}/`，每条轨道一个 `.pcm` + 一个 `.wav`。
+
+**拉取到项目目录**（方便 Agent 读取）：
+
+```powershell
+powershell -File scripts/pull-captures.ps1
+```
+
+文件会同步到 `captures/` 目录（已加入 .gitignore）。
+
+**其他方式**：App 内点「分享 WAV / 分享 PCM」按钮通过系统分享发送，或手动 `adb pull`。
+
 ## Android 平台限制
 
 - SYSTEM/BOTH 仅 API 29+ 可用。

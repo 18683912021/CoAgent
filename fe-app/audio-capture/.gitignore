@@ -66,6 +66,9 @@ yarn-error.log
 # testing
 /coverage
 
+# captured audio files (test data)
+/captures/
+
 # Yarn
 .yarn/*
 !.yarn/patches
