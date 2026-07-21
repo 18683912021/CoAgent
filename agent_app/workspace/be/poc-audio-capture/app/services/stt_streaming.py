@@ -1,83 +1,106 @@
-"""火山引擎实时流式语音识别会话 — Realtime API（新版）。
+"""火山引擎实时流式语音识别会话。
 
-使用 ai-gateway.vei.volces.com 的 JSON 事件协议，
-鉴权简单：Authorization: Bearer <API_KEY>。
+基于官方 openspeech.bytedance.com bigmodel WebSocket 协议。
+鉴权：X-Api-Key + X-Api-Resource-Id。
 """
 
 import asyncio
-import base64
+import gzip
 import json
 import logging
 import uuid
+from io import BytesIO
 
 import websockets
 
 logger = logging.getLogger("stt_streaming")
 
-# Realtime API 端点
-WS_ENDPOINT = "wss://ai-gateway.vei.volces.com/v1/realtime?model=bigmodel"
+WS_ENDPOINT = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel"
+RESOURCE_ID = "volc.seedasr.sauc.duration"
 
-CHUNK_MS = 200  # 每包 200ms 音频
+# 音频参数（固定）
+SAMPLE_RATE = 16000
+BITS = 16
+CHANNELS = 1
+CHUNK_BYTES = 320  # 20ms @ 16kHz 16bit mono = 640 bytes? No: 16000*2*1*20/1000 = 640
+# 官方示例用 320 字节，按 16K/16bit 算是 10ms，先照抄
+
+
+def _build_header(message_type: int, flags: int, serialization: int, compression: int, payload_size: int) -> bytes:
+    """8 字节二进制协议头。"""
+    header = bytearray(8)
+    header[0] = (message_type << 4) | flags
+    header[1] = (serialization << 4) | compression
+    header[2:6] = b'\x00\x00\x00\x00'
+    header[6] = (payload_size >> 8) & 0xFF
+    header[7] = payload_size & 0xFF
+    return bytes(header)
+
+
+def _gzip(data: bytes) -> bytes:
+    buf = BytesIO()
+    with gzip.GzipFile(fileobj=buf, mode='wb') as f:
+        f.write(data)
+    return buf.getvalue()
 
 
 class StreamingASRSession:
     """管理一次实时 ASR 会话。"""
 
-    def __init__(
-        self,
-        api_key: str,
-        on_text: "callable | None" = None,
-    ):
+    def __init__(self, api_key: str, on_text: "callable | None" = None):
         self._api_key = api_key
         self._on_text = on_text
         self._ws: "websockets.WebSocketClientProtocol | None" = None
         self._recv_task: "asyncio.Task | None" = None
         self._running = False
         self._text_parts: list[str] = []
-        self._seen: set[str] = set()
+        self._connect_id = str(uuid.uuid4())
 
     async def connect(self) -> None:
         self._ws = await websockets.connect(
             WS_ENDPOINT,
             additional_headers={
-                "Authorization": f"Bearer {self._api_key}",
+                "X-Api-Key": self._api_key,
+                "X-Api-Resource-Id": RESOURCE_ID,
+                "X-Api-Connect-Id": self._connect_id,
+                "X-Api-Request-Id": str(uuid.uuid4()),
             },
         )
-        # 发送会话配置
-        await self._ws.send(json.dumps({
-            "type": "transcription_session.update",
-            "session": {
-                "input_audio_format": "pcm",
-                "input_audio_sample_rate": 16000,
-                "input_audio_bits": 16,
-                "input_audio_channel": 1,
-                "input_audio_transcription": {
-                    "model": "bigmodel",
-                },
+        # 发送全量客户端请求（配置）
+        config = {
+            "audio_params": {
+                "sample_rate": SAMPLE_RATE,
+                "bits": BITS,
+                "channels": CHANNELS,
             },
-        }))
+            "enable_vad": True,
+            "enable_punctuation": True,
+        }
+        payload = _gzip(json.dumps(config).encode("utf-8"))
+        header = _build_header(0b1001, 0b0000, 0b0001, 0b0001, len(payload))
+        await self._ws.send(header + payload)
+
         self._running = True
         self._recv_task = asyncio.create_task(self._recv_loop())
-        logger.info("ASR 实时会话已建立（Realtime API）")
+        logger.info("ASR 实时会话已建立")
 
     async def feed(self, pcm: bytes) -> None:
-        """喂入 PCM 数据，Base64 编码后用 input_audio_buffer.append 发送。"""
+        """喂入 PCM 原始数据，不压缩直接发送。"""
         if not self._ws or not self._running:
             return
-        b64 = base64.b64encode(pcm).decode("ascii")
-        await self._ws.send(json.dumps({
-            "type": "input_audio_buffer.append",
-            "audio": b64,
-        }))
+        header = _build_header(0b1000, 0b0000, 0b0000, 0b0000, len(pcm))
+        await self._ws.send(header + pcm)
 
     async def finish(self) -> str:
-        """发送 commit，等待最终结果。"""
+        """发送结束包，等待最终结果。"""
         if not self._ws or not self._running:
             return ""
         self._running = False
 
+        # 发送最后一包（flags=0b0001 表示结束）
+        header = _build_header(0b1000, 0b0001, 0b0000, 0b0000, 0)
         try:
-            await self._ws.send(json.dumps({"type": "input_audio_buffer.commit"}))
+            await self._ws.send(header)
         except Exception:
             pass
 
@@ -95,27 +118,42 @@ class StreamingASRSession:
         return "".join(self._text_parts)
 
     async def _recv_loop(self) -> None:
-        """接收 ASR 结果。"""
+        """接收识别结果。"""
         try:
             async for raw in self._ws:
-                try:
-                    event = json.loads(raw)
-                except json.JSONDecodeError:
+                if isinstance(raw, str):
                     continue
+                if len(raw) < 8:
+                    continue
+                # 解析响应头
+                msg_type = (raw[0] >> 4) & 0x0F
+                flags = raw[0] & 0x0F
+                compression = raw[1] & 0x0F
+                payload_size = ((raw[6] & 0xFF) << 8) | (raw[7] & 0xFF)
+                payload = raw[8:8 + payload_size]
 
-                etype = event.get("type", "")
-                if etype == "conversation.item.input_audio_transcription.completed":
-                    transcript = event.get("transcript", "")
-                    if transcript:
-                        self._text_parts.append(transcript)
-                        if self._on_text:
-                            self._on_text(transcript, is_final=True)
-                elif etype == "conversation.item.input_audio_transcription.result":
-                    transcript = event.get("transcript", "")
-                    if transcript and transcript not in self._seen:
-                        self._seen.add(transcript)
-                        if self._on_text:
-                            self._on_text(transcript, is_final=False)
+                if msg_type == 0b1011:  # Full Server Response
+                    if compression == 0b0001:
+                        payload = gzip.decompress(payload)
+                    try:
+                        response = json.loads(payload.decode("utf-8"))
+                    except Exception:
+                        continue
+                    text = response.get("text", "")
+                    if text:
+                        if response.get("definite", False):
+                            self._text_parts.append(text)
+                            if self._on_text:
+                                self._on_text(text, is_final=True)
+                        else:
+                            # 中间结果，只回调新出现的文本
+                            if text not in self._text_parts:
+                                if self._on_text:
+                                    self._on_text(text, is_final=False)
+
+                    # flags=0b0011 表示所有结果返回完毕
+                    if flags == 0b0011:
+                        return
         except websockets.exceptions.ConnectionClosed:
             pass
         except Exception as exc:
