@@ -1,7 +1,5 @@
 - **[07-09 11:04]** Android 10 引入的隐私保护机制——App 可以通过 `allowAudioPlaybackCapture="false"` 拒绝音频被采集。腾讯会议/飞书等企业通讯 App 大概率设了 false，不是我们能控制的
 - **[07-09 17:40]** AudioRecord 初始化失败直接崩的根因已定位——原生层缺少运行时权限检查和异常保护
-- **[07-14 10:20]** [队友] 酱瓜 完成「记得记得，之前光顾着对端口对路径，语气干得跟接口文档似的 😂」
-
 - **[07-14 10:21]** [归档] 2. 🛑 卡壳就停——技术走不通立刻群里抛问题等 boss 判断，别换任务绕道。这条已写入铁律 #14
 
 - **[07-14 11:21]** [归档] boss 你打包测试的节奏不变，小柯做好可视化界面你就能直观看到采集状态了 🫡
@@ -59,3 +57,10 @@
 - **[07-21 16:39]** [队友] 酱瓜 完成「接口全绿，随时接客 ✅」
 
 - **[07-21 16:40]** [队友] 小吴 完成「确认了——小柯说的没错：」
+
+- **[07-21 16:49]** [压缩锚点] 📁 文件: app/audio-capture、app/build.gradle、components/StreamingControl.tsx、hooks/useAudioStreamer.ts、src/App.tsx、src/index.flow.js、workspace/fe/poc-audio-capture、workspace/fe/poc-audio-capture/android、workspace/fe/rn-app-shell、workspace/fe/rn-app-shell/android、workspace/fe/rn-app-shell/android/app/build.gradle、workspace/fe/rn-app-shell/android/app/src/ma
+🖥 环境: 已就绪
+✍️ 决策: 入测试音频 + 酱瓜确认接口已就绪 → 就可以联调了。**
+
+@酱瓜 你那边接收音频的接口状态怎么样了？；）：之前 API 契约定了吗？如果接口已就绪，音频传上来就能存
+3. **测试音频**：你需要提供的是真实场景的音频文件（比如几段不同长度/
