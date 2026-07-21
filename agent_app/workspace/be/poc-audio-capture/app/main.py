@@ -3,6 +3,7 @@ import logging
 from fastapi import FastAPI
 
 from app.routers.audio import router as audio_router
+from app.routers.stt import router as stt_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -12,6 +13,7 @@ logging.basicConfig(
 app = FastAPI(title="POC Audio Capture — BE", version="0.3.0")
 
 app.include_router(audio_router, prefix="/api")
+app.include_router(stt_router, prefix="/api")
 
 
 @app.get("/health")
