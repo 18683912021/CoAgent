@@ -53,6 +53,7 @@ class StreamingASRSession:
         self._ws: "websockets.WebSocketClientProtocol | None" = None
         self._recv_task: "asyncio.Task | None" = None
         self._running = False
+        self._fed_once = False
         self._text_parts: list[str] = []
         self._connect_id = str(uuid.uuid4())
 
@@ -87,7 +88,11 @@ class StreamingASRSession:
     async def feed(self, pcm: bytes) -> None:
         """喂入 PCM 原始数据，不压缩直接发送。"""
         if not self._ws or not self._running:
+            logger.warning("ASR feed 跳过: ws=%s running=%s", self._ws is not None, self._running)
             return
+        if not self._fed_once:
+            logger.info("ASR 首帧 PCM: %d 字节", len(pcm))
+            self._fed_once = True
         header = _build_header(0b1000, 0b0000, 0b0000, 0b0000, len(pcm))
         await self._ws.send(header + pcm)
 
@@ -119,12 +124,16 @@ class StreamingASRSession:
 
     async def _recv_loop(self) -> None:
         """接收识别结果。"""
+        logger.info("ASR 接收循环已启动")
         try:
             async for raw in self._ws:
                 if isinstance(raw, str):
+                    logger.debug("ASR 收到文本: %s", raw[:100])
                     continue
                 if len(raw) < 8:
+                    logger.debug("ASR 收到短帧: %d 字节", len(raw))
                     continue
+                logger.debug("ASR 收到二进制帧: %d 字节", len(raw))
                 # 解析响应头
                 msg_type = (raw[0] >> 4) & 0x0F
                 flags = raw[0] & 0x0F
