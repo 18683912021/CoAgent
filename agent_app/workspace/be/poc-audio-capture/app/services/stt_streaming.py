@@ -30,11 +30,11 @@ def _debug_dump_response(raw: bytes) -> None:
     """解码服务端响应帧内容（调试用）。"""
     if len(raw) < 8:
         return
-    msg_type = (raw[0] >> 4) & 0x0F
-    flags = raw[0] & 0x0F
-    ser = (raw[1] >> 4) & 0x0F
-    comp = raw[1] & 0x0F
-    size = ((raw[6] & 0xFF) << 8) | (raw[7] & 0xFF)
+    msg_type = (raw[1] >> 4) & 0x0F
+    flags = raw[1] & 0x0F
+    ser = (raw[2] >> 4) & 0x0F
+    comp = raw[2] & 0x0F
+    size = ((raw[4] & 0xFF) << 24) | ((raw[5] & 0xFF) << 16) | ((raw[6] & 0xFF) << 8) | (raw[7] & 0xFF)
     logger.info("  响应头: type=%s flags=%s ser=%s comp=%s payload=%d",
                 bin(msg_type), bin(flags), ser, comp, size)
     try:
@@ -48,11 +48,24 @@ def _debug_dump_response(raw: bytes) -> None:
 
 
 def _build_header(message_type: int, flags: int, serialization: int, compression: int, payload_size: int) -> bytes:
-    """8 字节二进制协议头。"""
+    """8 字节二进制协议头。
+
+    字节布局（与火山官方文档一致）：
+    [0] 版本(4bit,=1) + 头大小(4bit,=2 表示 8 字节)
+    [1] 消息类型(4bit) + 标志(4bit)
+    [2] 序列化(4bit) + 压缩(4bit)
+    [3] 保留
+    [4-7] payload 长度 (uint32 big-endian)
+    """
+    PROTOCOL_VERSION = 1
+    HEADER_SIZE_UNITS = 2  # 8 bytes / 4
     header = bytearray(8)
-    header[0] = (message_type << 4) | flags
-    header[1] = (serialization << 4) | compression
-    header[2:6] = b'\x00\x00\x00\x00'
+    header[0] = (PROTOCOL_VERSION << 4) | HEADER_SIZE_UNITS
+    header[1] = (message_type << 4) | flags
+    header[2] = (serialization << 4) | compression
+    header[3] = 0x00
+    header[4] = (payload_size >> 24) & 0xFF
+    header[5] = (payload_size >> 16) & 0xFF
     header[6] = (payload_size >> 8) & 0xFF
     header[7] = payload_size & 0xFF
     return bytes(header)
@@ -160,11 +173,11 @@ class StreamingASRSession:
                 logger.info("ASR 收到二进制帧: %d 字节", len(raw))
                 # 解码看看是什么
                 _debug_dump_response(raw)
-                # 解析响应头
-                msg_type = (raw[0] >> 4) & 0x0F
-                flags = raw[0] & 0x0F
-                compression = raw[1] & 0x0F
-                payload_size = ((raw[6] & 0xFF) << 8) | (raw[7] & 0xFF)
+                # 解析响应头（与 _build_header 格式一致）
+                msg_type = (raw[1] >> 4) & 0x0F
+                flags = raw[1] & 0x0F
+                compression = raw[2] & 0x0F
+                payload_size = ((raw[4] & 0xFF) << 24) | ((raw[5] & 0xFF) << 16) | ((raw[6] & 0xFF) << 8) | (raw[7] & 0xFF)
                 payload = raw[8:8 + payload_size]
 
                 if msg_type == 0b1011:  # Full Server Response
