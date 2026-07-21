@@ -159,23 +159,28 @@ async def transcribe_pcm(
     access_key_id: str,
     secret_access_key: str,
 ) -> TranscribeResult:
-    """将 16kHz 16bit mono PCM 文件送火山引擎 ASR，返回识别文本。"""
+    """将 16kHz 16bit mono PCM 文件送火山引擎 ASR，返回识别文本。
+
+    流程：
+    1. 建立 WebSocket + 发送初始化配置
+    2. 整个 PCM 文件分片发送（200ms/包），最后一帧带结束标志
+    3. 接收所有识别结果，拼接为完整文本
+    """
     token = generate_token(access_key_id, secret_access_key)
     connect_id = str(uuid.uuid4())
-
-    headers = {
-        "X-Api-App-Key": app_id,
-        "X-Api-Access-Key": token,
-        "X-Api-Resource-Id": RESOURCE_ID,
-        "X-Api-Connect-Id": connect_id,
-    }
-
-    all_text: list[str] = []
     started_at = time.monotonic()
 
-    async with websockets.connect(WS_ENDPOINT, additional_headers=headers) as ws:
-        # 1. 发送初始化配置
-        config = {
+    async with websockets.connect(
+        WS_ENDPOINT,
+        additional_headers={
+            "X-Api-App-Key": app_id,
+            "X-Api-Access-Key": token,
+            "X-Api-Resource-Id": RESOURCE_ID,
+            "X-Api-Connect-Id": connect_id,
+        },
+    ) as ws:
+        # ── 发送初始化配置 ──
+        await ws.send(encode_client_request({
             "audio_format": "pcm",
             "sample_rate": SAMPLE_RATE,
             "bits": BITS_PER_SAMPLE,
@@ -184,76 +189,57 @@ async def transcribe_pcm(
             "model_name": "bigmodel",
             "enable_punctuation": True,
             "enable_itn": True,
-        }
-        await ws.send(encode_client_request(config))
+        }))
 
-        # 2. 流式发送 PCM
+        # ── 流式发送 PCM ──
         chunk_bytes = SAMPLE_RATE * (BITS_PER_SAMPLE // 8) * CHANNELS * CHUNK_MS // 1000
+        file_size = Path(pcm_path).stat().st_size
+        sent = 0
         with open(pcm_path, "rb") as f:
-            total_read = 0
             while True:
                 chunk = f.read(chunk_bytes)
                 if not chunk:
                     break
-                total_read += len(chunk)
-                is_last = len(chunk) < chunk_bytes or _peek(f) == 0
+                sent += len(chunk)
+                is_last = sent >= file_size
                 await ws.send(encode_audio_frame(chunk, is_last=is_last))
-                # 收取结果
-                try:
-                    raw = await ws.recv()
-                    result = decode_server_response(raw)
-                    if result:
-                        text = _extract_text(result)
-                        if text:
-                            all_text.append(text)
-                except Exception:
-                    pass
 
-        # 3. 发最后一帧
-        await ws.send(encode_audio_frame(b"", is_last=True))
+        # 文件为空则发一个空结束帧
+        if sent == 0:
+            await ws.send(encode_audio_frame(b"", is_last=True))
 
-        # 4. 收取剩余结果
+        # ── 接收识别结果 ──
+        all_text: list[str] = []
         try:
             while True:
-                raw = await asyncio_timeout(ws.recv(), timeout=2.0)
+                raw = await asyncio.wait_for(ws.recv(), timeout=3.0)
                 result = decode_server_response(raw)
                 if result:
                     text = _extract_text(result)
                     if text:
                         all_text.append(text)
-        except Exception:
+        except TimeoutError:
+            pass  # 超时 = 服务端没有更多结果了
+        except websockets.exceptions.ConnectionClosed:
             pass
 
-    duration_ms = (time.monotonic() - started_at) * 1000
     full_text = "".join(all_text)
-    logger.info("ASR 完成 | 文本长度=%d | 耗时=%.0fms", len(full_text), duration_ms)
+    duration_ms = (time.monotonic() - started_at) * 1000
+    logger.info("ASR 完成 | 文本=%s | 耗时=%.0fms", full_text[:80], duration_ms)
     return TranscribeResult(text=full_text, duration_ms=duration_ms)
 
 
-def _peek(f) -> int:
-    pos = f.tell()
-    data = f.read(1)
-    f.seek(pos)
-    return len(data)
-
-
 def _extract_text(result: dict) -> str:
+    """从服务端 JSON 响应中提取识别文本。"""
     try:
+        # bigmodel 返回格式: {"payload_msg": {"result": [{"words": [{"text": "..."}]}]}}
         utterances = result.get("payload_msg", {}).get("result", [])
-        texts = []
+        parts = []
         for utterance in utterances:
-            words = utterance.get("words", [])
-            for word in words:
+            for word in utterance.get("words", []):
                 t = word.get("text", "")
                 if t:
-                    texts.append(t)
-        return "".join(texts)
+                    parts.append(t)
+        return "".join(parts)
     except Exception:
         return ""
-
-
-async def asyncio_timeout(coro, timeout: float):
-    """简单超时包装。"""
-    import asyncio
-
-    return await asyncio.wait_for(coro, timeout=timeout)
