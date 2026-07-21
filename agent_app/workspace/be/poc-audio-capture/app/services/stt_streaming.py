@@ -26,6 +26,27 @@ CHUNK_BYTES = 320  # 20ms @ 16kHz 16bit mono = 640 bytes? No: 16000*2*1*20/1000 
 # 官方示例用 320 字节，按 16K/16bit 算是 10ms，先照抄
 
 
+def _debug_dump_response(raw: bytes) -> None:
+    """解码服务端响应帧内容（调试用）。"""
+    if len(raw) < 8:
+        return
+    msg_type = (raw[0] >> 4) & 0x0F
+    flags = raw[0] & 0x0F
+    ser = (raw[1] >> 4) & 0x0F
+    comp = raw[1] & 0x0F
+    size = ((raw[6] & 0xFF) << 8) | (raw[7] & 0xFF)
+    logger.info("  响应头: type=%s flags=%s ser=%s comp=%s payload=%d",
+                bin(msg_type), bin(flags), ser, comp, size)
+    try:
+        payload = raw[8:8 + size]
+        if comp == 1:
+            payload = gzip.decompress(payload)
+        text = payload.decode("utf-8", errors="replace")
+        logger.info("  响应体: %s", text[:500])
+    except Exception as e:
+        logger.info("  响应体解码失败: %s", e)
+
+
 def _build_header(message_type: int, flags: int, serialization: int, compression: int, payload_size: int) -> bytes:
     """8 字节二进制协议头。"""
     header = bytearray(8)
@@ -88,13 +109,16 @@ class StreamingASRSession:
     async def feed(self, pcm: bytes) -> None:
         """喂入 PCM 原始数据，不压缩直接发送。"""
         if not self._ws or not self._running:
-            logger.warning("ASR feed 跳过: ws=%s running=%s", self._ws is not None, self._running)
             return
         if not self._fed_once:
             logger.info("ASR 首帧 PCM: %d 字节", len(pcm))
             self._fed_once = True
-        header = _build_header(0b1000, 0b0000, 0b0000, 0b0000, len(pcm))
-        await self._ws.send(header + pcm)
+        try:
+            header = _build_header(0b1000, 0b0000, 0b0000, 0b0000, len(pcm))
+            await self._ws.send(header + pcm)
+        except websockets.exceptions.ConnectionClosed:
+            logger.warning("ASR WebSocket 已断开，停止推流")
+            self._running = False
 
     async def finish(self) -> str:
         """发送结束包，等待最终结果。"""
@@ -131,9 +155,11 @@ class StreamingASRSession:
                     logger.debug("ASR 收到文本: %s", raw[:100])
                     continue
                 if len(raw) < 8:
-                    logger.debug("ASR 收到短帧: %d 字节", len(raw))
+                    logger.info("ASR 收到短帧: %d 字节, hex=%s", len(raw), raw.hex())
                     continue
-                logger.debug("ASR 收到二进制帧: %d 字节", len(raw))
+                logger.info("ASR 收到二进制帧: %d 字节", len(raw))
+                # 解码看看是什么
+                _debug_dump_response(raw)
                 # 解析响应头
                 msg_type = (raw[0] >> 4) & 0x0F
                 flags = raw[0] & 0x0F
