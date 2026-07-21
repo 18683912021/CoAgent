@@ -204,7 +204,7 @@ export function useAudioCaptureController() {
             code: 'E_PROJECTION_DENIED',
             stage: 'consent',
             recoverable: true,
-            message: 'System audio permission was not granted.',
+            message: '系统音频权限未获得授权。',
           },
         });
       }
@@ -223,7 +223,7 @@ export function useAudioCaptureController() {
         throw createError(
           'E_PROJECTION_REQUIRED',
           'consent',
-          'Authorize system audio before starting capture.',
+          '开始采集前请先授权系统音频。',
         );
       }
       operationCounter.current += 1;
@@ -342,7 +342,7 @@ async function requestRuntimePermissions(): Promise<void> {
     throw createError(
       'E_RECORD_PERMISSION',
       'permission',
-      'Microphone permission is required for audio capture.',
+      '麦克风权限是音频采集的必要条件。',
     );
   }
 

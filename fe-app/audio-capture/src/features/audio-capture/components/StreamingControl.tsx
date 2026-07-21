@@ -26,7 +26,7 @@ export function StreamingControl({
   return (
     <View style={styles.card}>
       <View style={styles.headingRow}>
-        <Text style={styles.title}>WebSocket streaming</Text>
+        <Text style={styles.title}>WebSocket 推流</Text>
         <Text style={[styles.badge, connected ? styles.ready : styles.offline]}>{state}</Text>
       </View>
       <TextInput
@@ -38,23 +38,23 @@ export function StreamingControl({
         autoCorrect={false}
         keyboardType="url"
         placeholder="wss://host/api/ws/audio/stream"
-        accessibilityLabel="WebSocket URL"
+        accessibilityLabel="WebSocket 地址"
       />
       <TouchableOpacity
         accessibilityRole="button"
         style={[styles.button, connected ? styles.disconnect : styles.connect, disabled && styles.disabled]}
         disabled={disabled}
         onPress={connected ? onDisconnect : onConnect}>
-        <Text style={styles.buttonText}>{connected ? 'Disconnect' : 'Connect'}</Text>
+        <Text style={styles.buttonText}>{connected ? '断开' : '连接'}</Text>
       </TouchableOpacity>
       {message ? <Text style={styles.message}>{message}</Text> : null}
       <View style={styles.statsGrid}>
-        <Stat label="ACK" value={formatBytes(stats.acknowledgedBytes)} />
-        <Stat label="Queued" value={formatBytes(stats.queuedBytes)} />
-        <Stat label="Frames" value={String(stats.realtimeFrames)} />
-        <Stat label="Dropped" value={String(stats.droppedFrames)} />
-        <Stat label="Backfill" value={formatBytes(stats.backfillBytes)} />
-        <Stat label="Transport" value={formatBytes(stats.transportBytes)} />
+        <Stat label="已确认" value={formatBytes(stats.acknowledgedBytes)} />
+        <Stat label="排队中" value={formatBytes(stats.queuedBytes)} />
+        <Stat label="帧数" value={String(stats.realtimeFrames)} />
+        <Stat label="丢弃" value={String(stats.droppedFrames)} />
+        <Stat label="回传" value={formatBytes(stats.backfillBytes)} />
+        <Stat label="传输" value={formatBytes(stats.transportBytes)} />
       </View>
     </View>
   );

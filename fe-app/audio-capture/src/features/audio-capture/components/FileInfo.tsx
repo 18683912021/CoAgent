@@ -7,7 +7,7 @@ export function FileInfo({track, onShare}: {track: TrackOutput; onShare(kind: 'p
   return (
     <View style={styles.card}>
       <View style={styles.header}>
-        <Text style={styles.title}>{track.source.toUpperCase()} output</Text>
+        <Text style={styles.title}>{track.source.toUpperCase()} 输出</Text>
         <Text style={styles.duration}>{(track.durationMs / 1000).toFixed(1)}s</Text>
       </View>
       <Text style={styles.meta}>
@@ -17,10 +17,10 @@ export function FileInfo({track, onShare}: {track: TrackOutput; onShare(kind: 'p
       <Text style={styles.hash} numberOfLines={1}>SHA-256 {track.pcmSha256}</Text>
       <View style={styles.actions}>
         <TouchableOpacity style={styles.action} onPress={() => onShare('wav')} accessibilityRole="button">
-          <Text style={styles.actionText}>Share WAV</Text>
+          <Text style={styles.actionText}>分享 WAV</Text>
         </TouchableOpacity>
         <TouchableOpacity style={styles.actionSecondary} onPress={() => onShare('pcm')} accessibilityRole="button">
-          <Text style={styles.actionSecondaryText}>Share PCM</Text>
+          <Text style={styles.actionSecondaryText}>分享 PCM</Text>
         </TouchableOpacity>
       </View>
     </View>

@@ -23,7 +23,7 @@ export function Timer({startedAtUtc, active}: {startedAtUtc: string | null; acti
   const seconds = totalSeconds % 60;
 
   return (
-    <Text style={styles.text} accessibilityLabel={`Capture time ${hours} hours ${minutes} minutes ${seconds} seconds`}>
+    <Text style={styles.text} accessibilityLabel={`采集时长 ${hours} 小时 ${minutes} 分钟 ${seconds} 秒`}>
       {String(hours).padStart(2, '0')}:{String(minutes).padStart(2, '0')}:{String(seconds).padStart(2, '0')}
     </Text>
   );

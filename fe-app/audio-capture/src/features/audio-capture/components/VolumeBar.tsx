@@ -4,7 +4,7 @@ import {StyleSheet, Text, View} from 'react-native';
 export function VolumeBar({label, level, color}: {label: string; level: number; color: string}) {
   const percentage = Math.round(Math.max(0, Math.min(1, level)) * 100);
   return (
-    <View style={styles.container} accessible accessibilityLabel={`${label} level ${percentage} percent`}>
+    <View style={styles.container} accessible accessibilityLabel={`${label} 电平 ${percentage}%`}>
       <View style={styles.header}>
         <Text style={styles.label}>{label}</Text>
         <Text style={styles.value}>{percentage}%</Text>

@@ -20,9 +20,9 @@ import {VolumeBar} from './components/VolumeBar';
 import {useAudioCaptureController} from './hooks/useAudioCaptureController';
 
 const SOURCES: Array<{key: CaptureSource; label: string; subtitle: string}> = [
-  {key: 'mic', label: 'Microphone', subtitle: 'Device microphone'},
-  {key: 'system', label: 'System', subtitle: 'Playback capture'},
-  {key: 'both', label: 'Both', subtitle: 'Independent dual tracks'},
+  {key: 'mic', label: '麦克风', subtitle: '设备麦克风'},
+  {key: 'system', label: '系统音频', subtitle: '播放采集'},
+  {key: 'both', label: '双轨采集', subtitle: '独立双轨'},
 ];
 
 export default function AudioCaptureScreen(): React.JSX.Element {
@@ -49,11 +49,11 @@ export default function AudioCaptureScreen(): React.JSX.Element {
   const heading = dark ? '#f8fafc' : '#0f172a';
 
   const statusSummary = useMemo(() => {
-    if (!state.capabilities) {return 'Checking Android audio capabilities…';}
+    if (!state.capabilities) {return '正在检查 Android 音频能力…';}
     if (systemUnavailable) {
-      return `Android API ${state.capabilities.apiLevel}: microphone only. System audio requires API 29+.`;
+      return `Android API ${state.capabilities.apiLevel}：仅支持麦克风。系统音频需要 API 29+。`;
     }
-    return `Android API ${state.capabilities.apiLevel}: MIC, SYSTEM and BOTH are available.`;
+    return `Android API ${state.capabilities.apiLevel}：麦克风、系统音频、双轨采集均可用。`;
   }, [state.capabilities, systemUnavailable]);
 
   return (
@@ -64,10 +64,10 @@ export default function AudioCaptureScreen(): React.JSX.Element {
       />
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         <View style={styles.hero}>
-          <Text style={[styles.eyebrow, dark ? styles.eyebrowDark : styles.eyebrowLight]}>RN CLI · Android native</Text>
-          <Text style={[styles.title, {color: heading}]}>Audio Capture Lab</Text>
+          <Text style={[styles.eyebrow, dark ? styles.eyebrowDark : styles.eyebrowLight]}>RN CLI · Android 原生</Text>
+          <Text style={[styles.title, {color: heading}]}>音频采集实验室</Text>
           <Text style={[styles.subtitle, dark ? styles.secondaryDark : styles.secondaryLight]}>
-            Capture microphone and Android playback audio as independent 16 kHz mono PCM tracks.
+            以独立 16 kHz 单声道 PCM 轨道采集麦克风和 Android 系统播放音频。
           </Text>
         </View>
 
@@ -79,7 +79,7 @@ export default function AudioCaptureScreen(): React.JSX.Element {
           <Text style={styles.supportText}>{statusSummary}</Text>
         </View>
 
-        <Section title="Capture source">
+        <Section title="采集来源">
           <View style={styles.sourceGrid}>
             {SOURCES.map(item => {
               const selected = state.source === item.key;
@@ -119,43 +119,43 @@ export default function AudioCaptureScreen(): React.JSX.Element {
 
           {controller.needsProjection && !state.projectionGranted ? (
             <View style={styles.authorizationBox}>
-              <Text style={styles.authorizationTitle}>System authorization required</Text>
+              <Text style={styles.authorizationTitle}>需要系统音频授权</Text>
               <Text style={styles.authorizationText}>
-                Android will show its screen-capture consent dialog. A fresh authorization is consumed by each SYSTEM/BOTH session.
+                Android 将弹出屏幕采集授权对话框。每次 SYSTEM/BOTH 会话都需要新的授权。
               </Text>
               <TouchableOpacity
                 accessibilityRole="button"
                 style={[styles.authorizationButton, actionDisabled && styles.disabled]}
                 disabled={actionDisabled || !controller.canUseSystem}
                 onPress={controller.authorizeSystemAudio}>
-                <Text style={styles.authorizationButtonText}>Authorize system audio</Text>
+                <Text style={styles.authorizationButtonText}>授权系统音频</Text>
               </TouchableOpacity>
             </View>
           ) : controller.needsProjection ? (
-            <Text style={styles.authorizedText}>✓ Authorization is ready for the next session</Text>
+            <Text style={styles.authorizedText}>✓ 授权已就绪，可用于下一次采集</Text>
           ) : null}
         </Section>
 
-        <Section title="Live levels">
-          <VolumeBar label="Microphone" level={state.levels.mic} color="#f97316" />
+        <Section title="实时电平">
+          <VolumeBar label="麦克风" level={state.levels.mic} color="#f97316" />
           <AudioVisualizer level={state.levels.mic} color="#f97316" active={active && state.source !== 'system'} />
           {state.source !== 'mic' ? (
             <>
-              <VolumeBar label="System audio" level={state.levels.system} color="#2563eb" />
+              <VolumeBar label="系统音频" level={state.levels.system} color="#2563eb" />
               <AudioVisualizer level={state.levels.system} color="#2563eb" active={active} />
             </>
           ) : null}
         </Section>
 
-        <Section title="Canonical output">
+        <Section title="规范化输出">
           <View style={styles.parameterGrid}>
-            <Parameter label="Sample rate" value="16,000 Hz" />
-            <Parameter label="Encoding" value="PCM 16-bit LE" />
-            <Parameter label="Channels" value="Mono per track" />
-            <Parameter label="Network chunk" value="40 ms / 1280 B" />
+            <Parameter label="采样率" value="16,000 Hz" />
+            <Parameter label="编码" value="PCM 16-bit LE" />
+            <Parameter label="声道" value="每轨单声道" />
+            <Parameter label="网络分片" value="40 ms / 1280 B" />
           </View>
           <Text style={styles.parameterNote}>
-            Unsupported device formats are normalized natively before streaming and file output. BOTH never mixes the two tracks.
+            设备格式不规范时由原生层规范化后再推流和写入文件。双轨采集不会混音。
           </Text>
         </Section>
 
@@ -175,19 +175,19 @@ export default function AudioCaptureScreen(): React.JSX.Element {
             <View style={styles.errorHeader}>
               <Text style={styles.errorTitle}>{state.error.code}</Text>
               <TouchableOpacity onPress={controller.clearError} accessibilityRole="button">
-                <Text style={styles.errorDismiss}>Dismiss</Text>
+                <Text style={styles.errorDismiss}>关闭</Text>
               </TouchableOpacity>
             </View>
             <Text style={styles.errorMessage}>{state.error.message}</Text>
             <Text style={styles.errorMeta}>
-              Stage: {state.error.stage}
-              {state.error.source ? ` · Source: ${state.error.source}` : ''}
+              阶段：{state.error.stage}
+              {state.error.source ? ` · 来源：${state.error.source}` : ''}
             </Text>
           </View>
         ) : null}
 
         {outputTracks.length > 0 ? (
-          <Section title="Captured files">
+          <Section title="已采集文件">
             {outputTracks.map(track => (
               <FileInfo
                 key={track.source}
@@ -200,7 +200,7 @@ export default function AudioCaptureScreen(): React.JSX.Element {
                 accessibilityRole="button"
                 style={styles.retryButton}
                 onPress={controller.retryBackfill}>
-                <Text style={styles.retryButtonText}>Retry complete-file backfill</Text>
+                <Text style={styles.retryButtonText}>重试完整文件回传</Text>
               </TouchableOpacity>
             ) : null}
           </Section>
@@ -218,19 +218,19 @@ export default function AudioCaptureScreen(): React.JSX.Element {
           ]}>
           <Text style={styles.primaryButtonText}>
             {state.captureState === 'preparing'
-              ? 'Preparing…'
+              ? '准备中…'
               : state.captureState === 'stopping'
-                ? 'Stopping…'
+                ? '停止中…'
                 : state.captureState === 'finalizing'
-                  ? 'Finalizing files…'
+                  ? '正在完成文件…'
                   : active
-                    ? 'Stop capture'
-                    : 'Start capture'}
+                    ? '停止采集'
+                    : '开始采集'}
           </Text>
         </TouchableOpacity>
 
         <Text style={[styles.footnote, dark ? styles.footnoteDark : styles.footnoteLight]}>
-          System playback capture depends on the source app allowing AudioPlaybackCapture. DRM, calls and protected media may remain silent by Android policy.
+          系统播放采集取决于源应用是否允许 AudioPlaybackCapture。受 DRM、通话和受保护媒体可能因 Android 策略而静音。
         </Text>
       </ScrollView>
     </SafeAreaView>

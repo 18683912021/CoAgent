@@ -14,13 +14,13 @@ const COLORS: Record<CaptureState, string> = {
 };
 
 const LABELS: Record<CaptureState, string> = {
-  idle: 'Stopped',
-  preparing: 'Preparing',
-  capturing: 'Capturing',
-  stopping: 'Stopping',
-  finalizing: 'Finalizing files',
-  completed: 'Completed',
-  error: 'Error',
+  idle: '已停止',
+  preparing: '准备中',
+  capturing: '采集中',
+  stopping: '停止中',
+  finalizing: '完成文件中',
+  completed: '已完成',
+  error: '错误',
 };
 
 export function StatusLight({state}: {state: CaptureState}) {
