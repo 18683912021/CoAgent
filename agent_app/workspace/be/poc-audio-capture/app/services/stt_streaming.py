@@ -34,7 +34,7 @@ def _debug_dump_response(raw: bytes) -> None:
     flags = raw[1] & 0x0F
     ser = (raw[2] >> 4) & 0x0F
     comp = raw[2] & 0x0F
-    size = ((raw[4] & 0xFF) << 24) | ((raw[5] & 0xFF) << 16) | ((raw[6] & 0xFF) << 8) | (raw[7] & 0xFF)
+    size = ((raw[6] & 0xFF) << 8) | (raw[7] & 0xFF)
     logger.info("  响应头: type=%s flags=%s ser=%s comp=%s payload=%d",
                 bin(msg_type), bin(flags), ser, comp, size)
     try:
@@ -112,7 +112,7 @@ class StreamingASRSession:
             "enable_punctuation": True,
         }
         payload = _gzip(json.dumps(config).encode("utf-8"))
-        header = _build_header(0b1001, 0b0000, 0b0001, 0b0001, len(payload))
+        header = _build_header(0b0001, 0b0000, 0b0001, 0b0001, len(payload))
         await self._ws.send(header + payload)
 
         self._running = True
@@ -127,7 +127,7 @@ class StreamingASRSession:
             logger.info("ASR 首帧 PCM: %d 字节", len(pcm))
             self._fed_once = True
         try:
-            header = _build_header(0b1000, 0b0000, 0b0000, 0b0000, len(pcm))
+            header = _build_header(0b0010, 0b0000, 0b0000, 0b0000, len(pcm))
             await self._ws.send(header + pcm)
         except websockets.exceptions.ConnectionClosed:
             logger.warning("ASR WebSocket 已断开，停止推流")
@@ -140,7 +140,7 @@ class StreamingASRSession:
         self._running = False
 
         # 发送最后一包（flags=0b0001 表示结束）
-        header = _build_header(0b1000, 0b0001, 0b0000, 0b0000, 0)
+        header = _build_header(0b0010, 0b0001, 0b0000, 0b0000, 0)
         try:
             await self._ws.send(header)
         except Exception:
@@ -177,10 +177,10 @@ class StreamingASRSession:
                 msg_type = (raw[1] >> 4) & 0x0F
                 flags = raw[1] & 0x0F
                 compression = raw[2] & 0x0F
-                payload_size = ((raw[4] & 0xFF) << 24) | ((raw[5] & 0xFF) << 16) | ((raw[6] & 0xFF) << 8) | (raw[7] & 0xFF)
+                payload_size = ((raw[6] & 0xFF) << 8) | (raw[7] & 0xFF)
                 payload = raw[8:8 + payload_size]
 
-                if msg_type == 0b1011:  # Full Server Response
+                if msg_type in (0b1001, 0b1011):  # Full Server Response
                     if compression == 0b0001:
                         payload = gzip.decompress(payload)
                     try:
