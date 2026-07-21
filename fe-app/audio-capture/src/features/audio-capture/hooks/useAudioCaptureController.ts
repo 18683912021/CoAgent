@@ -42,6 +42,8 @@ interface ControllerState {
   pendingBackfill: boolean;
   error: NativeCaptureError | null;
   streamMessage: string | null;
+  transcription: string;
+  transcriptionFinal: boolean;
 }
 
 type Action =
@@ -54,6 +56,7 @@ type Action =
   | {type: 'streamStats'; value: StreamStats}
   | {type: 'result'; value: CaptureResult}
   | {type: 'error'; value: NativeCaptureError | null}
+  | {type: 'transcription'; text: string; isFinal: boolean}
   | {type: 'snapshot'; value: Partial<ControllerState>};
 
 const INITIAL_STATE: ControllerState = {
@@ -69,6 +72,8 @@ const INITIAL_STATE: ControllerState = {
   pendingBackfill: false,
   error: null,
   streamMessage: null,
+  transcription: '',
+  transcriptionFinal: false,
 };
 
 function reducer(state: ControllerState, action: Action): ControllerState {
@@ -82,6 +87,8 @@ function reducer(state: ControllerState, action: Action): ControllerState {
         projectionGranted: false,
         result: null,
         error: null,
+        transcription: '',
+        transcriptionFinal: false,
       };
     case 'projection':
       return {...state, projectionGranted: action.value, error: null};
@@ -106,6 +113,12 @@ function reducer(state: ControllerState, action: Action): ControllerState {
       };
     case 'error':
       return {...state, error: action.value};
+    case 'transcription':
+      return {
+        ...state,
+        transcription: action.isFinal ? action.text : (state.transcription + action.text),
+        transcriptionFinal: action.isFinal,
+      };
     case 'snapshot':
       return {...state, ...action.value};
     default:
@@ -174,6 +187,9 @@ export function useAudioCaptureController() {
       AudioCapture.onError(value => {
         console.error(`[AudioCapture] ${value.code} (${value.stage})`, value.message);
         dispatch({type: 'error', value});
+      }),
+      AudioCapture.onTranscription(event => {
+        dispatch({type: 'transcription', text: event.text, isFinal: event.isFinal});
       }),
     ];
 

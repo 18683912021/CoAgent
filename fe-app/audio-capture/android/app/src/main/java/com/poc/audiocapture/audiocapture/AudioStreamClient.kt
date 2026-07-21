@@ -21,6 +21,7 @@ class AudioStreamClient {
   interface Listener {
     fun onStreamState(state: StreamState, message: String? = null)
     fun onStreamStats(stats: StreamStats)
+    fun onTranscription(text: String, isFinal: Boolean)
   }
 
   private data class OutboundPacket(val bytes: ByteArray, val droppable: Boolean)
@@ -299,6 +300,13 @@ class AudioStreamClient {
         }
       }
       "error" -> transition(StreamState.DEGRADED, message.optString("message", "Server rejected audio data"))
+      "transcription" -> {
+        val text = message.optString("text", "")
+        val isFinal = message.optBoolean("is_final", false)
+        if (text.isNotEmpty()) {
+          listener?.onTranscription(text, isFinal)
+        }
+      }
     }
   }
 

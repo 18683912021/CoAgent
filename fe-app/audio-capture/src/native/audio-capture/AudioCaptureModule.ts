@@ -17,6 +17,7 @@ import type {
   NativeStreamStateEvent,
   StreamStats,
   TrackSource,
+  TranscriptionEvent,
 } from './AudioCapture.types';
 
 const nativeModule = NativeModules.AudioCapture as
@@ -106,5 +107,9 @@ export const AudioCapture = {
 
   onError(listener: (event: NativeCaptureError) => void) {
     return subscribe('AudioCaptureError', listener);
+  },
+
+  onTranscription(listener: (event: TranscriptionEvent) => void) {
+    return subscribe('AudioTranscription', listener);
   },
 };

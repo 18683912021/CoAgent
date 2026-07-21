@@ -147,6 +147,17 @@ export default function AudioCaptureScreen(): React.JSX.Element {
           ) : null}
         </Section>
 
+        {state.transcription ? (
+          <Section title="实时识别">
+            <Text style={[styles.transcriptionText, state.transcriptionFinal && styles.transcriptionFinal]}>
+              {state.transcription}
+            </Text>
+            {!state.transcriptionFinal && state.streamState === 'ready' ? (
+              <Text style={styles.transcribingHint}>识别中…</Text>
+            ) : null}
+          </Section>
+        ) : null}
+
         <Section title="规范化输出">
           <View style={styles.parameterGrid}>
             <Parameter label="采样率" value="16,000 Hz" />
@@ -298,6 +309,9 @@ const styles = StyleSheet.create({
   errorMeta: {fontSize: 11, color: '#b91c1c'},
   retryButton: {backgroundColor: '#f59e0b', borderRadius: 9, paddingVertical: 10, alignItems: 'center'},
   retryButtonText: {fontWeight: '800', color: '#fff'},
+  transcriptionText: {fontSize: 16, lineHeight: 26, color: '#0f172a'},
+  transcriptionFinal: {fontWeight: '700'},
+  transcribingHint: {fontSize: 12, color: '#f59e0b', marginTop: 4},
   primaryButton: {borderRadius: 15, paddingVertical: 15, alignItems: 'center'},
   startButton: {backgroundColor: '#16a34a'},
   stopButton: {backgroundColor: '#dc2626'},

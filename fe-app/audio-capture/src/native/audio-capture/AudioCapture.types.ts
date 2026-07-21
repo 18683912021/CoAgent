@@ -108,6 +108,11 @@ export interface NativeStreamStateEvent {
   message?: string;
 }
 
+export interface TranscriptionEvent {
+  text: string;
+  isFinal: boolean;
+}
+
 export interface AudioCaptureNativeModule {
   getCapabilities(): Promise<AudioCapabilities>;
   requestProjectionConsent(): Promise<boolean>;

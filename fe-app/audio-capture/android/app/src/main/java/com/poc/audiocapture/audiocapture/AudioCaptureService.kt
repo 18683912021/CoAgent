@@ -44,6 +44,7 @@ class AudioCaptureService : Service(), AudioCaptureEngine.Callback, AudioStreamC
     fun onStreamState(state: StreamState, message: String?)
     fun onStreamStats(stats: StreamStats)
     fun onNativeError(error: CaptureException)
+    fun onTranscription(text: String, isFinal: Boolean)
   }
 
   data class ServiceSnapshot(
@@ -359,6 +360,10 @@ class AudioCaptureService : Service(), AudioCaptureEngine.Callback, AudioStreamC
 
   override fun onStreamStats(stats: StreamStats) {
     listeners.forEach { it.onStreamStats(stats) }
+  }
+
+  override fun onTranscription(text: String, isFinal: Boolean) {
+    listeners.forEach { it.onTranscription(text, isFinal) }
   }
 
   override fun onDestroy() {

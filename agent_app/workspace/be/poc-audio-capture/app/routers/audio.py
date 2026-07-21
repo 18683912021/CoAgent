@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -27,9 +28,16 @@ from app.services.audio_service import (
     V1AudioSession,
     storage_root,
 )
+from app.services.stt_streaming import StreamingASRSession
 
 logger = logging.getLogger("audio")
 router = APIRouter()
+
+# 火山引擎凭据（环境变量）
+_VOLC_APP_ID = os.getenv("VOLC_APP_ID", "")
+_VOLC_AK = os.getenv("VOLC_ACCESS_KEY_ID", "")
+_VOLC_SK = os.getenv("VOLC_SECRET_ACCESS_KEY", "")
+_ASR_READY = bool(_VOLC_APP_ID and _VOLC_AK and _VOLC_SK)
 
 
 @router.websocket("/ws/audio/stream")
@@ -40,6 +48,7 @@ async def audio_stream(ws: WebSocket):
     legacy_session: AudioSession | None = None
     legacy_validator: PCMValidator | None = None
     v1_session: V1AudioSession | None = None
+    asr_session: StreamingASRSession | None = None
 
     try:
         first_message = await ws.receive()
@@ -102,6 +111,9 @@ async def audio_stream(ws: WebSocket):
                     track = v1_session.require_track(header.source)
                     ack = track.write_packet(header, pcm_payload)
                     await ws.send_json(ack.model_dump())
+                    # 实时 ASR：把 PCM 喂给火山引擎
+                    if asr_session is not None:
+                        await asr_session.feed(pcm_payload)
                 except ProtocolError as error:
                     await send_error(ws, error.code, str(error))
 
@@ -111,6 +123,11 @@ async def audio_stream(ws: WebSocket):
         logger.exception("音频 WebSocket 异常")
         await safe_send_error(ws, "E_WEBSOCKET", str(error))
     finally:
+        if asr_session is not None:
+            try:
+                await asr_session.finish()
+            except Exception:
+                pass
         if v1_session is not None:
             v1_session.close_incomplete()
             logger.info(
@@ -177,6 +194,16 @@ async def handle_control_message(
             storage_root=storage_root(),
             started_at=message.started_at or datetime.now(timezone.utc),
         )
+        # 如果有 ASR 凭据，自动启动实时语音识别
+        if _ASR_READY:
+            asr_session = StreamingASRSession(
+                app_id=_VOLC_APP_ID,
+                access_key_id=_VOLC_AK,
+                secret_access_key=_VOLC_SK,
+                on_text=lambda text, is_final: _enqueue_asr_result(text, is_final, ws),
+            )
+            await asr_session.connect()
+            logger.info("实时 ASR 已随会话启动")
         await ws.send_json(
             {
                 "type": "session_ready",
@@ -254,4 +281,25 @@ async def safe_send_error(ws: WebSocket, code: str, message: str) -> None:
     try:
         await send_error(ws, code, message)
     except Exception:
+        pass
+
+
+def _enqueue_asr_result(text: str, is_final: bool, ws: WebSocket) -> None:
+    """将 ASR 识别结果异步发送到客户端。"""
+    import asyncio
+
+    async def send():
+        try:
+            await ws.send_json({
+                "type": "transcription",
+                "text": text,
+                "is_final": is_final,
+            })
+        except Exception:
+            pass
+
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(send())
+    except RuntimeError:
         pass

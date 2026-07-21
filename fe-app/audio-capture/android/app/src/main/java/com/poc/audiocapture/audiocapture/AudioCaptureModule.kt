@@ -346,6 +346,13 @@ class AudioCaptureModule(
     emit(EVENT_NATIVE_ERROR, errorToMap(error))
   }
 
+  override fun onTranscription(text: String, isFinal: Boolean) {
+    emit(EVENT_TRANSCRIPTION, Arguments.createMap().apply {
+      putString("text", text)
+      putBoolean("isFinal", isFinal)
+    })
+  }
+
   private fun ensureServiceBound() {
     if (serviceBound || bindingInProgress) return
     bindingInProgress = true
@@ -518,6 +525,7 @@ class AudioCaptureModule(
     const val EVENT_STREAM_STATE = "AudioStreamState"
     const val EVENT_STREAM_STATS = "AudioStreamStats"
     const val EVENT_NATIVE_ERROR = "AudioCaptureError"
+    const val EVENT_TRANSCRIPTION = "AudioTranscription"
     private const val PROJECTION_REQUEST_CODE = 9201
   }
 }
