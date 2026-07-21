@@ -142,11 +142,12 @@ class StreamingASRSession:
                     text = response.get("text", "")
                     if text:
                         if response.get("definite", False):
+                            logger.info("ASR 最终: %s", text)
                             self._text_parts.append(text)
                             if self._on_text:
                                 self._on_text(text, is_final=True)
                         else:
-                            # 中间结果，只回调新出现的文本
+                            logger.info("ASR 中间: %s", text)
                             if text not in self._text_parts:
                                 if self._on_text:
                                     self._on_text(text, is_final=False)

@@ -193,13 +193,18 @@ async def handle_control_message(
             started_at=message.started_at or datetime.now(timezone.utc),
         )
         # 如果有 ASR 凭据，自动启动实时语音识别
+        # ASR 失败不影响主流程——音频照样采集和存储
         if _ASR_READY:
-            asr_session = StreamingASRSession(
-                api_key=_VOLC_API_KEY,
-                on_text=lambda text, is_final: _enqueue_asr_result(text, is_final, ws),
-            )
-            await asr_session.connect()
-            logger.info("实时 ASR 已随会话启动")
+            try:
+                asr_session = StreamingASRSession(
+                    api_key=_VOLC_API_KEY,
+                    on_text=lambda text, is_final: _enqueue_asr_result(text, is_final, ws),
+                )
+                await asr_session.connect()
+                logger.info("实时 ASR 已随会话启动")
+            except Exception:
+                logger.exception("ASR 连接失败，本次会话无实时识别")
+                asr_session = None
         await ws.send_json(
             {
                 "type": "session_ready",
