@@ -33,11 +33,9 @@ from app.services.stt_streaming import StreamingASRSession
 logger = logging.getLogger("audio")
 router = APIRouter()
 
-# 火山引擎凭据（环境变量）
-_VOLC_APP_ID = os.getenv("VOLC_APP_ID", "")
-_VOLC_AK = os.getenv("VOLC_ACCESS_KEY_ID", "")
-_VOLC_SK = os.getenv("VOLC_SECRET_ACCESS_KEY", "")
-_ASR_READY = bool(_VOLC_APP_ID and _VOLC_AK and _VOLC_SK)
+# 火山引擎 API Key（新版控制台，Realtime API）
+_VOLC_API_KEY = os.getenv("VOLC_API_KEY", "")
+_ASR_READY = bool(_VOLC_API_KEY)
 
 
 @router.websocket("/ws/audio/stream")
@@ -197,9 +195,7 @@ async def handle_control_message(
         # 如果有 ASR 凭据，自动启动实时语音识别
         if _ASR_READY:
             asr_session = StreamingASRSession(
-                app_id=_VOLC_APP_ID,
-                access_key_id=_VOLC_AK,
-                secret_access_key=_VOLC_SK,
+                api_key=_VOLC_API_KEY,
                 on_text=lambda text, is_final: _enqueue_asr_result(text, is_final, ws),
             )
             await asr_session.connect()
