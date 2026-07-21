@@ -12,6 +12,8 @@ import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Binder
 import android.os.Build
+import android.os.Handler
+import android.os.HandlerThread
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import com.poc.audiocapture.BuildConfig
@@ -23,7 +25,7 @@ import java.util.TimeZone
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArraySet
-import java.util.concurrent.Executors
+import java.util.concurrent.Executor
 
 class AudioCaptureService : Service(), AudioCaptureEngine.Callback, AudioStreamClient.Listener {
   data class ProjectionConsent(val resultCode: Int, val data: Intent)
@@ -63,9 +65,8 @@ class AudioCaptureService : Service(), AudioCaptureEngine.Callback, AudioStreamC
   }
 
   private val binder = LocalBinder()
-  private val commandExecutor = Executors.newSingleThreadExecutor { runnable ->
-    Thread(runnable, "audio-capture-service")
-  }
+  private val commandThread = HandlerThread("audio-capture-service").apply { start() }
+  private val commandExecutor = Executor { runnable -> Handler(commandThread.looper).post(runnable) }
   private val listeners = CopyOnWriteArraySet<Listener>()
 
   private lateinit var fileStore: CaptureFileStore
@@ -365,7 +366,7 @@ class AudioCaptureService : Service(), AudioCaptureEngine.Callback, AudioStreamC
     runCatching { if (captureEngine.isRunning()) captureEngine.stop() }
     cleanupProjection()
     streamClient.shutdown()
-    commandExecutor.shutdownNow()
+    commandThread.quitSafely()
     super.onDestroy()
   }
 
