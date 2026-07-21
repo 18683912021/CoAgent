@@ -52,7 +52,8 @@ class FEAgent(BaseAgent):
     def _execute_tool(self, name: str, args: dict) -> str:
         """FE Agent 的工具实现 —— 读全局，写 workspace/fe/ 或 fe-app/"""
         if name == "read_file":
-            return read_file(PROJECT_ROOT, args.get("path", ""))
+            path = args.get("path", "")
+            return read_file(self._pick_workspace(path), path)
         elif name == "search_web":
             return run_async(search_web(**args))
         elif name == "web_fetch":
