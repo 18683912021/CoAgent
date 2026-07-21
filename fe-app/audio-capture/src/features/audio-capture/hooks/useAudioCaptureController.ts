@@ -185,7 +185,14 @@ export function useAudioCaptureController() {
         dispatch({type: 'streamStats', value}),
       ),
       AudioCapture.onError(value => {
-        console.error(`[AudioCapture] ${value.code} (${value.stage})`, value.message);
+        console.error(
+          `\n══════════ [AudioCapture] ${value.code} (原生) ══════════`,
+          `\n  阶段: ${value.stage}`,
+          `\n  消息: ${value.message}`,
+          value.source ? `\n  来源: ${value.source}` : '',
+          `\n  (来自 Android 原生层)`,
+          `\n══════════════════════════════════════════`,
+        );
         dispatch({type: 'error', value});
       }),
       AudioCapture.onTranscription(event => {
@@ -382,7 +389,15 @@ function normalizeError(error: unknown, fallbackCode: string): NativeCaptureErro
     recoverable: value.recoverable ?? true,
     message: value.message ?? String(error),
   };
-  console.error(`[AudioCapture] ${normalized.code} (${normalized.stage})`, normalized.message, error);
+  const stack = error instanceof Error ? error.stack : new Error().stack;
+  console.error(
+    `\n══════════ [AudioCapture] ${normalized.code} ══════════`,
+    `\n  阶段: ${normalized.stage}`,
+    `\n  消息: ${normalized.message}`,
+    normalized.source ? `\n  来源: ${normalized.source}` : '',
+    `\n  堆栈:\n${stack?.replace(/^/gm, '    ') ?? '  (无堆栈)'}`,
+    `\n══════════════════════════════════════════`,
+  );
   return normalized;
 }
 
