@@ -26,6 +26,7 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArraySet
 import java.util.concurrent.Executor
+import org.json.JSONObject
 
 class AudioCaptureService : Service(), AudioCaptureEngine.Callback, AudioStreamClient.Listener {
   data class ProjectionConsent(val resultCode: Int, val data: Intent)
@@ -45,6 +46,9 @@ class AudioCaptureService : Service(), AudioCaptureEngine.Callback, AudioStreamC
     fun onStreamStats(stats: StreamStats)
     fun onNativeError(error: CaptureException)
     fun onTranscription(text: String, isFinal: Boolean, source: String)
+    fun onLLMStart(questionText: String, mode: String, language: String, timestamp: Long)
+    fun onLLMChunk(chunkIndex: Int, delta: String, timestamp: Long)
+    fun onLLMDone(fullAnswer: String, mode: String, timestamp: Long, error: String?)
   }
 
   data class ServiceSnapshot(
@@ -281,6 +285,10 @@ class AudioCaptureService : Service(), AudioCaptureEngine.Callback, AudioStreamC
     streamClient.disconnect()
   }
 
+  fun sendControl(message: String) {
+    streamClient.sendControl(message)
+  }
+
   fun retryBackfill(callback: (Result<Unit>) -> Unit) {
     commandExecutor.execute {
       val result = lastResult
@@ -365,6 +373,18 @@ class AudioCaptureService : Service(), AudioCaptureEngine.Callback, AudioStreamC
   override fun onTranscription(text: String, isFinal: Boolean, source: String) {
     android.util.Log.d("AudioCaptureService", "转发转录: text=$text isFinal=$isFinal source=$source listeners=${listeners.size}")
     listeners.forEach { it.onTranscription(text, isFinal, source) }
+  }
+
+  override fun onLLMStart(questionText: String, mode: String, language: String, timestamp: Long) {
+    listeners.forEach { it.onLLMStart(questionText, mode, language, timestamp) }
+  }
+
+  override fun onLLMChunk(chunkIndex: Int, delta: String, timestamp: Long) {
+    listeners.forEach { it.onLLMChunk(chunkIndex, delta, timestamp) }
+  }
+
+  override fun onLLMDone(fullAnswer: String, mode: String, timestamp: Long, error: String?) {
+    listeners.forEach { it.onLLMDone(fullAnswer, mode, timestamp, error) }
   }
 
   override fun onDestroy() {

@@ -114,6 +114,26 @@ export interface TranscriptionEvent {
   source: 'mic' | 'system';
 }
 
+export interface LLMStartEvent {
+  question_text: string;
+  mode: string;
+  language: string;
+  timestamp: number;
+}
+
+export interface LLMChunkEvent {
+  chunk_index: number;
+  delta: string;
+  timestamp: number;
+}
+
+export interface LLMDoneEvent {
+  full_answer: string;
+  mode: string;
+  timestamp: number;
+  error?: string;
+}
+
 export interface AudioCaptureNativeModule {
   getCapabilities(): Promise<AudioCapabilities>;
   requestProjectionConsent(): Promise<boolean>;
@@ -126,7 +146,6 @@ export interface AudioCaptureNativeModule {
   connectStream(url: string): Promise<void>;
   disconnectStream(): Promise<void>;
   retryBackfill(): Promise<void>;
+  sendControl(message: string): void;
   shareOutput(sessionId: string, source: TrackSource, kind: 'pcm' | 'wav'): Promise<void>;
-  addListener(eventName: string): void;
-  removeListeners(count: number): void;
 }

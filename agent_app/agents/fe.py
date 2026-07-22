@@ -43,10 +43,20 @@ class FEAgent(BaseAgent):
     def _pick_workspace(self, path: str) -> str:
         """根据路径前缀自动选择 workspace：
         - fe-app/xxx → F:/CoAgent/fe-app/
+        - workspace/shared/、workspace/be/、workspace/pm/ → agent_app/（跨工作区读取）
+        - product-description/、prompts/ → agent_app/（项目级资源）
         - 其他 → workspace/fe/
         """
         if path.startswith("fe-app/") or path == "fe-app":
             return str(Path(__file__).parent.parent.parent / "fe-app")
+        # 跨工作区 & 项目级资源：从 agent_app 根目录解析
+        project_root = str(Path(__file__).parent.parent)
+        for cross_prefix in (
+            "workspace/shared", "workspace/be", "workspace/pm",
+            "product-description", "prompts",
+        ):
+            if path == cross_prefix or path.startswith(cross_prefix + "/"):
+                return project_root
         return str(self.workspace)
 
     def _execute_tool(self, name: str, args: dict) -> str:

@@ -55,6 +55,7 @@ class StreamingASRSession:
         self._seq = 1
         self._last_sent = ""
         self._text_parts: list[str] = []
+        self._on_text = None  # 旧协议回调占位，避免 AttributeError
 
     async def connect(self) -> None:
         self._seq = 2  # 配置帧占序列 1，音频帧从 2 开始
@@ -72,7 +73,7 @@ class StreamingASRSession:
         config = {
             "user": {"uid": "audio-capture"},
             "audio": {"format": "pcm", "rate": 16000, "bits": 16, "channel": 1, "language": "zh-CN"},
-            "request": {"model_name": "bigmodel", "enable_itn": True, "enable_punc": True},
+            "request": {"model_name": "bigmodel", "enable_itn": True, "enable_punc": True, "enable_vad": True},
         }
         payload = _gzip(json.dumps(config).encode("utf-8"))
         # 配置帧: Header + PayloadSize + Payload（无序列号，flags=0）

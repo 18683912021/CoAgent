@@ -22,6 +22,9 @@ class AudioStreamClient {
     fun onStreamState(state: StreamState, message: String? = null)
     fun onStreamStats(stats: StreamStats)
     fun onTranscription(text: String, isFinal: Boolean, source: String)
+    fun onLLMStart(questionText: String, mode: String, language: String, timestamp: Long)
+    fun onLLMChunk(chunkIndex: Int, delta: String, timestamp: Long)
+    fun onLLMDone(fullAnswer: String, mode: String, timestamp: Long, error: String?)
   }
 
   private data class OutboundPacket(val bytes: ByteArray, val droppable: Boolean)
@@ -270,6 +273,14 @@ class AudioStreamClient {
     executor.execute { sendControl(AudioWireProtocol.sessionComplete(sessionId)) }
   }
 
+  fun sendTextMessage(json: JSONObject) {
+    executor.execute {
+      val text = json.toString()
+      android.util.Log.d("AudioStreamClient", "发送文本消息: ${text.take(120)}")
+      socket?.send(text)
+    }
+  }
+
   fun shutdown() {
     executor.execute {
       socketGeneration += 1
@@ -313,6 +324,29 @@ class AudioStreamClient {
         if (t.isNotEmpty()) {
           listener?.onTranscription(t, isFinal, src)
         }
+      }
+      "llm_start" -> {
+        val questionText = message.optString("question_text", "")
+        val mode = message.optString("mode", "normal")
+        val language = message.optString("language", "zh")
+        val timestamp = message.optLong("timestamp", 0L)
+        android.util.Log.d("AudioStreamClient", "LLM start: mode=$mode lang=$language qText=${questionText.take(60)}")
+        listener?.onLLMStart(questionText, mode, language, timestamp)
+      }
+      "llm_chunk" -> {
+        val chunkIndex = message.optInt("chunk_index", 0)
+        val delta = message.optString("delta", "")
+        val timestamp = message.optLong("timestamp", 0L)
+        android.util.Log.d("AudioStreamClient", "LLM chunk: idx=$chunkIndex delta=${delta.take(40)}")
+        listener?.onLLMChunk(chunkIndex, delta, timestamp)
+      }
+      "llm_done" -> {
+        val fullAnswer = message.optString("full_answer", "")
+        val mode = message.optString("mode", "normal")
+        val timestamp = message.optLong("timestamp", 0L)
+        val error = if (message.has("error")) message.optString("error") else null
+        android.util.Log.d("AudioStreamClient", "LLM done: mode=$mode len=${fullAnswer.length} error=$error")
+        listener?.onLLMDone(fullAnswer, mode, timestamp, error)
       }
       else -> android.util.Log.w("AudioStreamClient", "未处理的消息类型: $msgType")
     }
@@ -360,7 +394,7 @@ class AudioStreamClient {
     }
   }
 
-  private fun sendControl(message: String): Boolean {
+  fun sendControl(message: String): Boolean {
     val activeSocket = socket ?: return false
     return activeSocket.send(message)
   }

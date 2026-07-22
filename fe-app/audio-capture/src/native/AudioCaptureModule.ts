@@ -12,6 +12,9 @@ import type {
   CaptureSnapshot,
   CaptureSource,
   CaptureStartInfo,
+  LLMStartEvent,
+  LLMChunkEvent,
+  LLMDoneEvent,
   NativeCaptureError,
   NativeCaptureStateEvent,
   NativeStreamStateEvent,
@@ -40,11 +43,7 @@ function subscribe<T>(
   eventName: string,
   listener: (event: T) => void,
 ): EmitterSubscription | {remove(): void} {
-  console.log('[Bridge] 注册事件监听:', eventName);
-  return emitter?.addListener(eventName, (event: T) => {
-    console.log('[Bridge] 收到事件:', eventName, JSON.stringify(event).slice(0, 200));
-    listener(event);
-  }) ?? {remove: () => undefined};
+  return emitter?.addListener(eventName, listener) ?? {remove: () => undefined};
 }
 
 export const AudioCapture = {
@@ -115,5 +114,21 @@ export const AudioCapture = {
 
   onTranscription(listener: (event: TranscriptionEvent) => void) {
     return subscribe('AudioTranscription', listener);
+  },
+
+  onLLMStart(listener: (event: LLMStartEvent) => void) {
+    return subscribe('AudioLLMStart', listener);
+  },
+
+  onLLMChunk(listener: (event: LLMChunkEvent) => void) {
+    return subscribe('AudioLLMChunk', listener);
+  },
+
+  onLLMDone(listener: (event: LLMDoneEvent) => void) {
+    return subscribe('AudioLLMDone', listener);
+  },
+
+  sendControl(message: object): void {
+    requireNative().sendControl(JSON.stringify(message));
   },
 };

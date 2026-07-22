@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import time as _time
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -29,6 +30,7 @@ from app.services.audio_service import (
     V1AudioSession,
     storage_root,
 )
+from app.services.llm_service import LLMService
 from app.services.stt_streaming import StreamingASRSession
 
 logger = logging.getLogger("audio")
@@ -37,6 +39,13 @@ router = APIRouter()
 # 火山引擎 API Key（新版控制台，Realtime API）
 _VOLC_API_KEY = os.getenv("VOLC_API_KEY", "")
 _ASR_READY = bool(_VOLC_API_KEY)
+
+# 0.5: mode → max_tokens 路由
+MODE_MAX_TOKENS: dict[str, int] = {
+    "brief": 300,
+    "normal": 700,
+    "detailed": 1200,
+}
 
 
 @router.websocket("/ws/audio/stream")
@@ -47,6 +56,12 @@ async def audio_stream(ws: WebSocket):
     global _transcription_queue
     _transcription_queue = asyncio.Queue(maxsize=256)
     sender_task: "asyncio.Task | None" = None
+
+    # ── LLM 上下文（per-connection，按需启动） ──
+    llm_queue: "asyncio.Queue[tuple[str, str, str]]" = asyncio.Queue(maxsize=32)  # (text, mode, language)
+    llm_worker_task: "asyncio.Task | None" = None
+    llm_service: LLMService | None = None
+    llm_config: dict[str, Any] = {}  # FE 可通过 config 帧动态覆盖 enabled/max_tokens/model
 
     legacy_session: AudioSession | None = None
     legacy_validator: PCMValidator | None = None
@@ -99,30 +114,87 @@ async def audio_stream(ws: WebSocket):
             if text is not None:
                 try:
                     payload = json.loads(text)
-                    was_new = v1_session is None
-                    v1_session = await handle_control_message(ws, payload, v1_session)
-                    # 新会话建立后，按轨迹创建 ASR 连接
-                    if was_new and v1_session is not None and _ASR_READY:
-                        if sender_task is None:
-                            sender_task = asyncio.create_task(_transcription_sender(ws))
-                        source_mode = payload.get("source_mode", "mic")
-                        track_sources: list[str] = []
-                        if source_mode in ("mic", "both"):
-                            track_sources.append("mic")
-                        if source_mode in ("system", "both"):
-                            track_sources.append("system")
-                        for src in track_sources:
-                            try:
-                                s = StreamingASRSession(
-                                    api_key=_VOLC_API_KEY,
-                                    source=src,
-                                    tx_queue=_transcription_queue,
+                    msg_type = payload.get("type")
+
+                    if msg_type == "config":
+                        # ── FE 动态 LLM 配置（enabled/max_tokens/model） ──
+                        llm_cfg = payload.get("llm")
+                        if llm_cfg is not None and not isinstance(llm_cfg, dict):
+                            raise ProtocolError("E_CONFIG", "llm config must be an object")
+                        if llm_cfg is not None:
+                            llm_config["enabled"] = llm_cfg.get("enabled", True)
+                            llm_config["max_tokens"] = llm_cfg.get("max_tokens")
+                            llm_config["model"] = llm_cfg.get("model")
+                        else:
+                            llm_config.clear()
+                        logger.info("LLM config 已更新: %s", llm_config)
+                        await ws.send_json({"type": "config_ack", "llm": llm_config})
+
+                    elif msg_type == "llm_query":
+                        # ── 手动触发 LLM，支持 language ──
+                        if v1_session is None:
+                            raise ProtocolError("E_SESSION_STATE", "session_start is required before llm_query")
+                        if llm_config.get("enabled") is False:
+                            raise ProtocolError("E_LLM_DISABLED", "LLM 已被 config 禁用")
+                        text_val = payload.get("text", "")
+                        mode = payload.get("mode", "normal")
+                        language = payload.get("language", "zh")
+                        if mode not in ("brief", "normal", "detailed"):
+                            raise ProtocolError("E_CONTROL_MESSAGE", f"invalid mode: {mode}")
+                        if language not in ("zh", "en"):
+                            raise ProtocolError("E_CONTROL_MESSAGE", f"invalid language: {language}")
+                        if not text_val:
+                            raise ProtocolError("E_CONTROL_MESSAGE", "llm_query requires text")
+
+                        # 按需启动 LLM worker
+                        if llm_worker_task is None:
+                            if llm_service is None:
+                                llm_service = LLMService()
+                            if llm_service.ready:
+                                llm_worker_task = asyncio.create_task(
+                                    _llm_worker(ws, llm_queue, llm_service, llm_config)
                                 )
-                                await s.connect()
-                                asr_sessions[src] = s
-                                logger.info("实时 ASR [%s] 已启动", src)
-                            except Exception:
-                                logger.exception("ASR [%s] 连接失败", src)
+                                logger.info("LLM worker 已启动（按需）")
+                            else:
+                                logger.warning("ANTHROPIC_API_KEY 未配置，LLM 不可用")
+
+                        if llm_service and llm_service.ready:
+                            try:
+                                llm_queue.put_nowait((text_val, mode, language))
+                                logger.info("LLM 手动触发入队: mode=%s lang=%s text=%.60s", mode, language, text_val)
+                            except asyncio.QueueFull:
+                                logger.warning("LLM 队列满，丢弃 llm_query")
+                                await send_error(ws, "E_LLM_QUEUE_FULL", "LLM 请求过于频繁，请稍后重试")
+                        else:
+                            await send_error(ws, "E_LLM_UNAVAILABLE", "LLM 服务不可用，请检查 API Key")
+                    else:
+                        # 非 llm_query 控制消息（session_start / track_start 等）
+                        was_new = v1_session is None
+                        v1_session = await handle_control_message(ws, payload, v1_session)
+                        # 新会话建立后，按轨迹创建 ASR 连接（LLM worker 按需启动）
+                        if was_new and v1_session is not None and _ASR_READY:
+                            if sender_task is None:
+                                sender_task = asyncio.create_task(
+                                    _transcription_sender(ws)
+                                )
+                            source_mode = payload.get("source_mode", "mic")
+                            track_sources: list[str] = []
+                            if source_mode in ("mic", "both"):
+                                track_sources.append("mic")
+                            if source_mode in ("system", "both"):
+                                track_sources.append("system")
+                            for src in track_sources:
+                                try:
+                                    s = StreamingASRSession(
+                                        api_key=_VOLC_API_KEY,
+                                        source=src,
+                                        tx_queue=_transcription_queue,
+                                    )
+                                    await s.connect()
+                                    asr_sessions[src] = s
+                                    logger.info("实时 ASR [%s] 已启动", src)
+                                except Exception:
+                                    logger.exception("ASR [%s] 连接失败", src)
                 except (ProtocolError, ValidationError, ValueError, json.JSONDecodeError) as error:
                     code = error.code if isinstance(error, ProtocolError) else "E_CONTROL_MESSAGE"
                     await send_error(ws, code, str(error))
@@ -154,6 +226,14 @@ async def audio_stream(ws: WebSocket):
         logger.exception("音频 WebSocket 异常")
         await safe_send_error(ws, "E_WEBSOCKET", str(error))
     finally:
+        # 清理 LLM worker
+        if llm_worker_task is not None:
+            llm_worker_task.cancel()
+        if llm_service is not None:
+            try:
+                await llm_service.close()
+            except Exception:
+                pass
         for s in asr_sessions.values():
             try:
                 await s.finish()
@@ -316,7 +396,8 @@ async def safe_send_error(ws: WebSocket, code: str, message: str) -> None:
 
 
 async def _transcription_sender(ws: WebSocket):
-    """后台任务：从队列取转录消息并发送到客户端。"""
+    """后台任务：从队列取转录消息并发送到客户端。
+    0.5: 不再自动触发 LLM——仅推送 transcription。"""
     logger.info("转录发送器已启动")
     try:
         while True:
@@ -330,9 +411,88 @@ async def _transcription_sender(ws: WebSocket):
                 })
                 logger.info("转录已发送[%s]: %s", source, text[:50])
             except Exception:
+                logger.debug("转录发送器 WebSocket 已断开")
                 break
     except asyncio.CancelledError:
         pass
 
 
-_transcription_queue: "asyncio.Queue | None" = None
+async def _llm_worker(
+    ws: WebSocket,
+    queue: "asyncio.Queue[tuple[str, str, str]]",  # (text, mode, language)
+    llm_service: LLMService,
+    llm_config: dict[str, Any],
+):
+    """后台任务：串行消费 LLM 触发队列。
+
+    协议（v2 — 对标 FE 三态）：
+        llm_start  → FE 创建 interviewer + AI loading 气泡
+        llm_chunk  → FE 追加 delta 到当前 AI 气泡
+        llm_done   → FE 用完整答案覆盖 + 标记 done
+    """
+    logger.info("LLM worker 已启动 | config=%s", llm_config)
+
+    try:
+        while True:
+            question, mode, language = await queue.get()
+
+            # 动态读取 config（FE 可能在运行时更新）
+            model: str = llm_config.get("model") or "deepseek-chat"
+            max_tokens: int = llm_config.get("max_tokens") or MODE_MAX_TOKENS.get(mode, 500)
+            ts = int(_time.time() * 1000)
+
+            try:
+                # ── 1. llm_start ──
+                await ws.send_json({
+                    "type": "llm_start",
+                    "question_text": question,
+                    "mode": mode,
+                    "language": language,
+                    "timestamp": ts,
+                })
+
+                # ── 2. llm_chunk（流式增量） ──
+                full_answer: str = ""
+                chunk_index: int = 0
+                async for chunk, is_final in llm_service.stream_answer(
+                    question, model=model, max_tokens=max_tokens, language=language,
+                ):
+                    full_answer += chunk
+
+                    if is_final:
+                        break
+
+                    await ws.send_json({
+                        "type": "llm_chunk",
+                        "chunk_index": chunk_index,
+                        "delta": chunk,
+                        "timestamp": int(_time.time() * 1000),
+                    })
+                    chunk_index += 1
+
+                # ── 3. llm_done（完整答案） ──
+                await ws.send_json({
+                    "type": "llm_done",
+                    "full_answer": full_answer,
+                    "mode": mode,
+                    "timestamp": int(_time.time() * 1000),
+                })
+                logger.info("LLM 完成 [%s/%d tokens]: %.50s → %d chunks",
+                            mode, max_tokens, question, chunk_index + 1)
+
+            except Exception as exc:
+                logger.exception("LLM 本轮失败 [%s]: %.50s", mode, question)
+                try:
+                    await ws.send_json({
+                        "type": "llm_done",
+                        "full_answer": f"[生成失败] {exc}",
+                        "mode": mode,
+                        "error": str(exc),
+                        "timestamp": int(_time.time() * 1000),
+                    })
+                except Exception:
+                    break  # WebSocket 已关闭，退出 worker
+    except asyncio.CancelledError:
+        pass
+    finally:
+        logger.info("LLM worker 已停止")

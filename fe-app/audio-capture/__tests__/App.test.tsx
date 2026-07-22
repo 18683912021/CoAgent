@@ -12,7 +12,7 @@ jest.mock('react-native-safe-area-context', () => {
 });
 
 jest.mock(
-  '../src/features/audio-capture/hooks/useAudioCaptureController',
+  '../src/hooks/useAudioCaptureController',
   () => ({
     useAudioCaptureController: () => ({
       state: {

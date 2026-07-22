@@ -78,10 +78,10 @@ LIST_DIR_TOOL_SPEC = {
 
 
 def _strip_workspace_prefix(workspace: str, rel_path: str) -> str:
-    """剥离 Agent 误加的 workspace/{fe,be,pm,shared}/ 前缀。
+    """剥离 Agent 误加的 workspace/{fe,be,pm,shared}/ 或 fe-app/ 前缀。
 
-    只有当 workspace base 自身就是 workspace/{name} 目录时才剥离——
-    此时 rel_path 中的 workspace/{name}/ 前缀会导致双重嵌套。
+    只有当 workspace base 自身就是对应目录时才剥离——
+    此时 rel_path 中的前缀会导致双重嵌套。
 
     对于 PM（workspace = PROJECT_ROOT），workspace/shared/ 是合法路径，
     不会被误剥离。
@@ -89,15 +89,25 @@ def _strip_workspace_prefix(workspace: str, rel_path: str) -> str:
     ws = Path(workspace)
     parts = rel_path.replace("\\", "/").split("/")
 
-    # 只有当 workspace base 本身就在 workspace/{name} 下时，才剥离前缀
+    # workspace/{fe,be,pm,shared}/ 前缀剥离
     if len(parts) >= 2 and parts[0] == "workspace" and parts[1] in ("fe", "be", "pm", "shared"):
         if ws.name == parts[1] and ws.parent.name == "workspace":
             return "/".join(parts[2:])
+
+    # fe-app/ 前缀剥离：当 workspace 就是 fe-app 目录本身时
+    if len(parts) >= 1 and parts[0] == "fe-app" and ws.name == "fe-app":
+        return "/".join(parts[1:]) if len(parts) > 1 else "."
+
     return rel_path
 
 
 def _resolve(workspace: str, rel_path: str) -> Path:
-    """解析路径。绝对路径直接使用，相对路径基于 workspace 解析。"""
+    """解析路径。绝对路径直接使用，相对路径基于 workspace 解析。
+
+    跨工作区路径自动从 WORKSPACE_ROOT 解析，避免双重嵌套：
+    例如 workspace=workspace/be/ + path=workspace/shared/STATUS.md
+    → WORKSPACE_ROOT/workspace/shared/STATUS.md（而非 workspace/be/workspace/shared/STATUS.md）
+    """
     p = Path(rel_path)
     if p.is_absolute():
         return p.resolve()
@@ -107,6 +117,16 @@ def _resolve(workspace: str, rel_path: str) -> Path:
         base = ws
     else:
         base = (WORKSPACE_ROOT / ws).resolve()
+
+    # 跨工作区路径：workspace base 在 workspace/{X} 下，但路径指向 workspace/{Y}（Y≠X）
+    # 从 PROJECT_ROOT（agent_app/）解析，防止 workspace/{X}/workspace/{Y} 双重嵌套
+    # 注意：路径本身已包含 workspace/ 前缀，所以 base 必须是 agent_app/ 而非 workspace/
+    if ws.is_absolute() and ws.parent.name == "workspace" and ws.name in ("fe", "be", "pm"):
+        rel_parts = rel_path.replace("\\", "/").split("/")
+        if (len(rel_parts) >= 2 and rel_parts[0] == "workspace"
+                and rel_parts[1] in ("fe", "be", "pm", "shared")
+                and rel_parts[1] != ws.name):
+            base = WORKSPACE_ROOT.parent.resolve()  # agent_app/
 
     return (base / rel_path).resolve()
 

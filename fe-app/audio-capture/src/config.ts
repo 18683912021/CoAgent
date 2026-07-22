@@ -1,0 +1,21 @@
+import {Platform} from 'react-native';
+
+/**
+ * WebSocket 地址配置
+ *
+ * 默认值按运行环境自动选择：
+ * - Android 模拟器 → 10.0.2.2（映射到宿主机 localhost）
+ * - iOS 模拟器 / 真机 → localhost（需要物理设备连同一个局域网时改为实际 IP）
+ *
+ * 可通过环境变量或直接修改 STREAM_URL_OVERRIDE 覆盖。
+ */
+const DEFAULT_HOST = Platform.OS === 'android' ? '10.0.2.2' : 'localhost';
+const DEFAULT_PORT = 8010;
+const DEFAULT_PATH = '/api/ws/audio/stream';
+
+/** 联调时直接改这里的值即可覆盖默认地址 */
+const STREAM_URL_OVERRIDE: string | null = 'ws://192.168.7.149:8010/api/ws/audio/stream';
+
+export const STREAM_URL: string =
+  STREAM_URL_OVERRIDE ??
+  `ws://${DEFAULT_HOST}:${DEFAULT_PORT}${DEFAULT_PATH}`;

@@ -2,5 +2,5 @@ services:
   be:
     build: .
     ports:
-      - "8000:8000"
+      - "8010:8010"
     restart: unless-stopped

@@ -1,0 +1,624 @@
+import {useCallback, useEffect, useMemo, useReducer, useRef} from 'react';
+import {
+  AppState,
+  PermissionsAndroid,
+  Platform,
+  type Permission,
+} from 'react-native';
+
+import {
+  AudioCapture,
+  type AudioCapabilities,
+  type AudioLevels,
+  type CaptureResult,
+  type CaptureSource,
+  type CaptureState,
+  type LLMStartEvent,
+  type LLMChunkEvent,
+  type LLMDoneEvent,
+  type NativeCaptureError,
+  type StreamState,
+  type StreamStats,
+  type TrackSource,
+} from '../native';
+import {STREAM_URL} from '../config';
+
+// ── Constants ──────────────────────────────────────────────
+const EMPTY_LEVELS: AudioLevels = {mic: 0, system: 0};
+const EMPTY_STREAM_STATS: StreamStats = {
+  queuedBytes: 0, transportBytes: 0, acknowledgedBytes: 0,
+  realtimeFrames: 0, droppedFrames: 0, backfillBytes: 0,
+};
+
+// ── Types ──────────────────────────────────────────────────
+export type ConversationBubbleStatus = 'loading' | 'streaming' | 'done' | 'error';
+export type LLMMode = 'brief' | 'normal' | 'detailed';
+
+export interface ConversationMessage {
+  id: string;
+  role: 'interviewer' | 'user' | 'ai';
+  text: string;
+  status: ConversationBubbleStatus;
+  mode?: LLMMode;
+  timestamp: number;
+}
+
+interface ControllerState {
+  capabilities: AudioCapabilities | null;
+  captureState: CaptureState;
+  streamState: StreamState;
+  source: CaptureSource;
+  projectionGranted: boolean;
+  levels: AudioLevels;
+  streamStats: StreamStats;
+  startedAtUtc: string | null;
+  result: CaptureResult | null;
+  pendingBackfill: boolean;
+  error: NativeCaptureError | null;
+  streamMessage: string | null;
+  conversation: ConversationMessage[];
+  selectedMessageId: string | null;
+  showModeSheet: boolean;
+  pendingLLMQueue: string[];
+  currentStreamingAIId: string | null;
+  language: 'zh' | 'en';
+}
+
+type Action =
+  | {type: 'capabilities'; value: AudioCapabilities}
+  | {type: 'source'; value: CaptureSource}
+  | {type: 'projection'; value: boolean}
+  | {type: 'captureState'; value: CaptureState; payload?: Partial<ControllerState>}
+  | {type: 'streamState'; value: StreamState; message?: string}
+  | {type: 'levels'; value: AudioLevels}
+  | {type: 'streamStats'; value: StreamStats}
+  | {type: 'result'; value: CaptureResult}
+  | {type: 'error'; value: NativeCaptureError | null}
+  | {type: 'transcription'; text: string; isFinal: boolean; source: 'mic' | 'system'; timestamp: number}
+  | {type: 'llm_start'; question_text: string; mode: string; language: string; timestamp: number}
+  | {type: 'llm_chunk'; chunk_index: number; delta: string; timestamp: number}
+  | {type: 'llm_done'; full_answer: string; mode: string; timestamp: number; error?: string}
+  | {type: 'snapshot'; value: Partial<ControllerState>}
+  | {type: 'select_bubble'; bubbleId: string}
+  | {type: 'dismiss_sheet'}
+  | {type: 'llm_query_sent'; aiBubbleId: string; insertedAfterId: string; mode: LLMMode; timestamp: number}
+  | {type: 'llm_answer_error'; aiBubbleId: string}
+  | {type: 'set_language'; value: 'zh' | 'en'};
+
+// ── Initial State ─────────────────────────────────────────
+const INITIAL_STATE: ControllerState = {
+  capabilities: null,
+  captureState: 'idle',
+  streamState: 'idle',
+  source: 'both',
+  projectionGranted: false,
+  levels: EMPTY_LEVELS,
+  streamStats: EMPTY_STREAM_STATS,
+  startedAtUtc: null,
+  result: null,
+  pendingBackfill: false,
+  error: null,
+  streamMessage: null,
+  conversation: [],
+  selectedMessageId: null,
+  showModeSheet: false,
+  pendingLLMQueue: [],
+  currentStreamingAIId: null,
+  language: 'zh',
+};
+
+// ── Helpers ───────────────────────────────────────────────
+function genId(prefix: string): string {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+}
+
+function insertAfter<T extends {id: string}>(arr: T[], afterId: string, item: T): T[] {
+  const idx = arr.findIndex(x => x.id === afterId);
+  if (idx === -1) { return [...arr, item]; }
+  return [...arr.slice(0, idx + 1), item, ...arr.slice(idx + 1)];
+}
+
+// ── Reducer ───────────────────────────────────────────────
+function reducer(state: ControllerState, action: Action): ControllerState {
+  switch (action.type) {
+    case 'capabilities':
+      return {...state, capabilities: action.value};
+    case 'source':
+      return {...state, source: action.value, projectionGranted: false, result: null, error: null};
+    case 'projection':
+      return {...state, projectionGranted: action.value, error: null};
+    case 'captureState':
+      return {...state, captureState: action.value, ...(action.payload ?? {})};
+    case 'streamState':
+      return {...state, streamState: action.value, streamMessage: action.message ?? state.streamMessage};
+    case 'levels':
+      return {...state, levels: action.value};
+    case 'streamStats':
+      return {...state, streamStats: action.value};
+    case 'result':
+      return {...state, result: action.value, captureState: 'completed', levels: EMPTY_LEVELS};
+    case 'error':
+      return {...state, error: action.value};
+    case 'snapshot':
+      // 不覆盖 source（用户手动选择的优先）
+      return {...state, ...action.value, source: state.source};
+
+    // ── 0.5: Transcription → bubble（3 秒断句）──
+    case 'transcription': {
+      const role = action.source === 'system' ? 'interviewer' : 'user';
+      const now = action.timestamp;
+
+      const streamingIdx = state.conversation.findIndex(
+        m => m.role === role && m.status === 'streaming',
+      );
+
+      if (streamingIdx !== -1) {
+        const streamingBubble = state.conversation[streamingIdx]!;
+        const gap = now - streamingBubble.timestamp;
+        // 超过 3 秒或服务端标记 is_final → 关闭旧气泡，起新气泡
+        const shouldSplit = gap > 3000 || action.isFinal;
+
+        if (shouldSplit) {
+          const doneBubble = {...streamingBubble, status: 'done' as const};
+          const newMsg: ConversationMessage = {
+            id: genId(role === 'interviewer' ? 'int' : 'usr'),
+            role,
+            text: action.text,
+            status: 'streaming',
+            timestamp: now,
+          };
+          return {
+            ...state,
+            conversation: state.conversation.map((m, i) =>
+              i === streamingIdx ? doneBubble : m,
+            ).concat(newMsg),
+          };
+        }
+
+        return {
+          ...state,
+          conversation: state.conversation.map((m, i) =>
+            i === streamingIdx
+              ? {...m, text: action.text, timestamp: now}
+              : m,
+          ),
+        };
+      }
+
+      const newMsg: ConversationMessage = {
+        id: genId(role === 'interviewer' ? 'int' : 'usr'),
+        role,
+        text: action.text,
+        status: 'streaming',
+        timestamp: now,
+      };
+      return {...state, conversation: [...state.conversation, newMsg]};
+    }
+
+    // ── 0.5: Select bubble ──
+    case 'select_bubble':
+      return {...state, selectedMessageId: action.bubbleId, showModeSheet: true};
+
+    // ── 0.5: Dismiss sheet ──
+    case 'dismiss_sheet':
+      return {...state, showModeSheet: false, selectedMessageId: null};
+
+    // ── 0.5: Insert loading AI bubble after clicked ──
+    case 'llm_query_sent': {
+      const aiMsg: ConversationMessage = {
+        id: action.aiBubbleId,
+        role: 'ai',
+        text: '',
+        status: 'loading',
+        mode: action.mode,
+        timestamp: action.timestamp,
+      };
+      return {
+        ...state,
+        conversation: insertAfter(state.conversation, action.insertedAfterId, aiMsg),
+        pendingLLMQueue: [...state.pendingLLMQueue, action.aiBubbleId],
+        showModeSheet: false,
+        selectedMessageId: null,
+      };
+    }
+
+    // ── 0.6: LLM 三态协议 ──
+    case 'llm_start': {
+      if (state.pendingLLMQueue.length === 0) {
+        console.warn('[LLM] 收到非预期 llm_start（无 pending query），静默丢弃');
+        return state;
+      }
+      const aiBubbleId = state.pendingLLMQueue[0]!;
+      const restQueue = state.pendingLLMQueue.slice(1);
+      // 0.5 手动触发：被点击的气泡本身就是问题，不需要重复插入面试官气泡
+      const conversation = state.conversation.map(m =>
+        m.id === aiBubbleId
+          ? {
+              ...m,
+              text: '',
+              status: 'streaming' as ConversationBubbleStatus,
+              mode: (action.mode as LLMMode) ?? m.mode,
+            }
+          : m,
+      );
+      return {
+        ...state,
+        pendingLLMQueue: restQueue,
+        currentStreamingAIId: aiBubbleId,
+        conversation,
+      };
+    }
+
+    case 'llm_chunk': {
+      if (!state.currentStreamingAIId) {
+        console.warn('[LLM] 收到非预期 llm_chunk（无 currentStreamingAIId），静默丢弃');
+        return state;
+      }
+      return {
+        ...state,
+        conversation: state.conversation.map(m =>
+          m.id === state.currentStreamingAIId
+            ? {...m, text: m.text + action.delta}
+            : m,
+        ),
+      };
+    }
+
+    case 'llm_done': {
+      const targetId = state.currentStreamingAIId;
+      if (!targetId) {
+        console.warn('[LLM] 收到非预期 llm_done（无 currentStreamingAIId），静默丢弃');
+        return state;
+      }
+      const isError = !!action.error;
+      return {
+        ...state,
+        currentStreamingAIId: null,
+        conversation: state.conversation.map(m =>
+          m.id === targetId
+            ? {
+                ...m,
+                text: isError ? m.text || action.full_answer : action.full_answer,
+                status: isError ? 'error' as const : 'done' as const,
+              }
+            : m,
+        ),
+      };
+    }
+
+    case 'llm_answer_error': {
+      return {
+        ...state,
+        conversation: state.conversation.map(m =>
+          m.id === action.aiBubbleId ? {...m, status: 'error'} : m,
+        ),
+        pendingLLMQueue: state.pendingLLMQueue.filter(id => id !== action.aiBubbleId),
+      };
+    }
+
+    case 'set_language':
+      return {...state, language: action.value};
+
+    default:
+      return state;
+  }
+}
+
+// ── Error Helpers ─────────────────────────────────────────
+function createError(code: string, stage: string, message: string): NativeCaptureError {
+  return {code, stage, message, recoverable: true};
+}
+
+function normalizeError(error: unknown, defaultCode: string): NativeCaptureError {
+  if (error instanceof Error) {
+    return {code: defaultCode, stage: 'unknown', message: error.message, recoverable: false};
+  }
+  return {code: defaultCode, stage: 'unknown', message: String(error), recoverable: false};
+}
+
+// ── Permissions ───────────────────────────────────────────
+interface PermissionSpec { permission: Permission; label: string; }
+
+const REQUIRED_PERMISSIONS: PermissionSpec[] =
+  Platform.OS === 'android'
+    ? [{permission: PermissionsAndroid.PERMISSIONS.RECORD_AUDIO, label: '麦克风'}]
+    : [];
+
+async function requestRuntimePermissions(): Promise<boolean> {
+  if (REQUIRED_PERMISSIONS.length === 0) { return true; }
+  const results = await PermissionsAndroid.requestMultiple(
+    REQUIRED_PERMISSIONS.map(p => p.permission),
+  );
+  const denied = REQUIRED_PERMISSIONS.filter(
+    p => results[p.permission] !== PermissionsAndroid.RESULTS.GRANTED,
+  );
+  if (denied.length > 0) {
+    const names = denied.map(p => p.label).join('、');
+    throw new Error(`${names}权限被拒绝`);
+  }
+  return true;
+}
+
+// ── Hook ──────────────────────────────────────────────────
+export function useAudioCaptureController() {
+  const [state, dispatch] = useReducer(reducer, INITIAL_STATE);
+  const operationCounter = useRef(0);
+
+  const canUseSystem = Platform.OS === 'android' && (state.capabilities?.systemAudio ?? false);
+
+  const syncSnapshot = useCallback(async () => {
+    try {
+      const snap = await AudioCapture.getSnapshot();
+      dispatch({
+        type: 'snapshot',
+        value: {
+          captureState: snap.captureState,
+          streamState: snap.streamState,
+          levels: snap.levels,
+          streamStats: snap.streamStats,
+          pendingBackfill: snap.pendingBackfill,
+          startedAtUtc: snap.startedAtUtc ?? null,
+        },
+      });
+    } catch (e) {
+      console.warn('[Controller] getSnapshot 失败:', e);
+    }
+  }, []);
+
+  // ── Subscriptions ──
+  useEffect(() => {
+    syncSnapshot();
+
+    const subscriptions = [
+      AudioCapture.onCaptureState(event => {
+        console.log('[状态] capture:', event.state);
+        dispatch({type: 'captureState', value: event.state, payload: event});
+      }),
+      AudioCapture.onStreamState(event => {
+        console.log('[状态] stream:', event.state);
+        dispatch({type: 'streamState', value: event.state, message: event.message});
+      }),
+      AudioCapture.onLevels(value => dispatch({type: 'levels', value})),
+      AudioCapture.onStreamStats(value => dispatch({type: 'streamStats', value})),
+      AudioCapture.onError(value => {
+        console.error(
+          `[AudioCapture] ${value.code} (${value.stage})`,
+          `\n  消息: ${value.message}`,
+          value.source ? `\n  来源: ${value.source}` : '',
+        );
+        dispatch({type: 'error', value});
+      }),
+      AudioCapture.onTranscription(event => {
+        console.log('[转录]', event.source, event.text.slice(0, 40), 'final:', event.isFinal);
+        dispatch({
+          type: 'transcription',
+          text: event.text,
+          isFinal: event.isFinal,
+          source: event.source,
+          timestamp: Date.now(),
+        });
+      }),
+      AudioCapture.onLLMStart((event: LLMStartEvent) => {
+        console.log('[LLM] start mode=%s lang=%s qText=%s',
+          event.mode, event.language, event.question_text.slice(0, 40));
+        dispatch({
+          type: 'llm_start',
+          question_text: event.question_text,
+          mode: event.mode,
+          language: event.language,
+          timestamp: event.timestamp,
+        });
+      }),
+      AudioCapture.onLLMChunk((event: LLMChunkEvent) => {
+        dispatch({
+          type: 'llm_chunk',
+          chunk_index: event.chunk_index,
+          delta: event.delta,
+          timestamp: event.timestamp,
+        });
+      }),
+      AudioCapture.onLLMDone((event: LLMDoneEvent) => {
+        console.log('[LLM] done mode=%s len=%d error=%s',
+          event.mode, event.full_answer.length, event.error ?? '-');
+        dispatch({
+          type: 'llm_done',
+          full_answer: event.full_answer,
+          mode: event.mode,
+          timestamp: event.timestamp,
+          error: event.error,
+        });
+      }),
+    ];
+
+    const appStateSub = AppState.addEventListener('change', next => {
+      if (next === 'active') { syncSnapshot(); }
+    });
+
+    return () => {
+      subscriptions.forEach(s => s.remove());
+      appStateSub.remove();
+    };
+  }, [syncSnapshot]);
+
+  // ── Source ──
+  const setSource = useCallback((source: CaptureSource) => {
+    dispatch({type: 'source', value: source});
+  }, []);
+
+  // ── System Audio Auth ──
+  const authorizeSystemAudio = useCallback(async () => {
+    dispatch({type: 'captureState', value: 'preparing'});
+    dispatch({type: 'error', value: null});
+    try {
+      const granted = await AudioCapture.requestProjectionConsent();
+      dispatch({type: 'projection', value: granted});
+      dispatch({type: 'captureState', value: 'idle'});
+      if (!granted) {
+        const err: NativeCaptureError = {
+          code: 'E_PROJECTION_DENIED', stage: 'consent',
+          recoverable: true, message: '系统音频权限未获得授权。',
+        };
+        console.error(`[AudioCapture] ${err.code} (${err.stage})`, err.message);
+        dispatch({type: 'error', value: err});
+      }
+      return granted;
+    } catch (error) {
+      dispatch({type: 'error', value: normalizeError(error, 'E_PROJECTION')});
+      return false;
+    }
+  }, []);
+
+  // ── Start ──
+  const start = useCallback(async () => {
+    dispatch({type: 'error', value: null});
+    try {
+      await requestRuntimePermissions();
+      if (!state.projectionGranted) {
+        const granted = await authorizeSystemAudio();
+        if (!granted) {
+          throw createError('E_PROJECTION_DENIED', 'consent', '需要系统音频授权才能采集。');
+        }
+      }
+      if (state.streamState !== 'ready' && state.streamState !== 'connecting') {
+        try { await AudioCapture.connectStream(STREAM_URL); } catch (e) { /* 可选 */ }
+      }
+      operationCounter.current += 1;
+      const operationId = `${Date.now()}-${operationCounter.current}`;
+      dispatch({type: 'captureState', value: 'preparing', payload: {result: null, startedAtUtc: null}});
+      const info = await AudioCapture.startCapture(operationId, 'both');
+      dispatch({type: 'projection', value: false});
+      dispatch({type: 'captureState', value: 'capturing', payload: {startedAtUtc: info.startedAtUtc}});
+    } catch (error) {
+      dispatch({type: 'projection', value: false});
+      dispatch({type: 'error', value: normalizeError(error, 'E_START')});
+    }
+  }, [state.projectionGranted, state.streamState, authorizeSystemAudio]);
+
+  // ── Stop ──
+  const stop = useCallback(async () => {
+    dispatch({type: 'error', value: null});
+    try {
+      const result = await AudioCapture.stopCapture();
+      dispatch({type: 'result', value: result});
+    } catch (error) {
+      dispatch({type: 'error', value: normalizeError(error, 'E_STOP')});
+    }
+  }, []);
+
+  // ── 0.5: Tap bubble → show mode sheet ──
+  const selectBubble = useCallback((bubbleId: string) => {
+    const msg = state.conversation.find(m => m.id === bubbleId);
+    if (!msg || msg.role === 'ai') { return; }
+    dispatch({type: 'select_bubble', bubbleId});
+  }, [state.conversation]);
+
+  // ── 0.5: Dismiss sheet ──
+  const dismissSheet = useCallback(() => {
+    dispatch({type: 'dismiss_sheet'});
+  }, []);
+
+  // ── 0.5: Send LLM query ──
+  const sendLLMQuery = useCallback((mode: LLMMode) => {
+    const clickedMsg = state.selectedMessageId
+      ? state.conversation.find(m => m.id === state.selectedMessageId)
+      : null;
+    if (!clickedMsg || clickedMsg.role === 'ai') { return; }
+
+    const aiBubbleId = genId('llm');
+    const bubbleSource = clickedMsg.role === 'interviewer' ? 'system' : 'mic';
+    const now = Date.now();
+
+    dispatch({
+      type: 'llm_query_sent',
+      aiBubbleId,
+      insertedAfterId: clickedMsg.id,
+      mode,
+      timestamp: now,
+    });
+
+    AudioCapture.sendControl({
+      type: 'llm_query',
+      text: clickedMsg.text,
+      mode,
+      language: state.language,
+      bubble_source: bubbleSource,
+    });
+
+    console.log('[LLM] 发送 llm_query:', {text: clickedMsg.text.slice(0, 40), mode, language: state.language, bubble_source: bubbleSource});
+  }, [state.selectedMessageId, state.conversation, state.language]);
+
+  // ── 0.5: Retry failed AI answer ──
+  const retryLLM = useCallback((aiBubbleId: string) => {
+    const aiMsg = state.conversation.find(m => m.id === aiBubbleId);
+    if (!aiMsg || aiMsg.role !== 'ai' || aiMsg.status !== 'error') { return; }
+
+    const aiIdx = state.conversation.findIndex(m => m.id === aiBubbleId);
+    if (aiIdx <= 0) { return; }
+    const clickedMsg = state.conversation[aiIdx - 1]!;
+    if (clickedMsg.role === 'ai') { return; }
+
+    const newAiBubbleId = genId('llm');
+    const bubbleSource = clickedMsg.role === 'interviewer' ? 'system' : 'mic';
+    const now = Date.now();
+
+    dispatch({
+      type: 'llm_query_sent',
+      aiBubbleId: newAiBubbleId,
+      insertedAfterId: clickedMsg.id,
+      mode: aiMsg.mode ?? 'normal',
+      timestamp: now,
+    });
+
+    AudioCapture.sendControl({
+      type: 'llm_query',
+      text: clickedMsg.text,
+      mode: aiMsg.mode ?? 'normal',
+      language: state.language,
+      bubble_source: bubbleSource,
+    });
+  }, [state.conversation, state.language]);
+
+  // ── Share ──
+  const share = useCallback(async (sessionId: string, source: TrackSource, kind: 'pcm' | 'wav') => {
+    try {
+      await AudioCapture.shareOutput(sessionId, source, kind);
+    } catch (error) {
+      dispatch({type: 'error', value: normalizeError(error, 'E_SHARE')});
+    }
+  }, []);
+
+  // ── 0.6: 发送 LLM 配置帧 ──
+  const sendConfig = useCallback((llmConfig: {enabled?: boolean; max_tokens?: number; model?: string}) => {
+    AudioCapture.sendControl({
+      type: 'config',
+      llm: llmConfig,
+    });
+    console.log('[LLM] 发送 config:', JSON.stringify(llmConfig));
+  }, []);
+
+  // ── Computed ──
+  const selectedMessage = useMemo(
+    () => state.selectedMessageId
+      ? state.conversation.find(m => m.id === state.selectedMessageId) ?? null
+      : null,
+    [state.selectedMessageId, state.conversation],
+  );
+
+  return {
+    state,
+    canUseSystem,
+    setSource,
+    authorizeSystemAudio,
+    start,
+    stop,
+    syncSnapshot,
+    share,
+    selectBubble,
+    dismissSheet,
+    sendLLMQuery,
+    retryLLM,
+    selectedMessage,
+    sendConfig,
+    setLanguage: useCallback((value: 'zh' | 'en') => dispatch({type: 'set_language', value}), []),
+  };
+}

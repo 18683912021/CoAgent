@@ -24,6 +24,7 @@ import com.facebook.react.bridge.ReadableMap
 import com.facebook.react.bridge.WritableArray
 import com.facebook.react.bridge.WritableMap
 import com.facebook.react.modules.core.DeviceEventManagerModule
+import org.json.JSONObject
 import java.io.File
 import java.util.ArrayDeque
 import java.util.UUID
@@ -245,6 +246,16 @@ class AudioCaptureModule(
   }
 
   @ReactMethod
+  fun sendControl(message: String) {
+    withService(
+        onReady = { connected ->
+          connected.sendControl(message)
+        },
+        onFailure = { android.util.Log.w("AudioCaptureModule", "sendControl: service not ready: ${it.message}") },
+    )
+  }
+
+  @ReactMethod
   fun shareOutput(sessionId: String, sourceValue: String, kind: String, promise: Promise) {
     val source = TrackSource.entries.firstOrNull { it.wireName == sourceValue }
     if (source == null) {
@@ -352,6 +363,34 @@ class AudioCaptureModule(
       putString("text", text)
       putBoolean("isFinal", isFinal)
       putString("source", source)
+    })
+  }
+
+  override fun onLLMStart(questionText: String, mode: String, language: String, timestamp: Long) {
+    android.util.Log.d("AudioCaptureModule", "发射LLM start: mode=$mode lang=$language qText=${questionText.take(60)}")
+    emit(EVENT_LLM_START, Arguments.createMap().apply {
+      putString("question_text", questionText)
+      putString("mode", mode)
+      putString("language", language)
+      putDouble("timestamp", timestamp.toDouble())
+    })
+  }
+
+  override fun onLLMChunk(chunkIndex: Int, delta: String, timestamp: Long) {
+    emit(EVENT_LLM_CHUNK, Arguments.createMap().apply {
+      putInt("chunk_index", chunkIndex)
+      putString("delta", delta)
+      putDouble("timestamp", timestamp.toDouble())
+    })
+  }
+
+  override fun onLLMDone(fullAnswer: String, mode: String, timestamp: Long, error: String?) {
+    android.util.Log.d("AudioCaptureModule", "发射LLM done: mode=$mode len=${fullAnswer.length} error=$error")
+    emit(EVENT_LLM_DONE, Arguments.createMap().apply {
+      putString("full_answer", fullAnswer)
+      putString("mode", mode)
+      putDouble("timestamp", timestamp.toDouble())
+      if (error != null) putString("error", error)
     })
   }
 
@@ -528,6 +567,9 @@ class AudioCaptureModule(
     const val EVENT_STREAM_STATS = "AudioStreamStats"
     const val EVENT_NATIVE_ERROR = "AudioCaptureError"
     const val EVENT_TRANSCRIPTION = "AudioTranscription"
+    const val EVENT_LLM_START = "AudioLLMStart"
+    const val EVENT_LLM_CHUNK = "AudioLLMChunk"
+    const val EVENT_LLM_DONE = "AudioLLMDone"
     private const val PROJECTION_REQUEST_CODE = 9201
   }
 }

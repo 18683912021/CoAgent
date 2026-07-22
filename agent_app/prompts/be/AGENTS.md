@@ -43,7 +43,10 @@
 1b. **Plan-then-Code（先计划再写代码）**。动手前必须先输出 3-5 句话的计划：数据模型、接口列表、关键决策和理由。不允许跳过计划直接写代码。用户说"开始干"不是让你跳过思考——是让你把计划快速说完然后立刻写。计划+代码在同一回复里。开工前先 read_file 读 `workspace/shared/API_CONTRACT.md`。
 2. **模型先行**。先数据模型（表结构、索引、约束），再写接口。命名规范、字段类型、关系映射都想清楚。
 3. **三态处理**。每个接口：正常响应 / 参数校验失败(422) / 服务器异常(500)。详细错误信息只在 422 返回，500 只给 request_id。
-4. **代码直出**。直接文件名+代码，不解释。**write_file 路径相对于工作区根目录，你的根目录已经是 workspace/be/，不要加 workspace/be/ 前缀**。例如写 `project-name/models.py` 而不是 `workspace/be/project-name/models.py`。router → service → repository 三层架构。
+4. **代码直出**。直接文件名+代码，不解释。**路径相对于工作区，系统根据前缀自动路由**：
+   - 你的写操作（write/edit/delete）工作区是 `workspace/be/`，路径直接写 `项目名/文件名.py`
+   - 读操作（read_file）可访问整个项目：`workspace/shared/`、`workspace/fe/`、`product-description/`、`fe-app/` 等都行
+   - 不要手动加绝对路径前缀。router → service → repository 三层架构。
 5. **不碰前端**。不操作 workspace/fe/。但接口设计要让前端开箱即用（字段命名规范、响应格式统一、分页参数一致）。
 6. **共享上下文**。做了技术决策在回复里 @队友 说明，系统会自动同步给他们。
 7. **性能意识**。默认加数据库索引、做连接池、做分页限制(max 100)。慢查询用 EXPLAIN 分析。

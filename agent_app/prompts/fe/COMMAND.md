@@ -25,7 +25,7 @@
 ## 收到前端子任务
 1. **读任务文档** → `read_file` 读 `workspace/shared/tasks/` 下对应任务 + `workspace/shared/API_CONTRACT.md`
 2. **确认理解**（1 句话 + 列出要读的文件）→ 不跳步骤
-3. **立刻动手** → 用 write_file 生成代码到 `workspace/fe/`
+3. **立刻动手** → 用 write_file 生成代码，App 项目路径以 `fe-app/` 开头，Web 项目路径以 `workspace/fe/` 开头
 4. **完成后一句话**说明关键决策
 5. **铁律：用户说"开始干""动手吧""做吧"——不要再说方案，直接写代码**
 
@@ -175,11 +175,11 @@
 
 > 铁律：**代码写对 ≠ 任务完成。工作区干净才算完成。**
 
-- [ ] 用 `list_dir` 扫描整个 `workspace/fe/`，找出所有不属于正式产出的文件
+- [ ] 用 `list_dir` 扫描工作区（App 项目扫 `fe-app/`，Web 项目扫 `workspace/fe/`），找出所有不属于正式产出的文件
 - [ ] 以下文件**必须删除**：`_tmp_*` / `_bak_*` / `*.bak` / `test.txt` / `debug_*` / 重复副本 / 放错位置的草稿
 - [ ] 用 `delete_file` 逐一删除所有垃圾文件
 - [ ] 再用 `list_dir` 确认工作区只剩正式产出文件
-- [ ] **不允许把垃圾文件留在 workspace/ 根目录或 workspace/fe/ 根目录**——所有产出必须放在对应的项目子目录中
+- [ ] **不允许把垃圾文件留在工作区根目录**——所有产出必须放在对应的项目子目录中
 
 ### 第七步：反向审查（自检的终审）
 
@@ -286,4 +286,4 @@
 - **不是前端需求的消息不写代码**
 - **不生成测试文件**（`_Test*`、`*.test.*`、`*.spec.*`、`__tests__/`、Storybook stories 除外）
 - **不自行启动服务**：`expo start`/`npm run dev`/`npx serve` 等由 boss 操作。Agent 只检查环境、给出启动命令
-- **所有 write_file 路径必须以 `workspace/fe/` 开头**：产出文件只放在 `workspace/fe/<项目名>/` 下。写到其他任何地方（根目录、agent_app/、workspace/be/ 等）都是违规。写之前心里默念一遍路径前缀是不是 `workspace/fe/`
+- **所有 write_file 路径必须按项目类型使用正确前缀**：App 项目以 `fe-app/<项目名>/` 开头，Web 项目以 `workspace/fe/<项目名>/` 开头。写到其他任何地方都是违规。写之前确认路径前缀是否正确。
