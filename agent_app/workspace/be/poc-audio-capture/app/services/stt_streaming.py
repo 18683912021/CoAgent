@@ -1,13 +1,20 @@
 """火山引擎实时流式语音识别会话。
 
-基于官方 openspeech.bytedance.com bigmodel WebSocket 协议。
-鉴权：X-Api-Key + X-Api-Resource-Id。
+端点: bigmodel（双向流式）
+鉴权: X-Api-Key + X-Api-Resource-Id
+
+帧结构（大端序）:
+  4 字节 Header     [version|hdr_size] [type|flags] [ser|comp] [reserved]
+  [4 字节 Sequence]  可选，flags 指示是否携带
+  4 字节 PayloadSize uint32
+  Payload
 """
 
 import asyncio
 import gzip
 import json
 import logging
+import struct
 import uuid
 from io import BytesIO
 
@@ -18,131 +25,89 @@ logger = logging.getLogger("stt_streaming")
 WS_ENDPOINT = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel"
 RESOURCE_ID = "volc.seedasr.sauc.duration"
 
-# 音频参数（固定）
-SAMPLE_RATE = 16000
-BITS = 16
-CHANNELS = 1
-CHUNK_BYTES = 320  # 20ms @ 16kHz 16bit mono = 640 bytes? No: 16000*2*1*20/1000 = 640
-# 官方示例用 320 字节，按 16K/16bit 算是 10ms，先照抄
+HDR = 4   # Header 字节数
+SEQ = 4   # Sequence 字节数
+SIZ = 4   # PayloadSize 字节数
 
 
-def _debug_dump_response(raw: bytes) -> None:
-    """解码服务端响应帧内容（调试用）。"""
-    if len(raw) < 8:
-        return
-    msg_type = (raw[1] >> 4) & 0x0F
-    flags = raw[1] & 0x0F
-    ser = (raw[2] >> 4) & 0x0F
-    comp = raw[2] & 0x0F
-    size = ((raw[6] & 0xFF) << 8) | (raw[7] & 0xFF)
-    logger.info("  响应头: type=%s flags=%s ser=%s comp=%s payload=%d",
-                bin(msg_type), bin(flags), ser, comp, size)
-    try:
-        payload = raw[8:8 + size]
-        if comp == 1:
-            payload = gzip.decompress(payload)
-        text = payload.decode("utf-8", errors="replace")
-        logger.info("  响应体: %s", text[:500])
-    except Exception as e:
-        logger.info("  响应体解码失败: %s", e)
-
-
-def _build_header(message_type: int, flags: int, serialization: int, compression: int, payload_size: int) -> bytes:
-    """8 字节二进制协议头。
-
-    字节布局（与火山官方文档一致）：
-    [0] 版本(4bit,=1) + 头大小(4bit,=2 表示 8 字节)
-    [1] 消息类型(4bit) + 标志(4bit)
-    [2] 序列化(4bit) + 压缩(4bit)
-    [3] 保留
-    [4-7] payload 长度 (uint32 big-endian)
-    """
-    PROTOCOL_VERSION = 1
-    HEADER_SIZE_UNITS = 2  # 8 bytes / 4
-    header = bytearray(8)
-    header[0] = (PROTOCOL_VERSION << 4) | HEADER_SIZE_UNITS
-    header[1] = (message_type << 4) | flags
-    header[2] = (serialization << 4) | compression
-    header[3] = 0x00
-    header[4] = (payload_size >> 24) & 0xFF
-    header[5] = (payload_size >> 16) & 0xFF
-    header[6] = (payload_size >> 8) & 0xFF
-    header[7] = payload_size & 0xFF
-    return bytes(header)
+def _header(msg_type: int, flags: int, ser: int, comp: int) -> bytes:
+    """4 字节 Header: [0x11] [type|flags] [ser|comp] [0x00]"""
+    return struct.pack(">BBBB", 0x11, (msg_type << 4) | flags, (ser << 4) | comp, 0x00)
 
 
 def _gzip(data: bytes) -> bytes:
     buf = BytesIO()
-    with gzip.GzipFile(fileobj=buf, mode='wb') as f:
+    with gzip.GzipFile(fileobj=buf, mode="wb") as f:
         f.write(data)
     return buf.getvalue()
 
 
 class StreamingASRSession:
-    """管理一次实时 ASR 会话。"""
+    """一次实时 ASR 会话。"""
 
-    def __init__(self, api_key: str, on_text: "callable | None" = None):
+    def __init__(self, api_key: str, source: str, tx_queue: "asyncio.Queue"):
         self._api_key = api_key
-        self._on_text = on_text
-        self._ws: "websockets.WebSocketClientProtocol | None" = None
-        self._recv_task: "asyncio.Task | None" = None
+        self._source = source
+        self._tx_queue = tx_queue
+        self._ws = None
+        self._recv_task = None
         self._running = False
-        self._fed_once = False
+        self._seq = 1
+        self._last_sent = ""
         self._text_parts: list[str] = []
-        self._connect_id = str(uuid.uuid4())
 
     async def connect(self) -> None:
+        self._seq = 2  # 配置帧占序列 1，音频帧从 2 开始
+        self._last_sent = ""
         self._ws = await websockets.connect(
             WS_ENDPOINT,
             additional_headers={
                 "X-Api-Key": self._api_key,
                 "X-Api-Resource-Id": RESOURCE_ID,
-                "X-Api-Connect-Id": self._connect_id,
+                "X-Api-Connect-Id": str(uuid.uuid4()),
                 "X-Api-Request-Id": str(uuid.uuid4()),
+                "X-Api-Sequence": "-1",
             },
         )
-        # 发送全量客户端请求（配置）
         config = {
-            "audio_params": {
-                "sample_rate": SAMPLE_RATE,
-                "bits": BITS,
-                "channels": CHANNELS,
-            },
-            "enable_vad": True,
-            "enable_punctuation": True,
+            "user": {"uid": "audio-capture"},
+            "audio": {"format": "pcm", "rate": 16000, "bits": 16, "channel": 1, "language": "zh-CN"},
+            "request": {"model_name": "bigmodel", "enable_itn": True, "enable_punc": True},
         }
         payload = _gzip(json.dumps(config).encode("utf-8"))
-        header = _build_header(0b0001, 0b0000, 0b0001, 0b0001, len(payload))
-        await self._ws.send(header + payload)
+        # 配置帧: Header + PayloadSize + Payload（无序列号，flags=0）
+        await self._ws.send(_header(0b0001, 0, 0b0001, 0b0001) + struct.pack(">I", len(payload)) + payload)
 
         self._running = True
         self._recv_task = asyncio.create_task(self._recv_loop())
         logger.info("ASR 实时会话已建立")
 
     async def feed(self, pcm: bytes) -> None:
-        """喂入 PCM 原始数据，不压缩直接发送。"""
+        """音频帧: Header + Sequence + PayloadSize + PCM。"""
         if not self._ws or not self._running:
             return
-        if not self._fed_once:
-            logger.info("ASR 首帧 PCM: %d 字节", len(pcm))
-            self._fed_once = True
         try:
-            header = _build_header(0b0010, 0b0000, 0b0000, 0b0000, len(pcm))
-            await self._ws.send(header + pcm)
+            seq_bytes = struct.pack(">I", self._seq)
+            self._seq += 1
+            await self._ws.send(
+                _header(0b0010, 0b0001, 0, 0) + seq_bytes + struct.pack(">I", len(pcm)) + pcm
+            )
+            if self._seq == 3:
+                logger.info("ASR 音频帧已开始推送 (seq=2+)")
         except websockets.exceptions.ConnectionClosed:
-            logger.warning("ASR WebSocket 已断开，停止推流")
+            logger.warning("ASR WebSocket 已断开")
             self._running = False
 
     async def finish(self) -> str:
-        """发送结束包，等待最终结果。"""
+        """结束帧: Header + 负序列号 + PayloadSize=0。"""
         if not self._ws or not self._running:
             return ""
         self._running = False
 
-        # 发送最后一包（flags=0b0001 表示结束）
-        header = _build_header(0b0010, 0b0001, 0b0000, 0b0000, 0)
         try:
-            await self._ws.send(header)
+            await self._ws.send(
+                _header(0b0010, 0b0011, 0, 0) + struct.pack(">i", -self._seq) + struct.pack(">I", 0)
+            )
         except Exception:
             pass
 
@@ -154,55 +119,77 @@ class StreamingASRSession:
 
         try:
             await self._ws.close()
-        except Exception:
+        except (Exception, asyncio.CancelledError):
             pass
         self._ws = None
         return "".join(self._text_parts)
 
     async def _recv_loop(self) -> None:
-        """接收识别结果。"""
+        """接收结果。"""
         logger.info("ASR 接收循环已启动")
         try:
             async for raw in self._ws:
                 if isinstance(raw, str):
-                    logger.debug("ASR 收到文本: %s", raw[:100])
                     continue
-                if len(raw) < 8:
-                    logger.info("ASR 收到短帧: %d 字节, hex=%s", len(raw), raw.hex())
+                if len(raw) < HDR:
                     continue
-                logger.info("ASR 收到二进制帧: %d 字节", len(raw))
-                # 解码看看是什么
-                _debug_dump_response(raw)
-                # 解析响应头（与 _build_header 格式一致）
+
                 msg_type = (raw[1] >> 4) & 0x0F
                 flags = raw[1] & 0x0F
-                compression = raw[2] & 0x0F
-                payload_size = ((raw[6] & 0xFF) << 8) | (raw[7] & 0xFF)
-                payload = raw[8:8 + payload_size]
+                comp = raw[2] & 0x0F
+                body = raw[HDR + SEQ + SIZ:]  # 跳过 Header + Seq + PayloadSize
 
-                if msg_type in (0b1001, 0b1011):  # Full Server Response
-                    if compression == 0b0001:
-                        payload = gzip.decompress(payload)
+                if msg_type == 0b1001:
+                    ack_body = raw[HDR:]
+                    json_start = ack_body.find(b"{")
+                    if json_start > 0:
+                        try:
+                            ack_json = json.loads(ack_body[json_start:].decode("utf-8"))
+                            result = ack_json.get("result", {})
+                            txt = result.get("text", "")
+                            if txt and txt != self._last_sent:
+                                self._last_sent = txt
+                                is_final = result.get("definite", False)
+                                logger.info("ASR[%s]%s: %s", self._source, " 最终" if is_final else "", txt)
+                                self._text_parts.append(txt)
+                                if self._tx_queue is not None:
+                                    try:
+                                        self._tx_queue.put_nowait((txt, is_final, self._source))
+                                        logger.info("转录入队[%s]: %s", self._source, txt[:50])
+                                    except Exception:
+                                        pass
+                        except Exception:
+                            pass
+                    continue
+
+                if msg_type == 0b1111:
+                    if comp == 0b0001:
+                        body = gzip.decompress(body)
+                    text = body.decode("utf-8", errors="replace")
+                    brace = text.find("{")
+                    if brace > 0:
+                        text = text[brace:]
                     try:
-                        response = json.loads(payload.decode("utf-8"))
+                        resp = json.loads(text)
                     except Exception:
                         continue
-                    text = response.get("text", "")
-                    if text:
-                        if response.get("definite", False):
-                            logger.info("ASR 最终: %s", text)
-                            self._text_parts.append(text)
-                            if self._on_text:
-                                self._on_text(text, is_final=True)
-                        else:
-                            logger.info("ASR 中间: %s", text)
-                            if text not in self._text_parts:
-                                if self._on_text:
-                                    self._on_text(text, is_final=False)
 
-                    # flags=0b0011 表示所有结果返回完毕
+                    if "error" in resp:
+                        logger.warning("ASR 错误: %s", resp.get("error", "")[:200])
+                        continue
+
+                    result = resp.get("result", {})
+                    txt = result.get("text", "")
+                    if txt:
+                        is_final = result.get("definite", False)
+                        logger.info("ASR%s: %s", " 最终" if is_final else "", txt)
+                        self._text_parts.append(txt)
+                        if self._on_text:
+                            self._on_text(txt, is_final=is_final)
+
                     if flags == 0b0011:
                         return
+
         except websockets.exceptions.ConnectionClosed:
             pass
         except Exception as exc:

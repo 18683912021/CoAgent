@@ -42,8 +42,10 @@ interface ControllerState {
   pendingBackfill: boolean;
   error: NativeCaptureError | null;
   streamMessage: string | null;
-  transcription: string;
-  transcriptionFinal: boolean;
+  micTranscription: string;
+  micTranscriptionFinal: boolean;
+  sysTranscription: string;
+  sysTranscriptionFinal: boolean;
 }
 
 type Action =
@@ -56,7 +58,7 @@ type Action =
   | {type: 'streamStats'; value: StreamStats}
   | {type: 'result'; value: CaptureResult}
   | {type: 'error'; value: NativeCaptureError | null}
-  | {type: 'transcription'; text: string; isFinal: boolean}
+  | {type: 'transcription'; text: string; isFinal: boolean; source: 'mic' | 'system'}
   | {type: 'snapshot'; value: Partial<ControllerState>};
 
 const INITIAL_STATE: ControllerState = {
@@ -72,8 +74,10 @@ const INITIAL_STATE: ControllerState = {
   pendingBackfill: false,
   error: null,
   streamMessage: null,
-  transcription: '',
-  transcriptionFinal: false,
+  micTranscription: '',
+  micTranscriptionFinal: false,
+  sysTranscription: '',
+  sysTranscriptionFinal: false,
 };
 
 function reducer(state: ControllerState, action: Action): ControllerState {
@@ -87,8 +91,10 @@ function reducer(state: ControllerState, action: Action): ControllerState {
         projectionGranted: false,
         result: null,
         error: null,
-        transcription: '',
-        transcriptionFinal: false,
+        micTranscription: '',
+        micTranscriptionFinal: false,
+        sysTranscription: '',
+        sysTranscriptionFinal: false,
       };
     case 'projection':
       return {...state, projectionGranted: action.value, error: null};
@@ -114,11 +120,11 @@ function reducer(state: ControllerState, action: Action): ControllerState {
     case 'error':
       return {...state, error: action.value};
     case 'transcription':
-      return {
-        ...state,
-        transcription: action.isFinal ? action.text : (state.transcription + action.text),
-        transcriptionFinal: action.isFinal,
-      };
+      console.log('[转录] reducer:', action.source, action.text, 'final:', action.isFinal);
+      if (action.source === 'system') {
+        return {...state, sysTranscription: action.text, sysTranscriptionFinal: action.isFinal};
+      }
+      return {...state, micTranscription: action.text, micTranscriptionFinal: action.isFinal};
     case 'snapshot':
       return {...state, ...action.value};
     default:
@@ -194,7 +200,8 @@ export function useAudioCaptureController() {
         dispatch({type: 'error', value});
       }),
       AudioCapture.onTranscription(event => {
-        dispatch({type: 'transcription', text: event.text, isFinal: event.isFinal});
+        console.log('[转录] 原生事件:', event.source, event.text, 'final:', event.isFinal);
+        dispatch({type: 'transcription', text: event.text, isFinal: event.isFinal, source: event.source});
       }),
     ];
 

@@ -44,7 +44,7 @@ class AudioCaptureService : Service(), AudioCaptureEngine.Callback, AudioStreamC
     fun onStreamState(state: StreamState, message: String?)
     fun onStreamStats(stats: StreamStats)
     fun onNativeError(error: CaptureException)
-    fun onTranscription(text: String, isFinal: Boolean)
+    fun onTranscription(text: String, isFinal: Boolean, source: String)
   }
 
   data class ServiceSnapshot(
@@ -362,8 +362,9 @@ class AudioCaptureService : Service(), AudioCaptureEngine.Callback, AudioStreamC
     listeners.forEach { it.onStreamStats(stats) }
   }
 
-  override fun onTranscription(text: String, isFinal: Boolean) {
-    listeners.forEach { it.onTranscription(text, isFinal) }
+  override fun onTranscription(text: String, isFinal: Boolean, source: String) {
+    android.util.Log.d("AudioCaptureService", "转发转录: text=$text isFinal=$isFinal source=$source listeners=${listeners.size}")
+    listeners.forEach { it.onTranscription(text, isFinal, source) }
   }
 
   override fun onDestroy() {

@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -43,10 +44,15 @@ async def audio_stream(ws: WebSocket):
     await ws.accept()
     logger.info("WebSocket 已连接")
 
+    global _transcription_queue
+    _transcription_queue = asyncio.Queue(maxsize=256)
+    sender_task: "asyncio.Task | None" = None
+
     legacy_session: AudioSession | None = None
     legacy_validator: PCMValidator | None = None
     v1_session: V1AudioSession | None = None
-    asr_session: StreamingASRSession | None = None
+    asr_sessions: dict[str, StreamingASRSession] = {}
+    ack_counter = 0
 
     try:
         first_message = await ws.receive()
@@ -95,17 +101,28 @@ async def audio_stream(ws: WebSocket):
                     payload = json.loads(text)
                     was_new = v1_session is None
                     v1_session = await handle_control_message(ws, payload, v1_session)
-                    # 新会话建立后，立即创建 ASR 连接
-                    if was_new and v1_session is not None and _ASR_READY and asr_session is None:
-                        try:
-                            asr_session = StreamingASRSession(
-                                api_key=_VOLC_API_KEY,
-                                on_text=lambda t, f: _enqueue_asr_result(t, f, ws),
-                            )
-                            await asr_session.connect()
-                            logger.info("实时 ASR 已启动")
-                        except Exception:
-                            logger.exception("ASR 连接失败，本次会话无实时识别")
+                    # 新会话建立后，按轨迹创建 ASR 连接
+                    if was_new and v1_session is not None and _ASR_READY:
+                        if sender_task is None:
+                            sender_task = asyncio.create_task(_transcription_sender(ws))
+                        source_mode = payload.get("source_mode", "mic")
+                        track_sources: list[str] = []
+                        if source_mode in ("mic", "both"):
+                            track_sources.append("mic")
+                        if source_mode in ("system", "both"):
+                            track_sources.append("system")
+                        for src in track_sources:
+                            try:
+                                s = StreamingASRSession(
+                                    api_key=_VOLC_API_KEY,
+                                    source=src,
+                                    tx_queue=_transcription_queue,
+                                )
+                                await s.connect()
+                                asr_sessions[src] = s
+                                logger.info("实时 ASR [%s] 已启动", src)
+                            except Exception:
+                                logger.exception("ASR [%s] 连接失败", src)
                 except (ProtocolError, ValidationError, ValueError, json.JSONDecodeError) as error:
                     code = error.code if isinstance(error, ProtocolError) else "E_CONTROL_MESSAGE"
                     await send_error(ws, code, str(error))
@@ -120,10 +137,14 @@ async def audio_stream(ws: WebSocket):
                         raise ProtocolError("E_SESSION_ID", "binary packet session does not match active session")
                     track = v1_session.require_track(header.source)
                     ack = track.write_packet(header, pcm_payload)
-                    await ws.send_json(ack.model_dump())
-                    # 实时 ASR：把 PCM 喂给火山引擎
-                    if asr_session is not None:
-                        await asr_session.feed(pcm_payload)
+                    # ACK 降频：每 10 帧发一次，避免锁死 WebSocket
+                    ack_counter += 1
+                    if ack_counter % 10 == 0:
+                        await ws.send_json(ack.model_dump())
+                    # 实时 ASR：按 source 路由到对应会话
+                    s = asr_sessions.get(header.source)
+                    if s is not None:
+                        await s.feed(pcm_payload)
                 except ProtocolError as error:
                     await send_error(ws, error.code, str(error))
 
@@ -133,11 +154,21 @@ async def audio_stream(ws: WebSocket):
         logger.exception("音频 WebSocket 异常")
         await safe_send_error(ws, "E_WEBSOCKET", str(error))
     finally:
-        if asr_session is not None:
+        for s in asr_sessions.values():
             try:
-                await asr_session.finish()
+                await s.finish()
             except Exception:
                 pass
+        asr_sessions.clear()
+        if sender_task:
+            sender_task.cancel()
+        if _transcription_queue:
+            # 清空队列
+            while not _transcription_queue.empty():
+                try:
+                    _transcription_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
         if v1_session is not None:
             v1_session.close_incomplete()
             logger.info(
@@ -284,22 +315,24 @@ async def safe_send_error(ws: WebSocket, code: str, message: str) -> None:
         pass
 
 
-def _enqueue_asr_result(text: str, is_final: bool, ws: WebSocket) -> None:
-    """将 ASR 识别结果异步发送到客户端。"""
-    import asyncio
-
-    async def send():
-        try:
-            await ws.send_json({
-                "type": "transcription",
-                "text": text,
-                "is_final": is_final,
-            })
-        except Exception:
-            pass
-
+async def _transcription_sender(ws: WebSocket):
+    """后台任务：从队列取转录消息并发送到客户端。"""
+    logger.info("转录发送器已启动")
     try:
-        loop = asyncio.get_running_loop()
-        loop.create_task(send())
-    except RuntimeError:
+        while True:
+            text, is_final, source = await _transcription_queue.get()
+            try:
+                await ws.send_json({
+                    "type": "transcription",
+                    "text": text,
+                    "is_final": is_final,
+                    "source": source,
+                })
+                logger.info("转录已发送[%s]: %s", source, text[:50])
+            except Exception:
+                break
+    except asyncio.CancelledError:
         pass
+
+
+_transcription_queue: "asyncio.Queue | None" = None

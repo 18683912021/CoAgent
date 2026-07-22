@@ -12,7 +12,6 @@ import {SafeAreaView} from 'react-native-safe-area-context';
 
 import type {CaptureSource} from '../../native/audio-capture';
 import {AudioVisualizer} from './components/AudioVisualizer';
-import {FileInfo} from './components/FileInfo';
 import {StatusLight} from './components/StatusLight';
 import {StreamingControl} from './components/StreamingControl';
 import {Timer} from './components/Timer';
@@ -42,7 +41,6 @@ export default function AudioCaptureScreen(): React.JSX.Element {
     !active &&
     (state.source === 'mic' ||
       (controller.canUseSystem && state.projectionGranted));
-  const outputTracks = state.result?.tracks ?? [];
   const systemUnavailable = state.capabilities?.systemAudio === false;
 
   const background = dark ? '#020617' : '#f1f5f9';
@@ -147,14 +145,28 @@ export default function AudioCaptureScreen(): React.JSX.Element {
           ) : null}
         </Section>
 
-        {state.transcription ? (
-          <Section title="实时识别">
-            <Text style={[styles.transcriptionText, state.transcriptionFinal && styles.transcriptionFinal]}>
-              {state.transcription}
-            </Text>
-            {!state.transcriptionFinal && state.streamState === 'ready' ? (
-              <Text style={styles.transcribingHint}>识别中…</Text>
+        {state.streamState === 'ready' || state.micTranscription ? (
+          <Section title="麦克风识别">
+            {state.micTranscription ? (
+              <Text style={[styles.transcriptionText, state.micTranscriptionFinal && styles.transcriptionFinal]}>
+                {state.micTranscription}
+              </Text>
             ) : null}
+            {!state.micTranscriptionFinal && (
+              <Text style={styles.transcribingHint}>{state.micTranscription ? '识别中…' : '等待语音…'}</Text>
+            )}
+          </Section>
+        ) : null}
+        {state.source !== 'mic' && (state.streamState === 'ready' || state.sysTranscription) ? (
+          <Section title="设备音频识别">
+            {state.sysTranscription ? (
+              <Text style={[styles.transcriptionText, state.sysTranscriptionFinal && styles.transcriptionFinal]}>
+                {state.sysTranscription}
+              </Text>
+            ) : null}
+            {!state.sysTranscriptionFinal && (
+              <Text style={styles.transcribingHint}>{state.sysTranscription ? '识别中…' : '等待语音…'}</Text>
+            )}
           </Section>
         ) : null}
 
@@ -197,26 +209,6 @@ export default function AudioCaptureScreen(): React.JSX.Element {
               {state.error.source ? ` · 来源：${state.error.source}` : ''}
             </Text>
           </View>
-        ) : null}
-
-        {outputTracks.length > 0 ? (
-          <Section title="已采集文件">
-            {outputTracks.map(track => (
-              <FileInfo
-                key={track.source}
-                track={track}
-                onShare={kind => controller.shareOutput(track.source, kind)}
-              />
-            ))}
-            {state.pendingBackfill ? (
-              <TouchableOpacity
-                accessibilityRole="button"
-                style={styles.retryButton}
-                onPress={controller.retryBackfill}>
-                <Text style={styles.retryButtonText}>重试完整文件回传</Text>
-              </TouchableOpacity>
-            ) : null}
-          </Section>
         ) : null}
 
         <TouchableOpacity

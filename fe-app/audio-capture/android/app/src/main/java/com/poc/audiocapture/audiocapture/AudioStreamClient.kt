@@ -21,7 +21,7 @@ class AudioStreamClient {
   interface Listener {
     fun onStreamState(state: StreamState, message: String? = null)
     fun onStreamStats(stats: StreamStats)
-    fun onTranscription(text: String, isFinal: Boolean)
+    fun onTranscription(text: String, isFinal: Boolean, source: String)
   }
 
   private data class OutboundPacket(val bytes: ByteArray, val droppable: Boolean)
@@ -88,7 +88,10 @@ class AudioStreamClient {
         }
 
         override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
-          // The v1 server currently sends control messages as text only.
+          executor.execute {
+            if (generation != socketGeneration) return@execute
+            handleTextMessage(bytes.utf8())
+          }
         }
 
         override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
@@ -281,7 +284,9 @@ class AudioStreamClient {
 
   private fun handleTextMessage(text: String) {
     val message = runCatching { JSONObject(text) }.getOrNull() ?: return
-    when (message.optString("type")) {
+    val msgType = message.optString("type")
+    android.util.Log.d("AudioStreamClient", "收到消息 type=$msgType text=${text.take(100)}")
+    when (msgType) {
       "ready" -> {
         connectTimeout?.cancel(false)
         transition(StreamState.READY)
@@ -301,12 +306,15 @@ class AudioStreamClient {
       }
       "error" -> transition(StreamState.DEGRADED, message.optString("message", "Server rejected audio data"))
       "transcription" -> {
-        val text = message.optString("text", "")
+        val t = message.optString("text", "")
         val isFinal = message.optBoolean("is_final", false)
-        if (text.isNotEmpty()) {
-          listener?.onTranscription(text, isFinal)
+        val src = message.optString("source", "mic")
+        android.util.Log.d("AudioStreamClient", "转录: text=$t isFinal=$isFinal source=$src")
+        if (t.isNotEmpty()) {
+          listener?.onTranscription(t, isFinal, src)
         }
       }
+      else -> android.util.Log.w("AudioStreamClient", "未处理的消息类型: $msgType")
     }
   }
 

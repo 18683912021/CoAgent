@@ -377,6 +377,6 @@ class AudioCaptureEngine(
   companion object {
     private val SAMPLE_RATE_CANDIDATES = listOf(16_000, 48_000, 44_100)
     private const val STOP_JOIN_TIMEOUT_MS = 3_000L
-    private val LEVEL_INTERVAL_NANOS = 100_000_000L
+    private val LEVEL_INTERVAL_NANOS = 500_000_000L
   }
 }

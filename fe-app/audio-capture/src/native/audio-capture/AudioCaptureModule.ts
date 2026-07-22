@@ -40,7 +40,11 @@ function subscribe<T>(
   eventName: string,
   listener: (event: T) => void,
 ): EmitterSubscription | {remove(): void} {
-  return emitter?.addListener(eventName, listener) ?? {remove: () => undefined};
+  console.log('[Bridge] 注册事件监听:', eventName);
+  return emitter?.addListener(eventName, (event: T) => {
+    console.log('[Bridge] 收到事件:', eventName, JSON.stringify(event).slice(0, 200));
+    listener(event);
+  }) ?? {remove: () => undefined};
 }
 
 export const AudioCapture = {

@@ -346,10 +346,12 @@ class AudioCaptureModule(
     emit(EVENT_NATIVE_ERROR, errorToMap(error))
   }
 
-  override fun onTranscription(text: String, isFinal: Boolean) {
+  override fun onTranscription(text: String, isFinal: Boolean, source: String) {
+    android.util.Log.d("AudioCaptureModule", "发射转录事件: text=$text isFinal=$isFinal source=$source")
     emit(EVENT_TRANSCRIPTION, Arguments.createMap().apply {
       putString("text", text)
       putBoolean("isFinal", isFinal)
+      putString("source", source)
     })
   }
 

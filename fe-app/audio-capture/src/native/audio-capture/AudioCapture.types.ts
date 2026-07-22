@@ -111,6 +111,7 @@ export interface NativeStreamStateEvent {
 export interface TranscriptionEvent {
   text: string;
   isFinal: boolean;
+  source: 'mic' | 'system';
 }
 
 export interface AudioCaptureNativeModule {
