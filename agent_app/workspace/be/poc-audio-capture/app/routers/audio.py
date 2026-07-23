@@ -41,11 +41,7 @@ _VOLC_API_KEY = os.getenv("VOLC_API_KEY", "")
 _ASR_READY = bool(_VOLC_API_KEY)
 
 # 0.5: mode → max_tokens 路由
-MODE_MAX_TOKENS: dict[str, int] = {
-    "brief": 300,
-    "normal": 700,
-    "detailed": 1200,
-}
+LLM_MAX_TOKENS = 20000
 
 
 @router.websocket("/ws/audio/stream")
@@ -58,7 +54,7 @@ async def audio_stream(ws: WebSocket):
     sender_task: "asyncio.Task | None" = None
 
     # ── LLM 上下文（per-connection，按需启动） ──
-    llm_queue: "asyncio.Queue[tuple[str, str, str]]" = asyncio.Queue(maxsize=32)  # (text, mode, language)
+    llm_queue: "asyncio.Queue[tuple[str, str]]" = asyncio.Queue(maxsize=32)  # (text, language)
     llm_worker_task: "asyncio.Task | None" = None
     llm_service: LLMService | None = None
     llm_config: dict[str, Any] = {}  # FE 可通过 config 帧动态覆盖 enabled/max_tokens/model
@@ -137,10 +133,7 @@ async def audio_stream(ws: WebSocket):
                         if llm_config.get("enabled") is False:
                             raise ProtocolError("E_LLM_DISABLED", "LLM 已被 config 禁用")
                         text_val = payload.get("text", "")
-                        mode = payload.get("mode", "normal")
                         language = payload.get("language", "zh")
-                        if mode not in ("brief", "normal", "detailed"):
-                            raise ProtocolError("E_CONTROL_MESSAGE", f"invalid mode: {mode}")
                         if language not in ("zh", "en"):
                             raise ProtocolError("E_CONTROL_MESSAGE", f"invalid language: {language}")
                         if not text_val:
@@ -160,8 +153,8 @@ async def audio_stream(ws: WebSocket):
 
                         if llm_service and llm_service.ready:
                             try:
-                                llm_queue.put_nowait((text_val, mode, language))
-                                logger.info("LLM 手动触发入队: mode=%s lang=%s text=%.60s", mode, language, text_val)
+                                llm_queue.put_nowait((text_val, language))
+                                logger.info("LLM 手动触发入队: lang=%s text=%.60s", language, text_val)
                             except asyncio.QueueFull:
                                 logger.warning("LLM 队列满，丢弃 llm_query")
                                 await send_error(ws, "E_LLM_QUEUE_FULL", "LLM 请求过于频繁，请稍后重试")
@@ -419,7 +412,7 @@ async def _transcription_sender(ws: WebSocket):
 
 async def _llm_worker(
     ws: WebSocket,
-    queue: "asyncio.Queue[tuple[str, str, str]]",  # (text, mode, language)
+    queue: "asyncio.Queue[tuple[str, str]]",  # (text, language)
     llm_service: LLMService,
     llm_config: dict[str, Any],
 ):
@@ -434,11 +427,11 @@ async def _llm_worker(
 
     try:
         while True:
-            question, mode, language = await queue.get()
+            question, language = await queue.get()
 
             # 动态读取 config（FE 可能在运行时更新）
             model: str = llm_config.get("model") or "deepseek-chat"
-            max_tokens: int = llm_config.get("max_tokens") or MODE_MAX_TOKENS.get(mode, 500)
+            max_tokens: int = llm_config.get("max_tokens") or LLM_MAX_TOKENS
             ts = int(_time.time() * 1000)
 
             try:
@@ -446,7 +439,6 @@ async def _llm_worker(
                 await ws.send_json({
                     "type": "llm_start",
                     "question_text": question,
-                    "mode": mode,
                     "language": language,
                     "timestamp": ts,
                 })
@@ -474,19 +466,17 @@ async def _llm_worker(
                 await ws.send_json({
                     "type": "llm_done",
                     "full_answer": full_answer,
-                    "mode": mode,
                     "timestamp": int(_time.time() * 1000),
                 })
-                logger.info("LLM 完成 [%s/%d tokens]: %.50s → %d chunks",
-                            mode, max_tokens, question, chunk_index + 1)
+                logger.info("LLM 完成 [%d tokens]: %.50s → %d chunks",
+                            max_tokens, question, chunk_index + 1)
 
             except Exception as exc:
-                logger.exception("LLM 本轮失败 [%s]: %.50s", mode, question)
+                logger.exception("LLM 本轮失败: %.50s", question)
                 try:
                     await ws.send_json({
                         "type": "llm_done",
                         "full_answer": f"[生成失败] {exc}",
-                        "mode": mode,
                         "error": str(exc),
                         "timestamp": int(_time.time() * 1000),
                     })

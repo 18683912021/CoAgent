@@ -16,7 +16,6 @@ import {
   useAudioCaptureController,
 } from './hooks/useAudioCaptureController';
 import ConversationBubble from './components/ConversationBubble';
-import ModeSheet from './components/ModeSheet';
 import SeparatorLine from './components/SeparatorLine';
 import {useTheme, space, radius} from './theme';
 
@@ -142,7 +141,7 @@ export default function InterviewScreen(): React.JSX.Element {
           timestamp={msg.timestamp}
           onPress={
             msg.role !== 'ai'
-              ? () => controller.selectBubble(msg.id)
+              ? () => controller.sendLLMQuery(msg.id)
               : undefined
           }
           onRetry={
@@ -358,13 +357,6 @@ export default function InterviewScreen(): React.JSX.Element {
         </TouchableOpacity>
       </View>
 
-      {/* ── Mode selection bottom sheet ── */}
-      <ModeSheet
-        visible={state.showModeSheet}
-        onSelect={controller.sendLLMQuery}
-        onDismiss={controller.dismissSheet}
-        dark={dark}
-      />
     </SafeAreaView>
   );
 }

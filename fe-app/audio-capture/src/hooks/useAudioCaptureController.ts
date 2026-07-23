@@ -81,7 +81,7 @@ type Action =
   | {type: 'snapshot'; value: Partial<ControllerState>}
   | {type: 'select_bubble'; bubbleId: string}
   | {type: 'dismiss_sheet'}
-  | {type: 'llm_query_sent'; aiBubbleId: string; insertedAfterId: string; mode: LLMMode; timestamp: number}
+  | {type: 'llm_query_sent'; aiBubbleId: string; insertedAfterId: string; timestamp: number}
   | {type: 'llm_answer_error'; aiBubbleId: string}
   | {type: 'set_language'; value: 'zh' | 'en'};
 
@@ -159,11 +159,17 @@ function reducer(state: ControllerState, action: Action): ControllerState {
         const shouldSplit = gap > 3000 || action.isFinal;
 
         if (shouldSplit) {
+          const oldText = streamingBubble.text;
+          const delta = action.text.startsWith(oldText) ? action.text.slice(oldText.length) : action.text;
+          if (!delta.trim()) {
+            return {...state, conversation: state.conversation.map((m, i) =>
+              i === streamingIdx ? {...m, status: 'done' as const, timestamp: now} : m)};
+          }
           const doneBubble = {...streamingBubble, status: 'done' as const};
           const newMsg: ConversationMessage = {
             id: genId(role === 'interviewer' ? 'int' : 'usr'),
             role,
-            text: action.text,
+            text: delta.trim(),
             status: 'streaming',
             timestamp: now,
           };
@@ -210,7 +216,6 @@ function reducer(state: ControllerState, action: Action): ControllerState {
         role: 'ai',
         text: '',
         status: 'loading',
-        mode: action.mode,
         timestamp: action.timestamp,
       };
       return {
@@ -432,11 +437,19 @@ export function useAudioCaptureController() {
 
     const appStateSub = AppState.addEventListener('change', next => {
       if (next === 'active') { syncSnapshot(); }
+      if (next === 'background') {
+        // 退到后台：停止采集 + 断开连接，避免原生服务残留在后台
+        AudioCapture.stopCapture().catch(() => {});
+        AudioCapture.disconnectStream().catch(() => {});
+      }
     });
 
     return () => {
       subscriptions.forEach(s => s.remove());
       appStateSub.remove();
+      // 组件卸载时清理：停止采集 + 断开连接
+      AudioCapture.stopCapture().catch(() => {});
+      AudioCapture.disconnectStream().catch(() => {});
     };
   }, [syncSnapshot]);
 
@@ -479,9 +492,12 @@ export function useAudioCaptureController() {
           throw createError('E_PROJECTION_DENIED', 'consent', '需要系统音频授权才能采集。');
         }
       }
-      if (state.streamState !== 'ready' && state.streamState !== 'connecting') {
-        try { await AudioCapture.connectStream(STREAM_URL); } catch (e) { /* 可选 */ }
+      // 重连前先断开残留连接，避免卡死
+      if (state.streamState !== 'idle') {
+        try { await AudioCapture.disconnectStream(); } catch (e) { /* ignore */ }
+        dispatch({type: 'streamState', value: 'idle'});
       }
+      try { await AudioCapture.connectStream(STREAM_URL); } catch (e) { /* 可选 */ }
       operationCounter.current += 1;
       const operationId = `${Date.now()}-${operationCounter.current}`;
       dispatch({type: 'captureState', value: 'preparing', payload: {result: null, startedAtUtc: null}});
@@ -503,25 +519,15 @@ export function useAudioCaptureController() {
     } catch (error) {
       dispatch({type: 'error', value: normalizeError(error, 'E_STOP')});
     }
+    // 断开 WebSocket
+    try { await AudioCapture.disconnectStream(); } catch (e) { /* ignore */ }
+    dispatch({type: 'streamState', value: 'idle'});
   }, []);
 
   // ── 0.5: Tap bubble → show mode sheet ──
-  const selectBubble = useCallback((bubbleId: string) => {
-    const msg = state.conversation.find(m => m.id === bubbleId);
-    if (!msg || msg.role === 'ai') { return; }
-    dispatch({type: 'select_bubble', bubbleId});
-  }, [state.conversation]);
-
-  // ── 0.5: Dismiss sheet ──
-  const dismissSheet = useCallback(() => {
-    dispatch({type: 'dismiss_sheet'});
-  }, []);
-
-  // ── 0.5: Send LLM query ──
-  const sendLLMQuery = useCallback((mode: LLMMode) => {
-    const clickedMsg = state.selectedMessageId
-      ? state.conversation.find(m => m.id === state.selectedMessageId)
-      : null;
+  // ── 0.5: 点击气泡直接触发 LLM ──
+  const sendLLMQuery = useCallback((bubbleId: string) => {
+    const clickedMsg = state.conversation.find(m => m.id === bubbleId);
     if (!clickedMsg || clickedMsg.role === 'ai') { return; }
 
     const aiBubbleId = genId('llm');
@@ -532,19 +538,17 @@ export function useAudioCaptureController() {
       type: 'llm_query_sent',
       aiBubbleId,
       insertedAfterId: clickedMsg.id,
-      mode,
       timestamp: now,
     });
 
     AudioCapture.sendControl({
       type: 'llm_query',
       text: clickedMsg.text,
-      mode,
       language: state.language,
       bubble_source: bubbleSource,
     });
 
-    console.log('[LLM] 发送 llm_query:', {text: clickedMsg.text.slice(0, 40), mode, language: state.language, bubble_source: bubbleSource});
+    console.log('[LLM] 发送 llm_query:', {text: clickedMsg.text.slice(0, 40), language: state.language, bubble_source: bubbleSource});
   }, [state.selectedMessageId, state.conversation, state.language]);
 
   // ── 0.5: Retry failed AI answer ──
@@ -565,7 +569,6 @@ export function useAudioCaptureController() {
       type: 'llm_query_sent',
       aiBubbleId: newAiBubbleId,
       insertedAfterId: clickedMsg.id,
-      mode: aiMsg.mode ?? 'normal',
       timestamp: now,
     });
 
@@ -613,8 +616,6 @@ export function useAudioCaptureController() {
     stop,
     syncSnapshot,
     share,
-    selectBubble,
-    dismissSheet,
     sendLLMQuery,
     retryLLM,
     selectedMessage,
