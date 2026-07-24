@@ -545,6 +545,36 @@ class BaseAgent:
 
     # ── 缓存友好的 Prompt 构建 ────────────────────────
 
+    # ── @ 协作消息上下文注入 ──────────────────────────
+
+    _TEAMMATE_NAMES = ["小柯", "酱瓜", "小吴"]
+
+    @classmethod
+    def _is_teammate_at(cls, text: str) -> bool:
+        """检测消息是否包含对队友的 @。"""
+        return any(f"@{name}" in text for name in cls._TEAMMATE_NAMES)
+
+    @classmethod
+    def _build_collaboration_context(cls, user_message: str) -> str:
+        """如果是队友 @ 消息，注入协作上下文提醒。
+
+        Agent 在收到 @ 后会立即处理，但这个提示保证它：
+        1. 区分 [通知] 和 [协商]
+        2. 处理完后检查相关文档是否有更新
+        3. 如果有未完成的任务，以最新协作结论为准继续
+        """
+        if not cls._is_teammate_at(user_message):
+            return ""
+        return (
+            "[协作消息] ⚠️ 这是一条队友发给你的最新消息。请先处理它：\n"
+            "- 如果是 [通知]（信息已确认）：整合到任务文档 → 不回 @ → 继续你之前的工作\n"
+            "- 如果是 [协商]（需要你回复）：立刻回复 → 最多两轮收敛 → 达成结论后更新文档\n"
+            "- 处理完成后，如果你手头有未完成的任务，先检查相关文档（任务文档/API 契约等）"
+            "是否被此次协作更新了 → 以最新结论为准继续"
+        )
+
+    # ── 模式提示 ────────────────────────────────────────
+
     def _build_mode_reminder(self, intent: str) -> str:
         """模式提示：按意图类型返回对应的行为约束。"""
         if intent == "chat":
@@ -673,12 +703,15 @@ class BaseAgent:
         # ── Lazy Context：按意图选择 prompt 大小 ──
         self._set_intent(intent)
 
+        # ── @ 协作消息检测：队友中断当前任务的真实入口 ──
+        collaboration_context = self._build_collaboration_context(user_message)
+
         # ── 注入个人记忆 + 今日日志 + 模式提示到用户消息（不破坏 system cache）──
         facts_preamble = self._build_facts_preamble()
         daily_preamble = self._build_daily_preamble()
         notes_preamble = self._build_notes_preamble()
         ephemeral = self._build_ephemeral_prefix(intent)
-        preamble_parts = [p for p in [ephemeral, facts_preamble, daily_preamble, notes_preamble] if p]
+        preamble_parts = [p for p in [ephemeral, collaboration_context, facts_preamble, daily_preamble, notes_preamble] if p]
         preamble = "\n\n".join(preamble_parts).strip()
         augmented_message = f"{preamble}\n\n---\n用户指令: {user_message}" if preamble else user_message
 
