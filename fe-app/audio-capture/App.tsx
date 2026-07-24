@@ -1,12 +1,12 @@
 import React from 'react';
 import {SafeAreaProvider} from 'react-native-safe-area-context';
 
-import InterviewScreen from './src/InterviewScreen';
+import TabNavigator from './src/navigation/TabNavigator';
 
 export default function App(): React.JSX.Element {
   return (
     <SafeAreaProvider>
-      <InterviewScreen />
+      <TabNavigator />
     </SafeAreaProvider>
   );
 }

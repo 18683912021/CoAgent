@@ -116,7 +116,6 @@ export interface TranscriptionEvent {
 
 export interface LLMStartEvent {
   question_text: string;
-  mode: string;
   language: string;
   timestamp: number;
 }
@@ -129,7 +128,6 @@ export interface LLMChunkEvent {
 
 export interface LLMDoneEvent {
   full_answer: string;
-  mode: string;
   timestamp: number;
   error?: string;
 }

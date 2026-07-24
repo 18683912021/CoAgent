@@ -73,7 +73,15 @@ class StreamingASRSession:
         config = {
             "user": {"uid": "audio-capture"},
             "audio": {"format": "pcm", "rate": 16000, "bits": 16, "channel": 1, "language": "zh-CN"},
-            "request": {"model_name": "bigmodel", "enable_itn": True, "enable_punc": True, "enable_vad": True},
+            "request": {
+                "model_name": "bigmodel",
+                "enable_itn": True,
+                "enable_punc": True,
+                "enable_vad": True,
+                # ── 延迟优化 ──
+                "enable_first_char_accel": True,   # 首字加速：音频块 200ms→100ms，首字延迟 ↓30-40%
+                "context_history_length": 5,        # 多轮上下文感知，提升术语连贯性
+            },
         }
         payload = _gzip(json.dumps(config).encode("utf-8"))
         # 配置帧: Header + PayloadSize + Payload（无序列号，flags=0）

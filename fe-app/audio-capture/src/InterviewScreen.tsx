@@ -2,6 +2,7 @@ import React, {useCallback, useEffect, useMemo, useRef} from 'react';
 import {
   Animated,
   FlatList,
+  Platform,
   StatusBar,
   StyleSheet,
   Text,
@@ -17,17 +18,16 @@ import {
 } from './hooks/useAudioCaptureController';
 import ConversationBubble from './components/ConversationBubble';
 import SeparatorLine from './components/SeparatorLine';
-import {useTheme, space, radius} from './theme';
+import {useTheme, space, radius, type} from './theme';
 
 // ── Display item for FlatList (bubble or separator) ──
 type DisplayItem =
   | {type: 'bubble'; message: ConversationMessage}
   | {type: 'separator'; id: string};
 
-// ── Pulsing Dot Component ──
-function PulsingDot({color}: {color: string}) {
+// ── Pulsing Dot ──
+function PulsingDot({color, size = 8}: {color: string; size?: number}) {
   const anim = useRef(new Animated.Value(1)).current;
-
   useEffect(() => {
     const pulse = Animated.loop(
       Animated.sequence([
@@ -38,43 +38,39 @@ function PulsingDot({color}: {color: string}) {
     pulse.start();
     return () => pulse.stop();
   }, [anim]);
-
   return (
     <Animated.View
-      style={[
-        styles.pulseDot,
-        {backgroundColor: color, opacity: anim, transform: [{scale: anim}]},
-      ]}
+      style={{
+        width: size,
+        height: size,
+        borderRadius: size / 2,
+        backgroundColor: color,
+        opacity: anim,
+        transform: [{scale: anim}],
+      }}
     />
   );
 }
 
-// ── Mic Level Bar Component ──
+// ── Mic Level Bars ──
 function MicLevelBar({level, dark}: {level: number; dark: boolean}) {
   const t = useTheme(dark);
-  const barCount = 5;
+  const barCount = 7;
   const activeBars = Math.max(1, Math.round(level * barCount));
-
   return (
-    <View style={styles.levelBarRow}>
+    <View style={premiumStyles.levelBarRow}>
       {Array.from({length: barCount}).map((_, i) => {
         const isActive = i < activeBars;
-        const height = 4 + (i + 1) * 3;
+        const h = 3 + (i + 1) * 2.5;
         return (
           <View
             key={i}
-            style={[
-              styles.levelBar,
-              {
-                height,
-                backgroundColor: isActive
-                  ? i < 3
-                    ? t.success
-                    : t.warning
-                  : t.divider,
-                borderRadius: 2,
-              },
-            ]}
+            style={{
+              width: 3,
+              height: h,
+              borderRadius: 1.5,
+              backgroundColor: isActive ? (i < 4 ? t.success : t.warning) : t.divider,
+            }}
           />
         );
       })}
@@ -89,6 +85,7 @@ export default function InterviewScreen(): React.JSX.Element {
   const dark = useColorScheme() === 'dark';
   const t = useTheme(dark);
   const flatListRef = useRef<FlatList<DisplayItem>>(null);
+  const isNearBottom = useRef(true); // 用户是否在底部（决定是否自动滚动）
 
   const active = state.captureState === 'capturing';
   const connecting = state.streamState === 'connecting';
@@ -97,7 +94,7 @@ export default function InterviewScreen(): React.JSX.Element {
   const isEmpty = conversation.length === 0;
   const micLevel = state.levels?.mic ?? 0;
 
-  // ── Build display list with 3s separators ──
+  // ── Display list ──
   const displayItems: DisplayItem[] = useMemo(() => {
     const items: DisplayItem[] = [];
     for (let i = 0; i < conversation.length; i++) {
@@ -106,8 +103,7 @@ export default function InterviewScreen(): React.JSX.Element {
         const prev = conversation[i - 1]!;
         const sameRole = prev.role === msg.role;
         const isTranscription = msg.role === 'interviewer' || msg.role === 'user';
-        const isPrevTranscription =
-          prev.role === 'interviewer' || prev.role === 'user';
+        const isPrevTranscription = prev.role === 'interviewer' || prev.role === 'user';
         if (sameRole && isTranscription && isPrevTranscription) {
           const gap = msg.timestamp - prev.timestamp;
           if (gap > 3000) {
@@ -120,11 +116,20 @@ export default function InterviewScreen(): React.JSX.Element {
     return items;
   }, [conversation]);
 
-  const scrollToEnd = useCallback(() => {
-    setTimeout(() => flatListRef.current?.scrollToEnd({animated: true}), 100);
+  const scrollToEnd = useCallback((force = false) => {
+    if (!force && !isNearBottom.current) { return; }
+    setTimeout(() => flatListRef.current?.scrollToEnd({animated: false}), 50);
   }, []);
 
   const onContentSizeChange = useCallback(() => scrollToEnd(), [scrollToEnd]);
+
+  const onFlatListLayout = useCallback(() => scrollToEnd(true), [scrollToEnd]);
+
+  const onScroll = useCallback((event: {nativeEvent: {contentOffset: {y: number}; contentSize: {height: number}; layoutMeasurement: {height: number}}}) => {
+    const {contentOffset, contentSize, layoutMeasurement} = event.nativeEvent;
+    const distToBottom = contentSize.height - contentOffset.y - layoutMeasurement.height;
+    isNearBottom.current = distToBottom < 50;
+  }, []);
 
   const renderItem = useCallback(
     ({item}: {item: DisplayItem}) => {
@@ -137,18 +142,9 @@ export default function InterviewScreen(): React.JSX.Element {
           role={msg.role}
           text={msg.text}
           status={msg.status}
-          mode={msg.mode}
           timestamp={msg.timestamp}
-          onPress={
-            msg.role !== 'ai'
-              ? () => controller.sendLLMQuery(msg.id)
-              : undefined
-          }
-          onRetry={
-            msg.role === 'ai' && msg.status === 'error'
-              ? () => controller.retryLLM(msg.id)
-              : undefined
-          }
+          onPress={msg.role !== 'ai' ? () => controller.sendLLMQuery(msg.id) : undefined}
+          onRetry={msg.role === 'ai' && msg.status === 'error' ? () => controller.retryLLM(msg.id) : undefined}
           dark={dark}
         />
       );
@@ -157,83 +153,67 @@ export default function InterviewScreen(): React.JSX.Element {
   );
 
   const keyExtractor = useCallback(
-    (item: DisplayItem) =>
-      item.type === 'separator' ? item.id : item.message.id,
+    (item: DisplayItem) => (item.type === 'separator' ? item.id : item.message.id),
     [],
   );
 
-  // ── Status config ──
+  // ── Status ──
   const statusConfig = active
-    ? {label: '面试中', color: t.success, dotColor: t.success}
+    ? {label: '面试中', color: t.success, dot: true}
     : connecting
-      ? {label: '连接中', color: t.warning, dotColor: t.warning}
-      : {label: '就绪', color: t.textTertiary, dotColor: t.textTertiary};
+      ? {label: '连接中', color: t.warning, dot: true}
+      : {label: '就绪', color: t.accent, dot: false};
 
   return (
-    <SafeAreaView
-      style={[styles.safeArea, {backgroundColor: t.bg}]}
-      edges={['top', 'left', 'right']}>
-      <StatusBar
-        barStyle={dark ? 'light-content' : 'dark-content'}
-        backgroundColor={t.bgHeader}
-      />
+    <SafeAreaView style={[premiumStyles.safe, {backgroundColor: t.bg}]} edges={['top', 'left', 'right']}>
+      <StatusBar barStyle={dark ? 'light-content' : 'dark-content'} backgroundColor="transparent" translucent />
 
       {/* ── Header ── */}
-      <View style={[styles.header, {backgroundColor: t.bgHeader, borderBottomColor: t.divider}]}>
-        <View style={styles.headerLeft}>
-          <View style={[styles.appIcon, {backgroundColor: t.accentLight}]}>
-            <Text style={styles.appIconText}>🎯</Text>
+      <View style={[premiumStyles.header, {backgroundColor: t.bgHeader, borderBottomColor: t.divider}]}>
+        <View style={premiumStyles.headerLeft}>
+          <View style={[premiumStyles.appIcon, {backgroundColor: t.accentLight}]}>
+            <Text style={premiumStyles.appIconText}>🎯</Text>
           </View>
           <View>
-            <Text style={[styles.headerTitle, {color: t.textPrimary}]}>
-              面试助手
-            </Text>
-            <Text style={[styles.headerSubtitle, {color: t.textTertiary}]}>
-              AI 实时辅助
-            </Text>
+            <Text style={[premiumStyles.headerTitle, {color: t.textPrimary}]}>AI 面试助手</Text>
+            <Text style={[premiumStyles.headerSub, {color: t.textTertiary}]}>实时转写 · AI 辅助</Text>
           </View>
         </View>
-
-        <View style={[styles.statusBadge, {backgroundColor: statusConfig.color + '18'}]}>
-          {active && <PulsingDot color={statusConfig.dotColor} />}
-          <View
-            style={[
-              styles.statusDotStatic,
-              {backgroundColor: active ? undefined : statusConfig.dotColor},
-              !active && {backgroundColor: statusConfig.dotColor},
-            ]}
-          />
-          <Text style={[styles.statusBadgeText, {color: statusConfig.color}]}>
-            {statusConfig.label}
-          </Text>
+        <View style={[premiumStyles.statusBadge, {backgroundColor: statusConfig.color + '18'}]}>
+          {statusConfig.dot && <PulsingDot color={statusConfig.color} size={7} />}
+          <View style={[premiumStyles.statusDot, !statusConfig.dot && {backgroundColor: statusConfig.color}]} />
+          <Text style={[premiumStyles.statusText, {color: statusConfig.color}]}>{statusConfig.label}</Text>
         </View>
       </View>
 
-      {/* ── Conversation area ── */}
+      {/* ── Body ── */}
       {isEmpty ? (
-        <View style={styles.emptyContainer}>
-          <View style={[styles.emptyIconWrap, {backgroundColor: t.accentLight}]}>
-            <Text style={styles.emptyIcon}>🎤</Text>
+        <View style={premiumStyles.emptyWrap}>
+          <View style={premiumStyles.emptyHero}>
+            <View style={[premiumStyles.emptyIconWrap, {backgroundColor: t.accentLight}]}>
+              <Text style={premiumStyles.emptyIcon}>🎤</Text>
+            </View>
+            <Text style={[premiumStyles.emptyTitle, {color: t.textPrimary}]}>准备开始面试</Text>
+            <Text style={[premiumStyles.emptySub, {color: t.textSecondary}]}>
+              {!active ? '点击下方按钮，AI 将实时转写对话并生成建议' : !streamReady ? '正在建立安全连接…' : '点击任意对话气泡，获取 AI 专业回答'}
+            </Text>
           </View>
-          <Text style={[styles.emptyTitle, {color: t.textPrimary}]}>
-            等待面试官提问…
-          </Text>
-          <Text style={[styles.emptySubtitle, {color: t.textSecondary}]}>
-            {!active
-              ? '点击下方按钮开始面试'
-              : !streamReady
-                ? '正在连接服务器…'
-                : '点击对话气泡获取 AI 回答建议'}
-          </Text>
+
           {!active && (
-            <View style={styles.emptyHints}>
-              {['🎙️ 实时转写面试对话', '🤖 AI 智能生成建议', '🌐 中英双语支持'].map(
-                (hint, i) => (
-                  <View key={i} style={[styles.hintItem, {backgroundColor: t.bgSurface, ...t.shadowSm}]}>
-                    <Text style={styles.hintText}>{hint}</Text>
-                  </View>
-                ),
-              )}
+            <View style={premiumStyles.featureCards}>
+              {[
+                {icon: '🎙️', title: '实时转写', desc: '双轨采集 · 毫秒级上屏'},
+                {icon: '🤖', title: 'AI 建议', desc: '四维度深度面试分析'},
+                {icon: '🌐', title: '双语支持', desc: '中文 · English 自由切换'},
+              ].map((f, i) => (
+                <View
+                  key={i}
+                  style={[premiumStyles.featureCard, {backgroundColor: t.bgSurface, borderColor: t.divider}, t.shadowSm]}>
+                  <Text style={premiumStyles.featureIcon}>{f.icon}</Text>
+                  <Text style={[premiumStyles.featureTitle, {color: t.textPrimary}]}>{f.title}</Text>
+                  <Text style={[premiumStyles.featureDesc, {color: t.textTertiary}]}>{f.desc}</Text>
+                </View>
+              ))}
             </View>
           )}
         </View>
@@ -241,277 +221,236 @@ export default function InterviewScreen(): React.JSX.Element {
         <FlatList
           ref={flatListRef}
           data={displayItems}
+          extraData={state.currentStreamingAIId}
           renderItem={renderItem}
           keyExtractor={keyExtractor}
-          contentContainerStyle={styles.listContent}
+          contentContainerStyle={premiumStyles.listContent}
           onContentSizeChange={onContentSizeChange}
-          onLayout={scrollToEnd}
+          onLayout={onFlatListLayout}
+          onScroll={onScroll}
+          scrollEventThrottle={100}
           showsVerticalScrollIndicator={false}
           ListFooterComponent={<View style={{height: space.lg}} />}
           keyboardShouldPersistTaps="handled"
+          maxToRenderPerBatch={5}
+          updateCellsBatchingPeriod={30}
+          windowSize={5}
+          removeClippedSubviews={Platform.OS === 'android'}
         />
       )}
 
-      {/* ── Bottom control bar ── */}
-      <View
-        style={[
-          styles.controlBar,
-          {
-            backgroundColor: t.bgSurface,
-            borderTopColor: t.divider,
-            ...t.shadowMd,
-          },
-        ]}>
-        {/* Stream info row */}
+      {/* ── Bottom Control ── */}
+      <View style={[premiumStyles.controlBar, {backgroundColor: t.bgSurface, borderTopColor: t.divider}, t.shadowMd]}>
+        {/* Stream status */}
         {active && (
-          <View style={styles.streamInfo}>
-            <View style={styles.streamRow}>
-              <PulsingDot color={streamReady ? t.success : t.warning} />
-              <Text style={[styles.streamText, {color: t.textSecondary}]}>
-                {streamReady ? '服务器已连接' : '正在连接服务器…'}
+          <View style={premiumStyles.streamRow}>
+            <View style={premiumStyles.streamLeft}>
+              <PulsingDot color={streamReady ? t.success : t.warning} size={8} />
+              <Text style={[premiumStyles.streamText, {color: t.textSecondary}]}>
+                {streamReady ? '服务器已连接' : '正在连接…'}
               </Text>
             </View>
             <MicLevelBar level={micLevel} dark={dark} />
-            {state.error && (
-              <Text
-                style={[styles.errorHint, {color: t.danger}]}
-                numberOfLines={1}>
-                {state.error.message}
-              </Text>
-            )}
           </View>
         )}
-
-        {/* Language selector */}
-        <View style={styles.langRow}>
-          <Text style={[styles.langLabel, {color: t.textSecondary}]}>
-            回答语言
+        {state.error && (
+          <Text style={[premiumStyles.errorHint, {color: t.danger}]} numberOfLines={1}>
+            {state.error.message}
           </Text>
-          <View style={styles.langGroup}>
-            <TouchableOpacity
-              style={[
-                styles.langBtn,
-                state.language === 'zh' && {
-                  backgroundColor: t.accent,
-                },
-                state.language !== 'zh' && {
-                  backgroundColor: t.divider,
-                },
-              ]}
-              onPress={() => controller.setLanguage('zh')}
-              activeOpacity={0.7}>
-              <Text
-                style={[
-                  styles.langBtnText,
-                  {
-                    color: state.language === 'zh' ? t.textInverse : t.textSecondary,
-                    fontWeight: state.language === 'zh' ? '700' : '500',
-                  },
-                ]}>
-                中文
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[
-                styles.langBtn,
-                state.language === 'en' && {
-                  backgroundColor: t.accent,
-                },
-                state.language !== 'en' && {
-                  backgroundColor: t.divider,
-                },
-              ]}
-              onPress={() => controller.setLanguage('en')}
-              activeOpacity={0.7}>
-              <Text
-                style={[
-                  styles.langBtnText,
-                  {
-                    color: state.language === 'en' ? t.textInverse : t.textSecondary,
-                    fontWeight: state.language === 'en' ? '700' : '500',
-                  },
-                ]}>
-                English
-              </Text>
-            </TouchableOpacity>
+        )}
+
+        {/* Language */}
+        <View style={premiumStyles.langRow}>
+          <Text style={[premiumStyles.langLabel, {color: t.textSecondary}]}>回答语言</Text>
+          <View style={premiumStyles.langGroup}>
+            {([
+              {key: 'zh' as const, label: '中文'},
+              {key: 'en' as const, label: 'English'},
+            ]).map(l => {
+              const selected = state.language === l.key;
+              return (
+                <TouchableOpacity
+                  key={l.key}
+                  style={[
+                    premiumStyles.langBtn,
+                    selected
+                      ? {backgroundColor: t.accent, ...t.shadowSm}
+                      : {backgroundColor: t.divider},
+                  ]}
+                  onPress={() => controller.setLanguage(l.key)}
+                  activeOpacity={0.7}>
+                  <Text
+                    style={[
+                      premiumStyles.langBtnText,
+                      {color: selected ? '#FFF' : t.textSecondary},
+                    ]}>
+                    {l.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
           </View>
         </View>
 
-        {/* Capture button */}
+        {/* Capture Button */}
         <TouchableOpacity
           style={[
-            styles.captureBtn,
-            {
-              backgroundColor: active ? t.danger : t.accent,
-              ...t.shadowMd,
-            },
+            premiumStyles.captureBtn,
+            {backgroundColor: active ? t.danger : t.accent},
+            t.shadowMd,
           ]}
           onPress={active ? controller.stop : controller.start}
           activeOpacity={0.85}>
-          <Text style={styles.captureBtnIcon}>
-            {active ? '⏹' : '🎙'}
-          </Text>
-          <Text style={styles.captureBtnText}>
-            {active ? '结束面试' : '开始面试'}
-          </Text>
+          <Text style={premiumStyles.captureIcon}>{active ? '⏹' : '🎙'}</Text>
+          <Text style={premiumStyles.captureLabel}>{active ? '结束面试' : '开始面试'}</Text>
         </TouchableOpacity>
       </View>
-
     </SafeAreaView>
   );
 }
 
-// ── Styles ──
-const styles = StyleSheet.create({
-  safeArea: {flex: 1},
+// ── Premium Styles ──
+const premiumStyles = StyleSheet.create({
+  safe: {flex: 1},
 
-  // Header
+  // ── Header ──
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: space.lg,
-    paddingVertical: space.md,
+    paddingVertical: space.md + 2,
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
-  headerLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: space.sm,
-  },
+  headerLeft: {flexDirection: 'row', alignItems: 'center', gap: space.md},
   appIcon: {
-    width: 40,
-    height: 40,
+    width: 42,
+    height: 42,
     borderRadius: radius.md,
     justifyContent: 'center',
     alignItems: 'center',
   },
-  appIconText: {fontSize: 20},
-  headerTitle: {fontSize: 17, fontWeight: '700'},
-  headerSubtitle: {fontSize: 11, marginTop: 1},
-
-  // Status badge
+  appIconText: {fontSize: 21},
+  headerTitle: {fontSize: 16, fontWeight: '800', letterSpacing: -0.2},
+  headerSub: {fontSize: 11, marginTop: 1},
   statusBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 10,
-    paddingVertical: 5,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
     borderRadius: radius.full,
-    gap: 5,
+    gap: 6,
   },
-  statusBadgeText: {fontSize: 12, fontWeight: '700'},
-  pulseDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-  },
-  statusDotStatic: {
-    width: 7,
-    height: 7,
-    borderRadius: 3.5,
-  },
+  statusDot: {width: 7, height: 7, borderRadius: 3.5},
+  statusText: {fontSize: 12, fontWeight: '700', letterSpacing: 0.3},
 
-  // Empty state
-  emptyContainer: {
+  // ── Empty State ──
+  emptyWrap: {
     flex: 1,
     justifyContent: 'center',
+    paddingHorizontal: space['2xl'],
+  },
+  emptyHero: {
     alignItems: 'center',
-    paddingHorizontal: 36,
+    marginBottom: space['3xl'],
   },
   emptyIconWrap: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
+    width: 88,
+    height: 88,
+    borderRadius: 44,
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: space.xl,
   },
-  emptyIcon: {fontSize: 36},
-  emptyTitle: {fontSize: 20, fontWeight: '700', marginBottom: space.sm, textAlign: 'center'},
-  emptySubtitle: {fontSize: 14, textAlign: 'center', lineHeight: 21, marginBottom: space['2xl']},
-  emptyHints: {width: '100%', gap: space.sm},
-  hintItem: {
-    paddingHorizontal: space.lg,
-    paddingVertical: space.md,
-    borderRadius: radius.md,
+  emptyIcon: {fontSize: 40},
+  emptyTitle: {
+    ...type.title,
+    marginBottom: space.sm,
   },
-  hintText: {fontSize: 14, color: '#6B7280'},
+  emptySub: {
+    ...type.bodySm,
+    textAlign: 'center',
+    lineHeight: 20,
+    maxWidth: 280,
+  },
 
-  // List
+  // ── Feature Cards ──
+  featureCards: {
+    flexDirection: 'row',
+    gap: space.sm,
+  },
+  featureCard: {
+    flex: 1,
+    borderRadius: radius.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+    padding: space.md,
+    alignItems: 'center',
+    gap: 4,
+  },
+  featureIcon: {fontSize: 22},
+  featureTitle: {
+    ...type.caption,
+    fontWeight: '700',
+    marginTop: 2,
+  },
+  featureDesc: {
+    ...type.caption,
+    textAlign: 'center',
+    fontSize: 10,
+  },
+
+  // ── Conversation List ──
   listContent: {paddingTop: space.md, paddingBottom: space.xs},
 
-  // Control bar
+  // ── Control Bar ──
   controlBar: {
     paddingHorizontal: space.lg,
     paddingTop: space.md,
-    paddingBottom: 28,
+    paddingBottom: Platform.OS === 'android' ? 22 : 28,
     borderTopWidth: StyleSheet.hairlineWidth,
-  },
-  streamInfo: {
-    marginBottom: space.sm,
-    gap: 6,
   },
   streamRow: {
     flexDirection: 'row',
+    justifyContent: 'space-between',
     alignItems: 'center',
-    gap: 6,
+    marginBottom: space.sm,
+    paddingHorizontal: 2,
   },
-  streamText: {fontSize: 12},
-  errorHint: {fontSize: 11, flexShrink: 1},
-
-  // Mic level
+  streamLeft: {flexDirection: 'row', alignItems: 'center', gap: 6},
+  streamText: {...type.caption, fontWeight: '500'},
+  errorHint: {...type.caption, marginBottom: space.sm, flexShrink: 1},
   levelBarRow: {
     flexDirection: 'row',
     alignItems: 'flex-end',
-    gap: 3,
+    gap: 2,
     height: 20,
   },
-  levelBar: {
-    width: 4,
-    borderRadius: 2,
-  },
 
-  // Language
+  // ── Language ──
   langRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     marginBottom: space.md,
   },
-  langLabel: {fontSize: 13, fontWeight: '600'},
-  langGroup: {
-    flexDirection: 'row',
-    gap: 6,
-  },
+  langLabel: {...type.bodySm, fontWeight: '600'},
+  langGroup: {flexDirection: 'row', gap: 8},
   langBtn: {
-    paddingHorizontal: 14,
-    paddingVertical: 7,
-    borderRadius: radius.sm,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: radius.full,
   },
-  langBtnText: {fontSize: 13},
+  langBtnText: {...type.bodySm, fontWeight: '600'},
 
-  // Source selector
-  sourceRow: {flexDirection: 'row', gap: 8, marginBottom: 8},
-  sourceBtn: {flex: 1, paddingVertical: 10, borderRadius: radius.sm, alignItems: 'center', backgroundColor: '#e2e8f0'},
-  sourceBtnText: {fontSize: 13, fontWeight: '700'},
-  // Auth button
-  authBtn: {paddingVertical: 10, borderRadius: radius.sm, alignItems: 'center', marginBottom: 8},
-  authBtnText: {fontSize: 13, fontWeight: '700'},
-  authOk: {fontSize: 12, fontWeight: '700', textAlign: 'center', marginBottom: 8},
-
-  // Capture button
+  // ── Capture Button ──
   captureBtn: {
     borderRadius: radius.lg,
-    paddingVertical: 15,
+    paddingVertical: 16,
     alignItems: 'center',
-    flexDirection: 'row',
     justifyContent: 'center',
+    flexDirection: 'row',
     gap: space.sm,
   },
-  captureBtnIcon: {fontSize: 18},
-  captureBtnText: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#FFFFFF',
-  },
+  captureIcon: {fontSize: 18},
+  captureLabel: {fontSize: 16, fontWeight: '800', color: '#FFFFFF', letterSpacing: 0.5},
 });

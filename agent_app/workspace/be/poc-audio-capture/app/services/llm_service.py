@@ -11,41 +11,25 @@ from typing import AsyncGenerator
 
 import httpx
 
+from app.services.asr_text_corrector import correct_asr_text
+
 logger = logging.getLogger("llm")
 
-SYSTEM_PROMPT_BASE = """你是资深面试辅助 AI。用户正在面试中，会把面试官的问题发给你。注意：所有文字都是语音识别转写的，**必然存在错误**。
+# ── 系统提示词（极简版，ASR 纠正在代码层完成） ──
+SYSTEM_PROMPT = """你是资深前端面试辅助 AI。用户正在面试中，回答以下问题。
 
-══════════════════════════════════════
-🔴 第一步：纠正语音识别错误（必须执行）
-══════════════════════════════════════
+回答按以下四个维度组织，用数字编号，逐段流式输出：
 
-语音识别的典型错误模式：
-- 同音/近音字："事件循环"被写成"4件循环"（4=事）；"微服务"写成"为服务"
-- 英文术语被拆成中文："JavaScript"→"java script"；"Redis"→"red is"；"API"→"a p i"/"诶批挨"
-- 数字听错："1"→"一/要/已"；"10"→"十/是"；根据语境判断到底是数字还是汉字
-- 断句错误：两句话连成一句，或一个词被拆成两个
-- 方言/口音："这个"→"则个"；"是不是"→"四不四"
-
-**你必须**：通读整段文字 → 找出明显不通顺的词 → 用发音相似的词替换 →
-还原出最合理的问题 → 在心里确认理解后，**用正确术语重述一遍问题再回答**。
-
-格式："你问的是「{{正确问题}}」，我来回答：…"
-
-══════════════════════════════════════
-第二步：给出回答（固定三维度）
-══════════════════════════════════════
-
-回答必须按以下四个维度组织，用数字编号，逐段流式输出，缺一不可：
-
-1. 基础介绍：这个概念/技术是什么，详细说清核心要点
-2. 使用场景：实际开发中什么情况下用它，能解决什么具体问题
+1. 基础介绍：这个概念/技术是什么，核心要点
+2. 使用场景：实际开发中什么时候用，解决什么问题
 3. 使用方式：关键步骤或核心 API，给代码示例
-4. 常见追问：面试官接下来可能会深入问什么，以及回答思路
+4. 常见追问：面试官可能深入问什么，以及回答思路
 
 规则：
 - 四个维度严格按 1.2.3.4. 编号，每段之间空一行
 - 每段写完后立刻输出下一段，支持流式阅读
-- 口语化，像在面试对话
+- **书面正式用语**：标准、专业、规范，像教材或技术文档
+- 术语准确、句子完整、逻辑严谨
 - 不编造经历，不输出 markdown
 - 回答语言：{language_name}"""
 
@@ -70,7 +54,8 @@ class LLMService:
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None:
             self._client = httpx.AsyncClient(
-                timeout=httpx.Timeout(30.0, connect=10.0),
+                timeout=httpx.Timeout(30.0, connect=5.0),
+                http2=True,
             )
         return self._client
 
@@ -83,23 +68,23 @@ class LLMService:
     ) -> AsyncGenerator[tuple[str, bool], None]:
         """流式调用 DeepSeek。
 
-        Args:
-            language: "zh" 或 "en"，控制回答语言。
-
-        Yields:
-            (chunk_text, is_final): 增量文本 + 是否结束
+        question 会在发送前经 correct_asr_text() 做代码级纠正，
+        不再依赖 LLM 自行纠正语音识别错误。
         """
         if not self._api_key:
             raise RuntimeError("ANTHROPIC_API_KEY 未配置")
 
+        # ── 代码级 ASR 纠正（微秒级，替代原 7000-token 提示词） ──
+        corrected = correct_asr_text(question)
+
         lang_name = LANGUAGE_INSTRUCTIONS.get(language, "中文")
-        system_prompt = SYSTEM_PROMPT_BASE.format(language_name=lang_name)
+        system_prompt = SYSTEM_PROMPT.format(language_name=lang_name)
 
         client = await self._get_client()
 
         messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"面试官问：{question}"},
+            {"role": "user", "content": f"面试官问：{corrected}" if corrected != question else f"面试官问：{question}"},
         ]
 
         body = {
@@ -107,7 +92,7 @@ class LLMService:
             "messages": messages,
             "stream": True,
             "max_tokens": max_tokens,
-            "temperature": 0.7,
+            "temperature": 0.3,
         }
 
         headers = {
@@ -116,7 +101,8 @@ class LLMService:
             "Accept": "text/event-stream",
         }
 
-        logger.info("LLM 请求: model=%s max_tokens=%d question=%.60s", model, max_tokens, question)
+        logger.info("LLM 请求: model=%s tokens=%d q=%.60s", model, max_tokens,
+                     corrected if corrected != question else question)
 
         try:
             async with client.stream("POST", self._base_url, json=body, headers=headers) as response:
@@ -129,7 +115,7 @@ class LLMService:
                     if not line or not line.startswith("data: "):
                         continue
 
-                    data_str = line[6:]  # 去掉 "data: " 前缀
+                    data_str = line[6:]
                     if data_str == "[DONE]":
                         yield ("", True)
                         return

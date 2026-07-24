@@ -32,14 +32,12 @@ const EMPTY_STREAM_STATS: StreamStats = {
 
 // ── Types ──────────────────────────────────────────────────
 export type ConversationBubbleStatus = 'loading' | 'streaming' | 'done' | 'error';
-export type LLMMode = 'brief' | 'normal' | 'detailed';
 
 export interface ConversationMessage {
   id: string;
   role: 'interviewer' | 'user' | 'ai';
   text: string;
   status: ConversationBubbleStatus;
-  mode?: LLMMode;
   timestamp: number;
 }
 
@@ -57,8 +55,6 @@ interface ControllerState {
   error: NativeCaptureError | null;
   streamMessage: string | null;
   conversation: ConversationMessage[];
-  selectedMessageId: string | null;
-  showModeSheet: boolean;
   pendingLLMQueue: string[];
   currentStreamingAIId: string | null;
   language: 'zh' | 'en';
@@ -75,12 +71,10 @@ type Action =
   | {type: 'result'; value: CaptureResult}
   | {type: 'error'; value: NativeCaptureError | null}
   | {type: 'transcription'; text: string; isFinal: boolean; source: 'mic' | 'system'; timestamp: number}
-  | {type: 'llm_start'; question_text: string; mode: string; language: string; timestamp: number}
+  | {type: 'llm_start'; question_text: string; language: string; timestamp: number}
   | {type: 'llm_chunk'; chunk_index: number; delta: string; timestamp: number}
-  | {type: 'llm_done'; full_answer: string; mode: string; timestamp: number; error?: string}
+  | {type: 'llm_done'; full_answer: string; timestamp: number; error?: string}
   | {type: 'snapshot'; value: Partial<ControllerState>}
-  | {type: 'select_bubble'; bubbleId: string}
-  | {type: 'dismiss_sheet'}
   | {type: 'llm_query_sent'; aiBubbleId: string; insertedAfterId: string; timestamp: number}
   | {type: 'llm_answer_error'; aiBubbleId: string}
   | {type: 'set_language'; value: 'zh' | 'en'};
@@ -100,8 +94,6 @@ const INITIAL_STATE: ControllerState = {
   error: null,
   streamMessage: null,
   conversation: [],
-  selectedMessageId: null,
-  showModeSheet: false,
   pendingLLMQueue: [],
   currentStreamingAIId: null,
   language: 'zh',
@@ -116,6 +108,23 @@ function insertAfter<T extends {id: string}>(arr: T[], afterId: string, item: T)
   const idx = arr.findIndex(x => x.id === afterId);
   if (idx === -1) { return [...arr, item]; }
   return [...arr.slice(0, idx + 1), item, ...arr.slice(idx + 1)];
+}
+
+// ── ASR 累积文本裁剪 ──
+// 火山引擎 ASR 的 text 字段是累积文本（从第一句开始），跨句不会自动清零。
+// 传入 oldText（气泡已有内容），返回 incoming 中相对于 oldText 的新增部分。
+function stripOverlap(incoming: string, oldText: string): string {
+  if (!oldText) { return incoming; }
+  if (incoming.startsWith(oldText)) { return incoming.slice(oldText.length); }
+  // 断句分裂后 oldText 只是 delta，但 ASR 发来的是全量累积文本
+  const idx = incoming.lastIndexOf(oldText);
+  if (idx !== -1) { return incoming.slice(idx + oldText.length); }
+  return incoming;
+}
+
+// ── 裁剪对话 ──
+function _cap(conv: ConversationMessage[]): ConversationMessage[] {
+  return conv.length > 80 ? conv.slice(-80) : conv;
 }
 
 // ── Reducer ───────────────────────────────────────────────
@@ -155,15 +164,14 @@ function reducer(state: ControllerState, action: Action): ControllerState {
       if (streamingIdx !== -1) {
         const streamingBubble = state.conversation[streamingIdx]!;
         const gap = now - streamingBubble.timestamp;
-        // 超过 3 秒或服务端标记 is_final → 关闭旧气泡，起新气泡
         const shouldSplit = gap > 3000 || action.isFinal;
 
         if (shouldSplit) {
-          const oldText = streamingBubble.text;
-          const delta = action.text.startsWith(oldText) ? action.text.slice(oldText.length) : action.text;
+          // 断句：提取新增文本，关闭旧泡，起新泡
+          const delta = stripOverlap(action.text, streamingBubble.text);
           if (!delta.trim()) {
-            return {...state, conversation: state.conversation.map((m, i) =>
-              i === streamingIdx ? {...m, status: 'done' as const, timestamp: now} : m)};
+            return {...state, conversation: _cap(state.conversation.map((m, i) =>
+              i === streamingIdx ? {...m, status: 'done' as const, timestamp: now} : m))};
           }
           const doneBubble = {...streamingBubble, status: 'done' as const};
           const newMsg: ConversationMessage = {
@@ -175,39 +183,44 @@ function reducer(state: ControllerState, action: Action): ControllerState {
           };
           return {
             ...state,
-            conversation: state.conversation.map((m, i) =>
+            conversation: _cap(state.conversation.map((m, i) =>
               i === streamingIdx ? doneBubble : m,
-            ).concat(newMsg),
+            ).concat(newMsg)),
           };
         }
 
+        // 流式更新：提取增量追加到当前气泡
+        const delta = stripOverlap(action.text, streamingBubble.text);
+        if (!delta) { return state; }
         return {
           ...state,
-          conversation: state.conversation.map((m, i) =>
+          conversation: _cap(state.conversation.map((m, i) =>
             i === streamingIdx
-              ? {...m, text: action.text, timestamp: now}
+              ? {...m, text: m.text + delta, timestamp: now}
               : m,
-          ),
+          )),
         };
       }
+
+      // 无 streaming 气泡 → 新句子起泡，先裁掉上一句 done 气泡的重叠
+      let cleanText = action.text;
+      const lastDone = [...state.conversation].reverse().find(
+        m => m.role === role && m.status === 'done',
+      );
+      if (lastDone) {
+        cleanText = stripOverlap(cleanText, lastDone.text);
+      }
+      if (!cleanText.trim()) { return state; }
 
       const newMsg: ConversationMessage = {
         id: genId(role === 'interviewer' ? 'int' : 'usr'),
         role,
-        text: action.text,
+        text: cleanText.trim(),
         status: 'streaming',
         timestamp: now,
       };
-      return {...state, conversation: [...state.conversation, newMsg]};
+      return {...state, conversation: _cap([...state.conversation, newMsg])};
     }
-
-    // ── 0.5: Select bubble ──
-    case 'select_bubble':
-      return {...state, selectedMessageId: action.bubbleId, showModeSheet: true};
-
-    // ── 0.5: Dismiss sheet ──
-    case 'dismiss_sheet':
-      return {...state, showModeSheet: false, selectedMessageId: null};
 
     // ── 0.5: Insert loading AI bubble after clicked ──
     case 'llm_query_sent': {
@@ -220,10 +233,8 @@ function reducer(state: ControllerState, action: Action): ControllerState {
       };
       return {
         ...state,
-        conversation: insertAfter(state.conversation, action.insertedAfterId, aiMsg),
+        conversation: _cap(insertAfter(state.conversation, action.insertedAfterId, aiMsg)),
         pendingLLMQueue: [...state.pendingLLMQueue, action.aiBubbleId],
-        showModeSheet: false,
-        selectedMessageId: null,
       };
     }
 
@@ -242,7 +253,6 @@ function reducer(state: ControllerState, action: Action): ControllerState {
               ...m,
               text: '',
               status: 'streaming' as ConversationBubbleStatus,
-              mode: (action.mode as LLMMode) ?? m.mode,
             }
           : m,
       );
@@ -250,7 +260,7 @@ function reducer(state: ControllerState, action: Action): ControllerState {
         ...state,
         pendingLLMQueue: restQueue,
         currentStreamingAIId: aiBubbleId,
-        conversation,
+        conversation: _cap(conversation),
       };
     }
 
@@ -261,11 +271,11 @@ function reducer(state: ControllerState, action: Action): ControllerState {
       }
       return {
         ...state,
-        conversation: state.conversation.map(m =>
+        conversation: _cap(state.conversation.map(m =>
           m.id === state.currentStreamingAIId
             ? {...m, text: m.text + action.delta}
             : m,
-        ),
+        )),
       };
     }
 
@@ -279,7 +289,7 @@ function reducer(state: ControllerState, action: Action): ControllerState {
       return {
         ...state,
         currentStreamingAIId: null,
-        conversation: state.conversation.map(m =>
+        conversation: _cap(state.conversation.map(m =>
           m.id === targetId
             ? {
                 ...m,
@@ -287,16 +297,16 @@ function reducer(state: ControllerState, action: Action): ControllerState {
                 status: isError ? 'error' as const : 'done' as const,
               }
             : m,
-        ),
+        )),
       };
     }
 
     case 'llm_answer_error': {
       return {
         ...state,
-        conversation: state.conversation.map(m =>
+        conversation: _cap(state.conversation.map(m =>
           m.id === action.aiBubbleId ? {...m, status: 'error'} : m,
-        ),
+        )),
         pendingLLMQueue: state.pendingLLMQueue.filter(id => id !== action.aiBubbleId),
       };
     }
@@ -348,6 +358,13 @@ async function requestRuntimePermissions(): Promise<boolean> {
 export function useAudioCaptureController() {
   const [state, dispatch] = useReducer(reducer, INITIAL_STATE);
   const operationCounter = useRef(0);
+  // 0.6: LLM chunk 帧缓冲合并，减少无效渲染
+  const llmChunkBuf = useRef('');
+  const llmChunkRaf = useRef<number | null>(null);
+  // 防卡死：限制对话历史长度，关闭高频事件节流
+  const MAX_CONVERSATION = 80;
+  const levelsThrottle = useRef(0);
+  const statsThrottle = useRef(0);
 
   const canUseSystem = Platform.OS === 'android' && (state.capabilities?.systemAudio ?? false);
 
@@ -383,8 +400,19 @@ export function useAudioCaptureController() {
         console.log('[状态] stream:', event.state);
         dispatch({type: 'streamState', value: event.state, message: event.message});
       }),
-      AudioCapture.onLevels(value => dispatch({type: 'levels', value})),
-      AudioCapture.onStreamStats(value => dispatch({type: 'streamStats', value})),
+      AudioCapture.onLevels(value => {
+        // 节流 ~100ms，音频帧 ~60fps → 降到 ~10fps
+        const now = Date.now();
+        if (now - levelsThrottle.current < 100) { return; }
+        levelsThrottle.current = now;
+        dispatch({type: 'levels', value});
+      }),
+      AudioCapture.onStreamStats(value => {
+        const now = Date.now();
+        if (now - statsThrottle.current < 200) { return; }
+        statsThrottle.current = now;
+        dispatch({type: 'streamStats', value});
+      }),
       AudioCapture.onError(value => {
         console.error(
           `[AudioCapture] ${value.code} (${value.stage})`,
@@ -404,31 +432,54 @@ export function useAudioCaptureController() {
         });
       }),
       AudioCapture.onLLMStart((event: LLMStartEvent) => {
-        console.log('[LLM] start mode=%s lang=%s qText=%s',
-          event.mode, event.language, event.question_text.slice(0, 40));
+        console.log('[LLM] start lang=%s qText=%s',
+          event.language, event.question_text.slice(0, 40));
         dispatch({
           type: 'llm_start',
           question_text: event.question_text,
-          mode: event.mode,
           language: event.language,
           timestamp: event.timestamp,
         });
       }),
       AudioCapture.onLLMChunk((event: LLMChunkEvent) => {
-        dispatch({
-          type: 'llm_chunk',
-          chunk_index: event.chunk_index,
-          delta: event.delta,
-          timestamp: event.timestamp,
-        });
+        // RAF 帧缓冲：同一帧内的 chunk 合并为一次 dispatch，首帧即出
+        llmChunkBuf.current += event.delta;
+        if (llmChunkRaf.current === null) {
+          llmChunkRaf.current = requestAnimationFrame(() => {
+            const delta = llmChunkBuf.current;
+            llmChunkBuf.current = '';
+            llmChunkRaf.current = null;
+            if (delta) {
+              dispatch({
+                type: 'llm_chunk',
+                chunk_index: 0,
+                delta,
+                timestamp: Date.now(),
+              });
+            }
+          });
+        }
       }),
       AudioCapture.onLLMDone((event: LLMDoneEvent) => {
-        console.log('[LLM] done mode=%s len=%d error=%s',
-          event.mode, event.full_answer.length, event.error ?? '-');
+        // 先 flush 残留缓冲，确保最后几个字不丢
+        if (llmChunkRaf.current !== null) {
+          cancelAnimationFrame(llmChunkRaf.current!);
+          llmChunkRaf.current = null;
+        }
+        if (llmChunkBuf.current) {
+          dispatch({
+            type: 'llm_chunk',
+            chunk_index: 0,
+            delta: llmChunkBuf.current,
+            timestamp: Date.now(),
+          });
+          llmChunkBuf.current = '';
+        }
+        console.log('[LLM] done len=%d error=%s',
+          event.full_answer.length, event.error ?? '-');
         dispatch({
           type: 'llm_done',
           full_answer: event.full_answer,
-          mode: event.mode,
           timestamp: event.timestamp,
           error: event.error,
         });
@@ -445,6 +496,10 @@ export function useAudioCaptureController() {
     });
 
     return () => {
+      if (llmChunkRaf.current !== null) {
+        cancelAnimationFrame(llmChunkRaf.current!);
+        llmChunkRaf.current = null;
+      }
       subscriptions.forEach(s => s.remove());
       appStateSub.remove();
       // 组件卸载时清理：停止采集 + 断开连接
@@ -549,7 +604,7 @@ export function useAudioCaptureController() {
     });
 
     console.log('[LLM] 发送 llm_query:', {text: clickedMsg.text.slice(0, 40), language: state.language, bubble_source: bubbleSource});
-  }, [state.selectedMessageId, state.conversation, state.language]);
+  }, [state.conversation, state.language]);
 
   // ── 0.5: Retry failed AI answer ──
   const retryLLM = useCallback((aiBubbleId: string) => {
@@ -575,7 +630,6 @@ export function useAudioCaptureController() {
     AudioCapture.sendControl({
       type: 'llm_query',
       text: clickedMsg.text,
-      mode: aiMsg.mode ?? 'normal',
       language: state.language,
       bubble_source: bubbleSource,
     });
@@ -599,14 +653,6 @@ export function useAudioCaptureController() {
     console.log('[LLM] 发送 config:', JSON.stringify(llmConfig));
   }, []);
 
-  // ── Computed ──
-  const selectedMessage = useMemo(
-    () => state.selectedMessageId
-      ? state.conversation.find(m => m.id === state.selectedMessageId) ?? null
-      : null,
-    [state.selectedMessageId, state.conversation],
-  );
-
   return {
     state,
     canUseSystem,
@@ -618,7 +664,6 @@ export function useAudioCaptureController() {
     share,
     sendLLMQuery,
     retryLLM,
-    selectedMessage,
     sendConfig,
     setLanguage: useCallback((value: 'zh' | 'en') => dispatch({type: 'set_language', value}), []),
   };

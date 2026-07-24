@@ -7,22 +7,18 @@ import {
   View,
 } from 'react-native';
 
-import type {ConversationBubbleStatus, LLMMode} from '../hooks/useAudioCaptureController';
+import type {ConversationBubbleStatus} from '../hooks/useAudioCaptureController';
 import {useTheme, space, radius, type} from '../theme';
 
 interface Props {
   role: 'interviewer' | 'user' | 'ai';
   text: string;
   status: ConversationBubbleStatus;
-  mode?: LLMMode;
   timestamp: number;
   onPress?: () => void;
   onRetry?: () => void;
   dark: boolean;
 }
-
-const TYPING_INTERVAL_MS = 20;
-const MODE_LABELS: Record<LLMMode, string> = {brief: '精简', normal: '普通', detailed: '详细'};
 
 function relativeTime(ts: number): string {
   const diff = Date.now() - ts;
@@ -38,11 +34,10 @@ function relativeTime(ts: number): string {
   return `${hh}:${mm}`;
 }
 
-export default function ConversationBubble({
+const ConversationBubble = React.memo(function ConversationBubble({
   role,
   text,
   status,
-  mode,
   timestamp,
   onPress,
   onRetry,
@@ -57,10 +52,11 @@ export default function ConversationBubble({
   const [visibleLen, setVisibleLen] = useState(
     !isAI || status === 'done' || status === 'error' ? text.length : 0,
   );
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const rafRef = useRef<number | null>(null);
   const pressScale = useRef(new Animated.Value(1)).current;
 
-  // ── Typing animation ──
+  // ── Typing animation（RAF 匀速推进，流畅丝滑） ──
+  // 每帧推进 3 个字符 ≈ 180 字/秒（旧方案 50 字/秒），视觉流畅且能跟上 LLM 产出速度
   useEffect(() => {
     if (!isAI || status === 'done' || status === 'error') {
       setVisibleLen(text.length);
@@ -70,21 +66,39 @@ export default function ConversationBubble({
       setVisibleLen(0);
       return;
     }
-    if (visibleLen < text.length) {
-      intervalRef.current = setInterval(() => {
-        setVisibleLen(prev => {
-          if (prev >= text.length) {
-            if (intervalRef.current) { clearInterval(intervalRef.current); }
-            return prev;
-          }
-          return prev + 1;
-        });
-      }, TYPING_INTERVAL_MS);
-    }
-    return () => {
-      if (intervalRef.current) { clearInterval(intervalRef.current); }
+
+    // streaming → 匀速逐帧推进
+    let active = true;
+    const CHARS_PER_FRAME = 3;
+
+    const step = () => {
+      if (!active) { return; }
+      setVisibleLen(prev => {
+        if (prev >= text.length) { return prev; }
+        return Math.min(prev + CHARS_PER_FRAME, text.length);
+      });
+      rafRef.current = requestAnimationFrame(step);
     };
-  }, [status, text, isAI, visibleLen]);
+
+    rafRef.current = requestAnimationFrame(step);
+
+    return () => {
+      active = false;
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+    };
+  }, [status, text.length, isAI]);
+
+  // 组件卸载时兜底清理
+  useEffect(() => {
+    return () => {
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+      }
+    };
+  }, []);
 
   const showLoading = status === 'loading';
   const showError = status === 'error';
@@ -158,11 +172,6 @@ export default function ConversationBubble({
         {/* Label row */}
         <View style={styles.labelRow}>
           <Text style={[styles.label, {color: labelColor}]}>{label}</Text>
-          {isAI && mode && (
-            <View style={[styles.modeBadge, {backgroundColor: t.accent}]}>
-              <Text style={styles.modeBadgeText}>{MODE_LABELS[mode]}</Text>
-            </View>
-          )}
           <Text style={[styles.timestamp, {color: t.textTertiary}]}>
             {relativeTime(timestamp)}
           </Text>
@@ -215,7 +224,9 @@ export default function ConversationBubble({
       {content}
     </View>
   );
-}
+});
+
+export default ConversationBubble;
 
 // ── Loading Dots ──
 function LoadingDots({color}: {color: string}) {

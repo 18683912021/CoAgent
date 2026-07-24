@@ -41,7 +41,9 @@ _VOLC_API_KEY = os.getenv("VOLC_API_KEY", "")
 _ASR_READY = bool(_VOLC_API_KEY)
 
 # 0.5: mode → max_tokens 路由
-LLM_MAX_TOKENS = 20000
+# 2000 tokens 足够覆盖 4 个维度的详细回答（约 3000-4000 汉字）
+# 之前 20000 过大，导致模型生成策略偏慢、回答冗余
+LLM_MAX_TOKENS = 2000
 
 
 @router.websocket("/ws/audio/stream")
@@ -435,6 +437,18 @@ async def _llm_worker(
             ts = int(_time.time() * 1000)
 
             try:
+                # ── 异步发送队列：SSE 读取不受 WebSocket send 阻塞 ──
+                chunk_queue: "asyncio.Queue[dict[str, Any]]" = asyncio.Queue(maxsize=64)
+
+                async def _chunk_sender():
+                    while True:
+                        msg = await chunk_queue.get()
+                        if msg is None:  # 哨兵：停止发送
+                            break
+                        await ws.send_json(msg)
+
+                sender_task = asyncio.create_task(_chunk_sender())
+
                 # ── 1. llm_start ──
                 await ws.send_json({
                     "type": "llm_start",
@@ -454,13 +468,17 @@ async def _llm_worker(
                     if is_final:
                         break
 
-                    await ws.send_json({
+                    chunk_queue.put_nowait({
                         "type": "llm_chunk",
                         "chunk_index": chunk_index,
                         "delta": chunk,
                         "timestamp": int(_time.time() * 1000),
                     })
                     chunk_index += 1
+
+                # 等待发送队列清空，然后发 llm_done
+                chunk_queue.put_nowait(None)  # 哨兵
+                await sender_task
 
                 # ── 3. llm_done（完整答案） ──
                 await ws.send_json({
@@ -473,6 +491,13 @@ async def _llm_worker(
 
             except Exception as exc:
                 logger.exception("LLM 本轮失败: %.50s", question)
+                # 清理发送队列
+                if 'sender_task' in locals() and not sender_task.done():
+                    try:
+                        chunk_queue.put_nowait(None)
+                        sender_task.cancel()
+                    except Exception:
+                        pass
                 try:
                     await ws.send_json({
                         "type": "llm_done",
