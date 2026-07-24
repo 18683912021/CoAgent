@@ -191,10 +191,17 @@ class StreamingASRSession:
                     txt = result.get("text", "")
                     if txt:
                         is_final = result.get("definite", False)
-                        logger.info("ASR%s: %s", " 最终" if is_final else "", txt)
+                        logger.info("ASR[%s]%s: %s", self._source, " 最终" if is_final else "", txt)
                         self._text_parts.append(txt)
-                        if self._on_text:
-                            self._on_text(txt, is_final=is_final)
+                        # 修复：0b1111 结果也入队，不再丢失（之前只走 _on_text=None 被丢弃）
+                        if txt != self._last_sent:
+                            self._last_sent = txt
+                            if self._tx_queue is not None:
+                                try:
+                                    self._tx_queue.put_nowait((txt, is_final, self._source))
+                                    logger.info("转录入队[%s]: %s", self._source, txt[:50])
+                                except Exception:
+                                    pass
 
                     if flags == 0b0011:
                         return

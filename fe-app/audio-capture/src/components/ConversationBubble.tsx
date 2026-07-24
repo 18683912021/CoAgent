@@ -199,8 +199,7 @@ const ConversationBubble = React.memo(function ConversationBubble({
         ) : isAI ? (
           <ScrollView
             ref={innerScrollRef}
-            style={{maxHeight: screenH / 2}}
-            onContentSizeChange={() => innerScrollRef.current?.scrollToEnd({animated: false})}
+            style={{maxHeight: screenH / 3}}
             showsVerticalScrollIndicator={true}
             nestedScrollEnabled={true}
             keyboardShouldPersistTaps="handled">
