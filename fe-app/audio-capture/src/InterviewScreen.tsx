@@ -259,39 +259,6 @@ export default function InterviewScreen(): React.JSX.Element {
           </Text>
         )}
 
-        {/* Language */}
-        <View style={premiumStyles.langRow}>
-          <Text style={[premiumStyles.langLabel, {color: t.textSecondary}]}>回答语言</Text>
-          <View style={premiumStyles.langGroup}>
-            {([
-              {key: 'zh' as const, label: '中文'},
-              {key: 'en' as const, label: 'English'},
-            ]).map(l => {
-              const selected = state.language === l.key;
-              return (
-                <TouchableOpacity
-                  key={l.key}
-                  style={[
-                    premiumStyles.langBtn,
-                    selected
-                      ? {backgroundColor: t.accent, ...t.shadowSm}
-                      : {backgroundColor: t.divider},
-                  ]}
-                  onPress={() => controller.setLanguage(l.key)}
-                  activeOpacity={0.7}>
-                  <Text
-                    style={[
-                      premiumStyles.langBtnText,
-                      {color: selected ? '#FFF' : t.textSecondary},
-                    ]}>
-                    {l.label}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-        </View>
-
         {/* Capture Button */}
         <TouchableOpacity
           style={[
@@ -425,22 +392,6 @@ const premiumStyles = StyleSheet.create({
     gap: 2,
     height: 20,
   },
-
-  // ── Language ──
-  langRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: space.md,
-  },
-  langLabel: {...type.bodySm, fontWeight: '600'},
-  langGroup: {flexDirection: 'row', gap: 8},
-  langBtn: {
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: radius.full,
-  },
-  langBtnText: {...type.bodySm, fontWeight: '600'},
 
   // ── Capture Button ──
   captureBtn: {

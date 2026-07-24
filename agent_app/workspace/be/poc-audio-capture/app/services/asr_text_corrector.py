@@ -823,7 +823,8 @@ def _pinyin_fuzzy_correct(text: str, threshold: float = 0.72) -> str:
                 best_score = score
                 best_term = pt.term
 
-        if best_score >= threshold and best_term != segment:
+        # 安全阀：替换后不能膨胀超过 2 倍，防止级联替换越滚越长
+        if best_score >= threshold and best_term != segment and len(best_term) <= len(segment) * 2:
             result = result.replace(segment, best_term)
             logger.info("拼音纠正 [%.0f%%]: %.20s → %.20s", best_score * 100, segment, best_term)
 

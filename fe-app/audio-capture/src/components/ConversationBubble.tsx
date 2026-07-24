@@ -1,6 +1,8 @@
 import React, {useEffect, useRef, useState} from 'react';
 import {
   Animated,
+  Dimensions,
+  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -49,6 +51,8 @@ const ConversationBubble = React.memo(function ConversationBubble({
   const isAI = role === 'ai';
   const clickable = !isAI && onPress != null;
 
+  const screenH = Dimensions.get('window').height;
+  const innerScrollRef = useRef<ScrollView>(null);
   const [visibleLen, setVisibleLen] = useState(
     !isAI || status === 'done' || status === 'error' ? text.length : 0,
   );
@@ -192,6 +196,19 @@ const ConversationBubble = React.memo(function ConversationBubble({
               </TouchableOpacity>
             )}
           </View>
+        ) : isAI ? (
+          <ScrollView
+            ref={innerScrollRef}
+            style={{maxHeight: screenH / 2}}
+            onContentSizeChange={() => innerScrollRef.current?.scrollToEnd({animated: false})}
+            showsVerticalScrollIndicator={true}
+            nestedScrollEnabled={true}
+            keyboardShouldPersistTaps="handled">
+            <Text style={[styles.text, {color: textColor}]}>
+              {partialText}
+              {isTyping ? <Text style={[styles.cursor, {color: t.accent}]}>|</Text> : null}
+            </Text>
+          </ScrollView>
         ) : (
           <Text style={[styles.text, {color: textColor}]}>
             {partialText}

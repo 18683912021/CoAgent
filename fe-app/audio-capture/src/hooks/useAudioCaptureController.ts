@@ -21,7 +21,7 @@ import {
   type StreamStats,
   type TrackSource,
 } from '../native';
-import {STREAM_URL} from '../config';
+import {STREAM_URL, getLanguage, onLanguageChange} from '../config';
 
 // ── Constants ──────────────────────────────────────────────
 const EMPTY_LEVELS: AudioLevels = {mic: 0, system: 0};
@@ -57,7 +57,6 @@ interface ControllerState {
   conversation: ConversationMessage[];
   pendingLLMQueue: string[];
   currentStreamingAIId: string | null;
-  language: 'zh' | 'en';
 }
 
 type Action =
@@ -76,8 +75,7 @@ type Action =
   | {type: 'llm_done'; full_answer: string; timestamp: number; error?: string}
   | {type: 'snapshot'; value: Partial<ControllerState>}
   | {type: 'llm_query_sent'; aiBubbleId: string; insertedAfterId: string; timestamp: number}
-  | {type: 'llm_answer_error'; aiBubbleId: string}
-  | {type: 'set_language'; value: 'zh' | 'en'};
+  | {type: 'llm_answer_error'; aiBubbleId: string};
 
 // ── Initial State ─────────────────────────────────────────
 const INITIAL_STATE: ControllerState = {
@@ -96,7 +94,6 @@ const INITIAL_STATE: ControllerState = {
   conversation: [],
   pendingLLMQueue: [],
   currentStreamingAIId: null,
-  language: 'zh',
 };
 
 // ── Helpers ───────────────────────────────────────────────
@@ -111,15 +108,45 @@ function insertAfter<T extends {id: string}>(arr: T[], afterId: string, item: T)
 }
 
 // ── ASR 累积文本裁剪 ──
-// 火山引擎 ASR 的 text 字段是累积文本（从第一句开始），跨句不会自动清零。
-// 传入 oldText（气泡已有内容），返回 incoming 中相对于 oldText 的新增部分。
+// 逐字符比较，跳过标点/空白差异。
+// 中段重叠搜索从中断点继续，而不是从 oldText 头部重新匹配。
+const _SKIP_RE = /[，。！？、；：""''.!?,;:'"\s]/;
+
 function stripOverlap(incoming: string, oldText: string): string {
   if (!oldText) { return incoming; }
   if (incoming.startsWith(oldText)) { return incoming.slice(oldText.length); }
-  // 断句分裂后 oldText 只是 delta，但 ASR 发来的是全量累积文本
-  const idx = incoming.lastIndexOf(oldText);
-  if (idx !== -1) { return incoming.slice(idx + oldText.length); }
-  return incoming;
+
+  let i = 0, j = 0;
+  while (i < incoming.length && j < oldText.length) {
+    const ci = incoming[i]!;
+    const cj = oldText[j]!;
+    if (_SKIP_RE.test(ci)) { i++; continue; }
+    if (_SKIP_RE.test(cj)) { j++; continue; }
+    if (ci.toLowerCase() !== cj.toLowerCase()) {
+      // 从中断点 j 开始搜索 oldText 剩余部分，不是从头搜
+      const rest = incoming.slice(i);
+      let ri = 0;
+      while (ri < rest.length && _SKIP_RE.test(rest[ri]!)) { ri++; }
+
+      let jj = j; // ← 关键：从中断点继续，不是 jj=0
+      let rj = ri;
+      while (rj < rest.length && jj < oldText.length) {
+        if (_SKIP_RE.test(rest[rj]!)) { rj++; continue; }
+        if (_SKIP_RE.test(oldText[jj]!)) { jj++; continue; }
+        if (rest[rj]!.toLowerCase() !== oldText[jj]!.toLowerCase()) { break; }
+        rj++; jj++;
+      }
+      while (jj < oldText.length && _SKIP_RE.test(oldText[jj]!)) { jj++; }
+      if (jj >= oldText.length) {
+        return rest.slice(rj);
+      }
+      return incoming;
+    }
+    i++; j++;
+  }
+
+  while (j < oldText.length && _SKIP_RE.test(oldText[j]!)) { j++; }
+  return j >= oldText.length ? incoming.slice(i) : incoming;
 }
 
 // ── 裁剪对话 ──
@@ -189,26 +216,34 @@ function reducer(state: ControllerState, action: Action): ControllerState {
           };
         }
 
-        // 流式更新：提取增量追加到当前气泡
+        // 流式更新：提取增量
         const delta = stripOverlap(action.text, streamingBubble.text);
         if (!delta) { return state; }
+
+        // 判断是追加还是替换：delta 接近全文 → ASR 在回改纠正 → 替换；否则追加
+        const isReplace = delta.length >= streamingBubble.text.length * 0.6;
+
         return {
           ...state,
           conversation: _cap(state.conversation.map((m, i) =>
             i === streamingIdx
-              ? {...m, text: m.text + delta, timestamp: now}
+              ? {
+                  ...m,
+                  text: isReplace ? action.text : m.text + delta,
+                  timestamp: now,
+                }
               : m,
           )),
         };
       }
 
-      // 无 streaming 气泡 → 新句子起泡，先裁掉上一句 done 气泡的重叠
+      // 无 streaming 气泡 → 新句子起泡，检查最近 5 句 done 气泡裁掉重叠
       let cleanText = action.text;
-      const lastDone = [...state.conversation].reverse().find(
-        m => m.role === role && m.status === 'done',
-      );
-      if (lastDone) {
-        cleanText = stripOverlap(cleanText, lastDone.text);
+      const recentDone = [...state.conversation].reverse()
+        .filter(m => m.role === role && m.status === 'done')
+        .slice(0, 5);
+      for (const done of recentDone) {
+        cleanText = stripOverlap(cleanText, done.text);
       }
       if (!cleanText.trim()) { return state; }
 
@@ -310,9 +345,6 @@ function reducer(state: ControllerState, action: Action): ControllerState {
         pendingLLMQueue: state.pendingLLMQueue.filter(id => id !== action.aiBubbleId),
       };
     }
-
-    case 'set_language':
-      return {...state, language: action.value};
 
     default:
       return state;
@@ -599,12 +631,12 @@ export function useAudioCaptureController() {
     AudioCapture.sendControl({
       type: 'llm_query',
       text: clickedMsg.text,
-      language: state.language,
+      language: getLanguage(),
       bubble_source: bubbleSource,
     });
 
-    console.log('[LLM] 发送 llm_query:', {text: clickedMsg.text.slice(0, 40), language: state.language, bubble_source: bubbleSource});
-  }, [state.conversation, state.language]);
+    console.log('[LLM] 发送 llm_query:', {text: clickedMsg.text.slice(0, 40), language: getLanguage(), bubble_source: bubbleSource});
+  }, [state.conversation]);
 
   // ── 0.5: Retry failed AI answer ──
   const retryLLM = useCallback((aiBubbleId: string) => {
@@ -630,10 +662,10 @@ export function useAudioCaptureController() {
     AudioCapture.sendControl({
       type: 'llm_query',
       text: clickedMsg.text,
-      language: state.language,
+      language: getLanguage(),
       bubble_source: bubbleSource,
     });
-  }, [state.conversation, state.language]);
+  }, [state.conversation]);
 
   // ── Share ──
   const share = useCallback(async (sessionId: string, source: TrackSource, kind: 'pcm' | 'wav') => {
@@ -665,6 +697,5 @@ export function useAudioCaptureController() {
     sendLLMQuery,
     retryLLM,
     sendConfig,
-    setLanguage: useCallback((value: 'zh' | 'en') => dispatch({type: 'set_language', value}), []),
   };
 }

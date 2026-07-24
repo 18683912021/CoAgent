@@ -19,3 +19,27 @@ const STREAM_URL_OVERRIDE: string | null = 'ws://192.168.7.149:8010/api/ws/audio
 export const STREAM_URL: string =
   STREAM_URL_OVERRIDE ??
   `ws://${DEFAULT_HOST}:${DEFAULT_PORT}${DEFAULT_PATH}`;
+
+// ── 共享设置（跨 Tab 读写） ──
+export type AppLanguage = 'zh' | 'en';
+
+let _language: AppLanguage = 'zh';
+const _listeners: Array<(lang: AppLanguage) => void> = [];
+
+export function getLanguage(): AppLanguage {
+  return _language;
+}
+
+export function setLanguage(lang: AppLanguage): void {
+  if (_language === lang) { return; }
+  _language = lang;
+  _listeners.forEach(fn => fn(lang));
+}
+
+export function onLanguageChange(fn: (lang: AppLanguage) => void): () => void {
+  _listeners.push(fn);
+  return () => {
+    const idx = _listeners.indexOf(fn);
+    if (idx !== -1) { _listeners.splice(idx, 1); }
+  };
+}

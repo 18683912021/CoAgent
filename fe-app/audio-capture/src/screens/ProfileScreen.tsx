@@ -6,7 +6,7 @@
  *   Menu Sections —— 面试历史 / 面试语言 / 答案风格 / 简历上传
  */
 
-import React from 'react';
+import React, {useState} from 'react';
 import {
   ScrollView,
   StyleSheet,
@@ -17,6 +17,7 @@ import {
 } from 'react-native';
 import {SafeAreaView} from 'react-native-safe-area-context';
 
+import {getLanguage, setLanguage, type AppLanguage} from '../config';
 import {useTheme, space, radius, type} from '../theme';
 
 // ── Types ──
@@ -82,6 +83,15 @@ function SectionTitle({title}: {title: string}) {
 export default function ProfileScreen(): React.JSX.Element {
   const dark = useColorScheme() === 'dark';
   const t = useTheme(dark);
+  const [lang, setLang] = useState<AppLanguage>(getLanguage());
+
+  const toggleLanguage = () => {
+    const next: AppLanguage = lang === 'zh' ? 'en' : 'zh';
+    setLang(next);
+    setLanguage(next);
+  };
+
+  const langLabel = lang === 'zh' ? '中文' : 'English';
 
   const menuSections: {title: string; items: MenuItem[]}[] = [
     {
@@ -93,7 +103,7 @@ export default function ProfileScreen(): React.JSX.Element {
     {
       title: '偏好',
       items: [
-        {icon: '🌐', label: '面试语言', value: '中文', onPress: () => {}},
+        {icon: '🌐', label: '面试语言', value: langLabel, onPress: toggleLanguage},
         {icon: '✍️', label: '答案风格', value: '标准书面', onPress: () => {}},
         {icon: '📄', label: '简历上传', value: '未上传', onPress: () => {}},
       ],
