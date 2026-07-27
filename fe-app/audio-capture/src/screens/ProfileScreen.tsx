@@ -6,8 +6,10 @@
  *   Menu Sections —— 面试历史 / 面试语言 / 答案风格 / 简历上传
  */
 
-import React, {useState} from 'react';
+import React, {useCallback, useEffect, useState} from 'react';
 import {
+  ActivityIndicator,
+  Alert,
   ScrollView,
   StyleSheet,
   Text,
@@ -17,7 +19,8 @@ import {
 } from 'react-native';
 import {SafeAreaView} from 'react-native-safe-area-context';
 
-import {getLanguage, setLanguage, type AppLanguage} from '../config';
+import {AudioCapture} from '../native';
+import {getLanguage, setLanguage, type AppLanguage, API_BASE} from '../config';
 import {useTheme, space, radius, type} from '../theme';
 
 // ── Types ──
@@ -85,11 +88,60 @@ export default function ProfileScreen(): React.JSX.Element {
   const t = useTheme(dark);
   const [lang, setLang] = useState<AppLanguage>(getLanguage());
 
+  const [resumeLabel, setResumeLabel] = useState('未上传');
+  const [uploading, setUploading] = useState(false);
+
+  // 检查是否已有简历
+  useEffect(() => {
+    fetch(`${API_BASE}/api/resume/has`)
+      .then(r => r.json())
+      .then(d => { if (d.has_intro) { setResumeLabel('已上传'); } })
+      .catch(() => {});
+  }, []);
+
   const toggleLanguage = () => {
     const next: AppLanguage = lang === 'zh' ? 'en' : 'zh';
     setLang(next);
     setLanguage(next);
   };
+
+  // ── 简历上传 ──
+  const handleUploadResume = useCallback(async () => {
+    try {
+      const result = await AudioCapture.pickPDF();
+      if (!result?.uri) {
+        return; // 用户取消
+      }
+
+      setUploading(true);
+      setResumeLabel('上传中…');
+
+      const formData = new FormData();
+      formData.append('file', {
+        uri: result.uri,
+        type: 'application/pdf',
+        name: result.name ?? 'resume.pdf',
+      } as any);
+
+      const res = await fetch(`${API_BASE}/api/resume/upload`, {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail ?? '上传失败');
+      }
+
+      setResumeLabel('已上传');
+      Alert.alert('上传成功', '自我介绍已生成，面试中可随时查看');
+    } catch (err: any) {
+      setResumeLabel('上传失败');
+      console.error('[Resume] 上传失败:', err.message);
+    } finally {
+      setUploading(false);
+    }
+  }, []);
 
   const langLabel = lang === 'zh' ? '中文' : 'English';
 
@@ -105,7 +157,7 @@ export default function ProfileScreen(): React.JSX.Element {
       items: [
         {icon: '🌐', label: '面试语言', value: langLabel, onPress: toggleLanguage},
         {icon: '✍️', label: '答案风格', value: '标准书面', onPress: () => {}},
-        {icon: '📄', label: '简历上传', value: '未上传', onPress: () => {}},
+        {icon: '📄', label: '简历上传', value: uploading ? '上传中…' : resumeLabel, onPress: handleUploadResume},
       ],
     },
     {
@@ -117,7 +169,7 @@ export default function ProfileScreen(): React.JSX.Element {
   ];
 
   return (
-    <SafeAreaView style={[styles.container, {backgroundColor: t.bg}]} edges={['top']}>
+    <SafeAreaView style={[styles.container, {backgroundColor: t.bg}]} edges={['top', 'bottom']}>
       <ScrollView
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}>

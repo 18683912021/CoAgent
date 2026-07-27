@@ -78,9 +78,9 @@ export default function TabNavigator(): React.JSX.Element {
 const styles = StyleSheet.create({
   root: {flex: 1},
 
-  // Screen visibility (keep-all for WebSocket persistence)
+  // Screen visibility (keep-all for WebSocket persistence, no layout flicker)
   screenVisible: {flex: 1},
-  screenHidden: {flex: 0, height: 0, overflow: 'hidden'},
+  screenHidden: {position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, opacity: 0, pointerEvents: 'none'},
 
   // Tab Bar
   bar: {

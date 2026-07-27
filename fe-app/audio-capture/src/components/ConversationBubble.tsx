@@ -2,10 +2,12 @@ import React, {useEffect, useRef, useState} from 'react';
 import {
   Animated,
   Dimensions,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
+  Vibration,
   View,
 } from 'react-native';
 
@@ -18,7 +20,6 @@ interface Props {
   status: ConversationBubbleStatus;
   timestamp: number;
   onPress?: () => void;
-  onRetry?: () => void;
   dark: boolean;
 }
 
@@ -36,13 +37,47 @@ function relativeTime(ts: number): string {
   return `${hh}:${mm}`;
 }
 
+// ── 轻量内联 Markdown 渲染（只用 Text，天然换行不溢出） ──
+function RichText({text, t}: {text: string; t: ReturnType<typeof useTheme>}) {
+  // 拆分为段落，再逐段解析粗体/行内代码/代码块
+  const blocks = text.split(/(```[\s\S]*?```)/g);
+  return (
+    <Text style={{...type.body, color: t.textPrimary, lineHeight: 24, flexShrink: 1}}>
+      {blocks.map((block, bi) => {
+        if (block.startsWith('```') && block.endsWith('```')) {
+          const code = block.slice(3, -3).replace(/^\n/, '');
+          return (
+            <Text key={bi} style={{fontSize: 13, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', backgroundColor: t.divider, color: t.textPrimary}}>
+              {'\n' + code + '\n'}
+            </Text>
+          );
+        }
+        // 行内：**bold** 和 `code`
+        const parts = block.split(/(\*\*.*?\*\*|`.*?`)/g);
+        return (
+          <Text key={bi}>
+            {parts.map((part, pi) => {
+              if (part.startsWith('**') && part.endsWith('**')) {
+                return <Text key={pi} style={{fontWeight: '800'}}>{part.slice(2, -2)}</Text>;
+              }
+              if (part.startsWith('`') && part.endsWith('`')) {
+                return <Text key={pi} style={{fontSize: 13, backgroundColor: t.divider, color: t.accent}}>{part.slice(1, -1)}</Text>;
+              }
+              return <Text key={pi}>{part}</Text>;
+            })}
+          </Text>
+        );
+      })}
+    </Text>
+  );
+}
+
 const ConversationBubble = React.memo(function ConversationBubble({
   role,
   text,
   status,
   timestamp,
   onPress,
-  onRetry,
   dark,
 }: Props) {
   const t = useTheme(dark);
@@ -59,8 +94,7 @@ const ConversationBubble = React.memo(function ConversationBubble({
   const rafRef = useRef<number | null>(null);
   const pressScale = useRef(new Animated.Value(1)).current;
 
-  // ── Typing animation（RAF 匀速推进，流畅丝滑） ──
-  // 每帧推进 3 个字符 ≈ 180 字/秒（旧方案 50 字/秒），视觉流畅且能跟上 LLM 产出速度
+  // ── Typing animation（动态速度：小积压匀速丝滑，大积压加速追赶） ──
   useEffect(() => {
     if (!isAI || status === 'done' || status === 'error') {
       setVisibleLen(text.length);
@@ -71,15 +105,19 @@ const ConversationBubble = React.memo(function ConversationBubble({
       return;
     }
 
-    // streaming → 匀速逐帧推进
     let active = true;
-    const CHARS_PER_FRAME = 3;
+    const BASE_SPEED = 5; // 基础速度：5 字/帧 ≈ 300 字/秒
+    const MAX_SPEED = 15; // 极限速度：15 字/帧 ≈ 900 字/秒（大 chunk 追赶）
 
     const step = () => {
       if (!active) { return; }
       setVisibleLen(prev => {
         if (prev >= text.length) { return prev; }
-        return Math.min(prev + CHARS_PER_FRAME, text.length);
+        const backlog = text.length - prev;
+        // 积压 ≤20：匀速 5 字/帧，视觉丝滑
+        // 积压 >20：加速迎头赶上，最多 15 字/帧
+        const speed = backlog <= 20 ? BASE_SPEED : Math.min(MAX_SPEED, BASE_SPEED + Math.ceil((backlog - 20) / 8));
+        return Math.min(prev + speed, text.length);
       });
       rafRef.current = requestAnimationFrame(step);
     };
@@ -110,6 +148,13 @@ const ConversationBubble = React.memo(function ConversationBubble({
   const isTyping = isAI && status === 'streaming' && visibleLen < text.length;
 
   // ── Press animation ──
+  // ── 点击气泡 → 触觉 + 视觉反馈 ──
+  const handleBubblePress = () => {
+    if (!clickable || !onPress) { return; }
+    if (Platform.OS === 'android') { Vibration.vibrate(10); }
+    onPress();
+  };
+
   const handlePressIn = () => {
     if (!clickable) { return; }
     Animated.spring(pressScale, {toValue: 0.97, useNativeDriver: true, damping: 20, stiffness: 400}).start();
@@ -184,18 +229,6 @@ const ConversationBubble = React.memo(function ConversationBubble({
         {/* Content */}
         {showLoading ? (
           <LoadingDots color={t.accent} />
-        ) : showError ? (
-          <View style={styles.errorWrap}>
-            <Text style={[styles.errorText, {color: t.danger}]}>生成失败，请重试</Text>
-            {onRetry && (
-              <TouchableOpacity
-                onPress={onRetry}
-                style={[styles.retryBtn, {backgroundColor: t.danger}]}
-                activeOpacity={0.7}>
-                <Text style={styles.retryBtnText}>↻ 重新生成</Text>
-              </TouchableOpacity>
-            )}
-          </View>
         ) : isAI ? (
           <ScrollView
             ref={innerScrollRef}
@@ -203,10 +236,8 @@ const ConversationBubble = React.memo(function ConversationBubble({
             showsVerticalScrollIndicator={true}
             nestedScrollEnabled={true}
             keyboardShouldPersistTaps="handled">
-            <Text style={[styles.text, {color: textColor}]}>
-              {partialText}
-              {isTyping ? <Text style={[styles.cursor, {color: t.accent}]}>|</Text> : null}
-            </Text>
+            <RichText text={partialText} t={t} />
+            {isTyping ? <Text style={[styles.cursor, {color: t.accent}]}>|</Text> : null}
           </ScrollView>
         ) : (
           <Text style={[styles.text, {color: textColor}]}>
@@ -224,7 +255,7 @@ const ConversationBubble = React.memo(function ConversationBubble({
     return (
       <Animated.View style={[styles.row, alignmentStyle, {transform: [{scale: pressScale}]}]}>
         <TouchableOpacity
-          onPress={onPress}
+          onPress={handleBubblePress}
           onPressIn={handlePressIn}
           onPressOut={handlePressOut}
           activeOpacity={0.85}
@@ -380,23 +411,4 @@ const styles = StyleSheet.create({
     borderRadius: 4,
   },
 
-  // Error
-  errorWrap: {
-    gap: space.sm,
-  },
-  errorText: {
-    ...type.bodySm,
-    fontWeight: '600',
-  },
-  retryBtn: {
-    alignSelf: 'flex-start',
-    paddingHorizontal: 14,
-    paddingVertical: 6,
-    borderRadius: radius.sm,
-  },
-  retryBtnText: {
-    fontSize: 13,
-    color: '#FFFFFF',
-    fontWeight: '700',
-  },
 });

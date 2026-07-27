@@ -13,6 +13,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from app.routers.audio import router as audio_router
+from app.routers.resume import router as resume_router
 from app.routers.stt import router as stt_router
 
 # 日志：DEBUG 级别，打印到 stderr，方便在终端直接看到
@@ -26,6 +27,8 @@ logging.basicConfig(
 logging.getLogger("websockets").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("hpack").setLevel(logging.WARNING)
+logging.getLogger("stt_streaming").setLevel(logging.INFO)
 
 logger = logging.getLogger("main")
 
@@ -54,6 +57,7 @@ async def _unhandled_error(request: Request, exc: Exception):
 
 
 app.include_router(audio_router, prefix="/api")
+app.include_router(resume_router, prefix="/api")
 app.include_router(stt_router, prefix="/api")
 
 

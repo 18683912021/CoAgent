@@ -1,8 +1,11 @@
-import React, {useCallback, useEffect, useMemo, useRef} from 'react';
+import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {
+  Alert,
   Animated,
   FlatList,
+  Modal,
   Platform,
+  ScrollView,
   StatusBar,
   StyleSheet,
   Text,
@@ -18,6 +21,7 @@ import {
 } from './hooks/useAudioCaptureController';
 import ConversationBubble from './components/ConversationBubble';
 import SeparatorLine from './components/SeparatorLine';
+import {API_BASE} from './config';
 import {useTheme, space, radius, type} from './theme';
 
 // ── Display item for FlatList (bubble or separator) ──
@@ -85,16 +89,53 @@ export default function InterviewScreen(): React.JSX.Element {
   const dark = useColorScheme() === 'dark';
   const t = useTheme(dark);
   const flatListRef = useRef<FlatList<DisplayItem>>(null);
-  const isNearBottom = useRef(true); // 用户是否在底部（决定是否自动滚动）
+  const isNearBottom = useRef(true);
+  const [showScrollBtn, setShowScrollBtn] = useState(false);
+  // 自我介绍弹窗
+  const [showIntro, setShowIntro] = useState(false);
+  const [introText, setIntroText] = useState('');
+  const [introLoading, setIntroLoading] = useState(false);
+
+  const fetchIntro = useCallback(async () => {
+    setShowIntro(true);
+    setIntroLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/resume/intro`);
+      const data = await res.json();
+      if (data.ok && data.intro) {
+        setIntroText(data.intro);
+      } else {
+        setIntroText('');
+      }
+    } catch {
+      setIntroText('');
+    } finally {
+      setIntroLoading(false);
+    }
+  }, []);
 
   const active = state.captureState === 'capturing';
+  // 面试计时
+  const [elapsed, setElapsed] = useState(0);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  useEffect(() => {
+    if (active) {
+      timerRef.current = setInterval(() => setElapsed(e => e + 1), 1000);
+    } else {
+      if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+      setElapsed(0);
+    }
+    return () => { if (timerRef.current) { clearInterval(timerRef.current); } };
+  }, [active]);
+  const fmtElapsed = () => { const m = Math.floor(elapsed / 60); const s = elapsed % 60; return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`; };
+
   const connecting = state.streamState === 'connecting';
   const streamReady = state.streamState === 'ready';
   const conversation = state.conversation;
   const isEmpty = conversation.length === 0;
   const micLevel = state.levels?.mic ?? 0;
 
-  // ── Display list ──
+  // ── Display list（仅结构性变化时重建，纯文本更新跳过） ──
   const displayItems: DisplayItem[] = useMemo(() => {
     const items: DisplayItem[] = [];
     for (let i = 0; i < conversation.length; i++) {
@@ -114,6 +155,7 @@ export default function InterviewScreen(): React.JSX.Element {
       items.push({type: 'bubble', message: msg});
     }
     return items;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversation]);
 
   const scrollToEnd = useCallback((force = false) => {
@@ -129,7 +171,12 @@ export default function InterviewScreen(): React.JSX.Element {
     const {contentOffset, contentSize, layoutMeasurement} = event.nativeEvent;
     const distToBottom = contentSize.height - contentOffset.y - layoutMeasurement.height;
     isNearBottom.current = distToBottom < 50;
+    setShowScrollBtn(distToBottom > 200);
   }, []);
+
+  // 用 ref 稳定回调引用，避免 renderItem 随每次转录事件重建
+  const controllerRef = useRef(controller);
+  controllerRef.current = controller;
 
   const renderItem = useCallback(
     ({item}: {item: DisplayItem}) => {
@@ -143,13 +190,12 @@ export default function InterviewScreen(): React.JSX.Element {
           text={msg.text}
           status={msg.status}
           timestamp={msg.timestamp}
-          onPress={msg.role !== 'ai' ? () => controller.sendLLMQuery(msg.id) : undefined}
-          onRetry={msg.role === 'ai' && msg.status === 'error' ? () => controller.retryLLM(msg.id) : undefined}
+          onPress={msg.role !== 'ai' ? () => controllerRef.current.sendLLMQuery(msg.id) : undefined}
           dark={dark}
         />
       );
     },
-    [controller, dark],
+    [dark],
   );
 
   const keyExtractor = useCallback(
@@ -159,14 +205,24 @@ export default function InterviewScreen(): React.JSX.Element {
 
   // ── Status ──
   const statusConfig = active
-    ? {label: '面试中', color: t.success, dot: true}
+    ? {label: fmtElapsed(), color: t.success, dot: true}
     : connecting
       ? {label: '连接中', color: t.warning, dot: true}
       : {label: '就绪', color: t.accent, dot: false};
 
+  const handleStop = () => {
+    Alert.alert('结束面试', '确定要结束当前面试吗？对话将被清空。', [
+      {text: '取消', style: 'cancel'},
+      {text: '结束', style: 'destructive', onPress: controller.stop},
+    ]);
+  };
+
   return (
-    <SafeAreaView style={[premiumStyles.safe, {backgroundColor: t.bg}]} edges={['top', 'left', 'right']}>
-      <StatusBar barStyle={dark ? 'light-content' : 'dark-content'} backgroundColor="transparent" translucent />
+    <SafeAreaView style={[premiumStyles.safe, {backgroundColor: t.bg}]} edges={['top', 'bottom', 'left', 'right']}>
+      <StatusBar
+        barStyle={dark ? 'light-content' : 'dark-content'}
+        backgroundColor={t.bgHeader}
+      />
 
       {/* ── Header ── */}
       <View style={[premiumStyles.header, {backgroundColor: t.bgHeader, borderBottomColor: t.divider}]}>
@@ -179,10 +235,18 @@ export default function InterviewScreen(): React.JSX.Element {
             <Text style={[premiumStyles.headerSub, {color: t.textTertiary}]}>实时转写 · AI 辅助</Text>
           </View>
         </View>
-        <View style={[premiumStyles.statusBadge, {backgroundColor: statusConfig.color + '18'}]}>
-          {statusConfig.dot && <PulsingDot color={statusConfig.color} size={7} />}
-          <View style={[premiumStyles.statusDot, !statusConfig.dot && {backgroundColor: statusConfig.color}]} />
-          <Text style={[premiumStyles.statusText, {color: statusConfig.color}]}>{statusConfig.label}</Text>
+        <View style={premiumStyles.headerRight}>
+          <TouchableOpacity
+            style={[premiumStyles.introBtn, {backgroundColor: t.accentLight}]}
+            onPress={fetchIntro}
+            activeOpacity={0.6}>
+            <Text style={premiumStyles.introBtnIcon}>📋</Text>
+          </TouchableOpacity>
+          <View style={[premiumStyles.statusBadge, {backgroundColor: statusConfig.color + '18'}]}>
+            {statusConfig.dot && <PulsingDot color={statusConfig.color} size={7} />}
+            <View style={[premiumStyles.statusDot, !statusConfig.dot && {backgroundColor: statusConfig.color}]} />
+            <Text style={[premiumStyles.statusText, {color: statusConfig.color}]}>{statusConfig.label}</Text>
+          </View>
         </View>
       </View>
 
@@ -239,6 +303,16 @@ export default function InterviewScreen(): React.JSX.Element {
         />
       )}
 
+      {/* ── 浮动回底 ── */}
+      {showScrollBtn && !isEmpty && (
+        <TouchableOpacity
+          style={[premiumStyles.scrollFab, {backgroundColor: t.accent, ...t.shadowMd}]}
+          onPress={() => { scrollToEnd(true); setShowScrollBtn(false); }}
+          activeOpacity={0.8}>
+          <Text style={premiumStyles.scrollFabIcon}>↓</Text>
+        </TouchableOpacity>
+      )}
+
       {/* ── Bottom Control ── */}
       <View style={[premiumStyles.controlBar, {backgroundColor: t.bgSurface, borderTopColor: t.divider}, t.shadowMd]}>
         {/* Stream status */}
@@ -253,12 +327,6 @@ export default function InterviewScreen(): React.JSX.Element {
             <MicLevelBar level={micLevel} dark={dark} />
           </View>
         )}
-        {state.error && (
-          <Text style={[premiumStyles.errorHint, {color: t.danger}]} numberOfLines={1}>
-            {state.error.message}
-          </Text>
-        )}
-
         {/* Capture Button */}
         <TouchableOpacity
           style={[
@@ -266,12 +334,40 @@ export default function InterviewScreen(): React.JSX.Element {
             {backgroundColor: active ? t.danger : t.accent},
             t.shadowMd,
           ]}
-          onPress={active ? controller.stop : controller.start}
+          onPress={active ? handleStop : controller.start}
           activeOpacity={0.85}>
           <Text style={premiumStyles.captureIcon}>{active ? '⏹' : '🎙'}</Text>
           <Text style={premiumStyles.captureLabel}>{active ? '结束面试' : '开始面试'}</Text>
         </TouchableOpacity>
       </View>
+      {/* ── 自我介绍弹窗 ── */}
+      <Modal visible={showIntro} animationType="slide" presentationStyle="pageSheet">
+        <SafeAreaView style={[premiumStyles.safe, {backgroundColor: t.bg}]} edges={['top', 'bottom']}>
+          <View style={[premiumStyles.introModalHeader, {borderBottomColor: t.divider}]}>
+            <View style={{width: 50}} />
+            <Text style={[premiumStyles.introModalTitle, {color: t.textPrimary}]}>自我介绍</Text>
+            <TouchableOpacity onPress={() => setShowIntro(false)} style={premiumStyles.introModalClose} activeOpacity={0.6}>
+              <Text style={[premiumStyles.introModalCloseText, {color: t.accent}]}>关闭</Text>
+            </TouchableOpacity>
+          </View>
+          {introLoading ? (
+            <View style={premiumStyles.introLoading}>
+              <Text style={[premiumStyles.introLoadingText, {color: t.textSecondary}]}>加载中…</Text>
+            </View>
+          ) : introText ? (
+            <ScrollView style={premiumStyles.introScroll} contentContainerStyle={premiumStyles.introContent}>
+              <Text style={[premiumStyles.introText, {color: t.textPrimary}]}>{introText}</Text>
+            </ScrollView>
+          ) : (
+            <View style={premiumStyles.introEmpty}>
+              <Text style={[premiumStyles.introEmptyIcon]}>📄</Text>
+              <Text style={[premiumStyles.introEmptyText, {color: t.textSecondary}]}>
+                尚未上传简历{'\n'}请在「我的」页面上传简历生成自我介绍
+              </Text>
+            </View>
+          )}
+        </SafeAreaView>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -404,4 +500,39 @@ const premiumStyles = StyleSheet.create({
   },
   captureIcon: {fontSize: 18},
   captureLabel: {fontSize: 16, fontWeight: '800', color: '#FFFFFF', letterSpacing: 0.5},
+
+  // ── Header right ──
+  headerRight: {flexDirection: 'row', alignItems: 'center', gap: space.sm},
+  introBtn: {
+    width: 34, height: 34, borderRadius: 17,
+    justifyContent: 'center', alignItems: 'center',
+  },
+  introBtnIcon: {fontSize: 16},
+
+  // ── Intro Modal ──
+  introModalHeader: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: space.lg, paddingVertical: space.md,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  introModalTitle: {...type.heading, textAlign: 'center', flex: 1},
+  introModalClose: {width: 50, alignItems: 'flex-end'},
+  introModalCloseText: {...type.body, fontWeight: '600'},
+  introLoading: {flex: 1, justifyContent: 'center', alignItems: 'center'},
+  introLoadingText: {...type.body, color: '#6B7280'},
+  introScroll: {flex: 1},
+  introContent: {padding: space.lg, paddingBottom: 40},
+  introText: {...type.body, lineHeight: 26, letterSpacing: 0.2},
+  introEmpty: {flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 36},
+  introEmptyIcon: {fontSize: 48, marginBottom: space.lg},
+  introEmptyText: {...type.body, textAlign: 'center', lineHeight: 24},
+
+  // Scroll FAB
+  scrollFab: {
+    position: 'absolute', bottom: 100, right: space.lg,
+    width: 40, height: 40, borderRadius: 20,
+    justifyContent: 'center', alignItems: 'center',
+    zIndex: 10,
+  },
+  scrollFabIcon: {fontSize: 18, color: '#FFFFFF', fontWeight: '800'},
 });

@@ -1,5 +1,6 @@
 import {useCallback, useEffect, useMemo, useReducer, useRef} from 'react';
 import {
+  Alert,
   AppState,
   PermissionsAndroid,
   Platform,
@@ -151,7 +152,7 @@ function stripOverlap(incoming: string, oldText: string): string {
 
 // ── 裁剪对话 ──
 function _cap(conv: ConversationMessage[]): ConversationMessage[] {
-  return conv.length > 80 ? conv.slice(-80) : conv;
+  return conv.length > 60 ? conv.slice(-60) : conv;
 }
 
 // ── Reducer ───────────────────────────────────────────────
@@ -216,12 +217,22 @@ function reducer(state: ControllerState, action: Action): ControllerState {
           };
         }
 
-        // 流式更新：提取增量
-        const delta = stripOverlap(action.text, streamingBubble.text);
+        // 流式更新：提取增量。
+        // 断句后新泡只有 delta，但 ASR 累积文本可能从上一句 done 泡开头。
+        let refText = streamingBubble.text;
+        let forceReplace = false;
+        const lastDone = [...state.conversation].reverse().find(
+          m => m.role === role && m.status === 'done',
+        );
+        if (lastDone && action.text.startsWith(lastDone.text)) {
+          refText = lastDone.text;
+          forceReplace = true; // 以 done 泡为参照 → 流式泡内容替换而非追加
+        }
+
+        const delta = stripOverlap(action.text, refText);
         if (!delta) { return state; }
 
-        // 判断是追加还是替换：delta 接近全文 → ASR 在回改纠正 → 替换；否则追加
-        const isReplace = delta.length >= streamingBubble.text.length * 0.6;
+        const isReplace = forceReplace || delta.length >= streamingBubble.text.length * 0.6;
 
         return {
           ...state,
@@ -229,7 +240,7 @@ function reducer(state: ControllerState, action: Action): ControllerState {
             i === streamingIdx
               ? {
                   ...m,
-                  text: isReplace ? action.text : m.text + delta,
+                  text: isReplace ? delta.trim() : m.text + delta,
                   timestamp: now,
                 }
               : m,
@@ -381,6 +392,7 @@ async function requestRuntimePermissions(): Promise<boolean> {
   );
   if (denied.length > 0) {
     const names = denied.map(p => p.label).join('、');
+    Alert.alert('需要授权', `需要${names}权限才能使用语音转文字功能。请在系统设置中开启。`);
     throw new Error(`${names}权限被拒绝`);
   }
   return true;
@@ -393,8 +405,8 @@ export function useAudioCaptureController() {
   // 0.6: LLM chunk 帧缓冲合并，减少无效渲染
   const llmChunkBuf = useRef('');
   const llmChunkRaf = useRef<number | null>(null);
-  // 防卡死：限制对话历史长度，关闭高频事件节流
-  const MAX_CONVERSATION = 80;
+  // 防卡死：限制对话历史长度 + 节流高频事件
+  const MAX_CONVERSATION = 60;
   const levelsThrottle = useRef(0);
   const statsThrottle = useRef(0);
 
@@ -425,11 +437,9 @@ export function useAudioCaptureController() {
 
     const subscriptions = [
       AudioCapture.onCaptureState(event => {
-        console.log('[状态] capture:', event.state);
         dispatch({type: 'captureState', value: event.state, payload: event});
       }),
       AudioCapture.onStreamState(event => {
-        console.log('[状态] stream:', event.state);
         dispatch({type: 'streamState', value: event.state, message: event.message});
       }),
       AudioCapture.onLevels(value => {
@@ -454,7 +464,7 @@ export function useAudioCaptureController() {
         dispatch({type: 'error', value});
       }),
       AudioCapture.onTranscription(event => {
-        console.log('[转录]', event.source, event.text.slice(0, 40), 'final:', event.isFinal);
+        if (__DEV__) { console.log('[转录]', event.source, event.text.slice(0, 40), 'final:', event.isFinal); }
         dispatch({
           type: 'transcription',
           text: event.text,
@@ -464,8 +474,8 @@ export function useAudioCaptureController() {
         });
       }),
       AudioCapture.onLLMStart((event: LLMStartEvent) => {
-        console.log('[LLM] start lang=%s qText=%s',
-          event.language, event.question_text.slice(0, 40));
+        if (__DEV__) { console.log('[LLM] start lang=%s qText=%s',
+          event.language, event.question_text.slice(0, 40)); }
         dispatch({
           type: 'llm_start',
           question_text: event.question_text,
@@ -507,8 +517,8 @@ export function useAudioCaptureController() {
           });
           llmChunkBuf.current = '';
         }
-        console.log('[LLM] done len=%d error=%s',
-          event.full_answer.length, event.error ?? '-');
+        if (event.error) { console.error('[LLM] 生成失败:', event.error); }
+        if (__DEV__) { console.log('[LLM] done len=%d', event.full_answer.length); }
         dispatch({
           type: 'llm_done',
           full_answer: event.full_answer,
@@ -576,7 +586,8 @@ export function useAudioCaptureController() {
       if (!state.projectionGranted) {
         const granted = await authorizeSystemAudio();
         if (!granted) {
-          throw createError('E_PROJECTION_DENIED', 'consent', '需要系统音频授权才能采集。');
+          Alert.alert('需要授权', '系统音频权限未授予，无法采集面试官的声音。仅采集麦克风也可以正常使用。');
+          // 不抛异常，继续用 mic-only 模式
         }
       }
       // 重连前先断开残留连接，避免卡死
@@ -635,7 +646,7 @@ export function useAudioCaptureController() {
       bubble_source: bubbleSource,
     });
 
-    console.log('[LLM] 发送 llm_query:', {text: clickedMsg.text.slice(0, 40), language: getLanguage(), bubble_source: bubbleSource});
+    if (__DEV__) { console.log('[LLM] 发送 llm_query', {text: clickedMsg.text.slice(0, 40)}); }
   }, [state.conversation]);
 
   // ── 0.5: Retry failed AI answer ──
@@ -682,7 +693,7 @@ export function useAudioCaptureController() {
       type: 'config',
       llm: llmConfig,
     });
-    console.log('[LLM] 发送 config:', JSON.stringify(llmConfig));
+    if (__DEV__) { console.log('[LLM] 发送 config:', JSON.stringify(llmConfig)); }
   }, []);
 
   return {

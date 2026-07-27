@@ -51,17 +51,23 @@ class StreamingASRSession:
         self._tx_queue = tx_queue
         self._ws = None
         self._recv_task = None
+        self._send_task = None
+        self._send_queue: "asyncio.Queue[bytes]" = asyncio.Queue(maxsize=32)
         self._running = False
         self._seq = 1
         self._last_sent = ""
+        self._last_finalized = ""  # 上一句最终文本，用于断句后裁掉旧内容
         self._text_parts: list[str] = []
         self._on_text = None  # 旧协议回调占位，避免 AttributeError
 
     async def connect(self) -> None:
         self._seq = 2  # 配置帧占序列 1，音频帧从 2 开始
         self._last_sent = ""
+        self._last_finalized = ""
         self._ws = await websockets.connect(
             WS_ENDPOINT,
+            ping_interval=30,     # 每 30 秒心跳，防止长会话被代理断开
+            ping_timeout=10,      # 心跳 10 秒无响应断开
             additional_headers={
                 "X-Api-Key": self._api_key,
                 "X-Api-Resource-Id": RESOURCE_ID,
@@ -78,9 +84,9 @@ class StreamingASRSession:
                 "enable_itn": True,
                 "enable_punc": True,
                 "enable_vad": True,
-                # ── 延迟优化 ──
-                "enable_first_char_accel": True,   # 首字加速：音频块 200ms→100ms，首字延迟 ↓30-40%
-                "context_history_length": 5,        # 多轮上下文感知，提升术语连贯性
+                # ── 识别优化 ──
+                "enable_first_char_accel": True,
+                "context_history_length": 5,
             },
         }
         payload = _gzip(json.dumps(config).encode("utf-8"))
@@ -89,22 +95,70 @@ class StreamingASRSession:
 
         self._running = True
         self._recv_task = asyncio.create_task(self._recv_loop())
+        self._send_task = asyncio.create_task(self._send_loop())
         logger.info("ASR 实时会话已建立")
 
-    async def feed(self, pcm: bytes) -> None:
-        """音频帧: Header + Sequence + PayloadSize + PCM。"""
+    def _enqueue(self, txt: str, is_final: bool) -> None:
+        """入队前裁剪已完结的旧句，保证断句后不再串入旧内容。
+
+        火山引擎 BigModel 极少发 definite=true，因此自己启发式断句：
+        文本以 。！？结尾 → 记录当前完整文本为断句锚点。
+        后续累积文本以此锚点开头**且更长** → 裁掉前缀，只入队新增内容。
+        """
+        stripped = txt.rstrip()
+        # 以句号/感叹号/问号结尾 → 视为一句完结，通知前端立即标记 done
+        if stripped and stripped[-1] in '。！？':
+            self._last_finalized = stripped
+            is_final = True  # 告诉前端可以断句了，不等 3 秒超时
+
+        # 仅当新文本**比锚点长**时裁前缀（> 而非 >=，避免把自己裁成空串）
+        if self._last_finalized and len(txt) > len(self._last_finalized) and txt.startswith(self._last_finalized):
+            txt = txt[len(self._last_finalized):].lstrip()
+
+        if not txt:
+            return
+        if txt == self._last_sent:
+            return
+        self._last_sent = txt
+        self._text_parts.append(txt)
+        if len(self._text_parts) > 200:  # 防止长会话内存膨胀
+            self._text_parts = self._text_parts[-100:]
+        if is_final:
+            self._last_finalized = txt
+        if self._tx_queue is not None:
+            try:
+                self._tx_queue.put_nowait((txt, is_final, self._source))
+                logger.info("转录入队[%s]: %s", self._source, txt[:50])
+            except Exception:
+                pass
+
+    async def _send_loop(self) -> None:
+        """后台任务：从队列取音频帧发送，不阻塞主音频接收链路。"""
+        while self._running:
+            try:
+                frame = await self._send_queue.get()
+            except asyncio.CancelledError:
+                break
+            try:
+                await self._ws.send(frame)
+            except (websockets.exceptions.ConnectionClosed, Exception):
+                self._running = False
+                break
+
+    def feed(self, pcm: bytes) -> None:
+        """音频帧非阻塞入队——告别 await send() 导致的串行延迟。"""
         if not self._ws or not self._running:
             return
         try:
             seq_bytes = struct.pack(">I", self._seq)
             self._seq += 1
-            await self._ws.send(
-                _header(0b0010, 0b0001, 0, 0) + seq_bytes + struct.pack(">I", len(pcm)) + pcm
-            )
+            frame = _header(0b0010, 0b0001, 0, 0) + seq_bytes + struct.pack(">I", len(pcm)) + pcm
+            self._send_queue.put_nowait(frame)
             if self._seq == 3:
                 logger.info("ASR 音频帧已开始推送 (seq=2+)")
+        except asyncio.QueueFull:
+            logger.debug("ASR 发送队列满，丢弃一帧")
         except websockets.exceptions.ConnectionClosed:
-            logger.warning("ASR WebSocket 已断开")
             self._running = False
 
     async def finish(self) -> str:
@@ -113,18 +167,18 @@ class StreamingASRSession:
             return ""
         self._running = False
 
+        # 先取消发送和接收循环
+        if self._send_task and not self._send_task.done():
+            self._send_task.cancel()
+        if self._recv_task and not self._recv_task.done():
+            self._recv_task.cancel()
+
         try:
             await self._ws.send(
                 _header(0b0010, 0b0011, 0, 0) + struct.pack(">i", -self._seq) + struct.pack(">I", 0)
             )
         except Exception:
             pass
-
-        if self._recv_task:
-            try:
-                await asyncio.wait_for(self._recv_task, timeout=8.0)
-            except (asyncio.TimeoutError, asyncio.CancelledError):
-                self._recv_task.cancel()
 
         try:
             await self._ws.close()
@@ -157,16 +211,9 @@ class StreamingASRSession:
                             result = ack_json.get("result", {})
                             txt = result.get("text", "")
                             if txt and txt != self._last_sent:
-                                self._last_sent = txt
                                 is_final = result.get("definite", False)
                                 logger.info("ASR[%s]%s: %s", self._source, " 最终" if is_final else "", txt)
-                                self._text_parts.append(txt)
-                                if self._tx_queue is not None:
-                                    try:
-                                        self._tx_queue.put_nowait((txt, is_final, self._source))
-                                        logger.info("转录入队[%s]: %s", self._source, txt[:50])
-                                    except Exception:
-                                        pass
+                                self._enqueue(txt, is_final)
                         except Exception:
                             pass
                     continue
@@ -184,7 +231,7 @@ class StreamingASRSession:
                         continue
 
                     if "error" in resp:
-                        logger.warning("ASR 错误: %s", resp.get("error", "")[:200])
+                        logger.debug("ASR 错误: %s", resp.get("error", "")[:200])
                         continue
 
                     result = resp.get("result", {})
@@ -192,16 +239,7 @@ class StreamingASRSession:
                     if txt:
                         is_final = result.get("definite", False)
                         logger.info("ASR[%s]%s: %s", self._source, " 最终" if is_final else "", txt)
-                        self._text_parts.append(txt)
-                        # 修复：0b1111 结果也入队，不再丢失（之前只走 _on_text=None 被丢弃）
-                        if txt != self._last_sent:
-                            self._last_sent = txt
-                            if self._tx_queue is not None:
-                                try:
-                                    self._tx_queue.put_nowait((txt, is_final, self._source))
-                                    logger.info("转录入队[%s]: %s", self._source, txt[:50])
-                                except Exception:
-                                    pass
+                        self._enqueue(txt, is_final)
 
                     if flags == 0b0011:
                         return

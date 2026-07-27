@@ -131,4 +131,9 @@ export const AudioCapture = {
   sendControl(message: object): void {
     requireNative().sendControl(JSON.stringify(message));
   },
+
+  /** 调用原生文件选择器，选择 PDF 文件。返回 { uri, name, type, size } 或 null */
+  async pickPDF(): Promise<{uri: string; name: string; type: string; size: number} | null> {
+    return NativeModules.FilePicker?.pickPDF() ?? null;
+  },
 };

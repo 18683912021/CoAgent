@@ -20,6 +20,13 @@ export const STREAM_URL: string =
   STREAM_URL_OVERRIDE ??
   `ws://${DEFAULT_HOST}:${DEFAULT_PORT}${DEFAULT_PATH}`;
 
+/** REST API 基础地址，简历上传等 HTTP 接口使用。联调时直接改此值。 */
+const API_HOST = Platform.OS === 'android' ? '10.0.2.2' : 'localhost';
+const API_PORT = 8010;
+const API_OVERRIDE: string | null = 'http://192.168.7.149:8010';
+
+export const API_BASE: string = API_OVERRIDE ?? `http://${API_HOST}:${API_PORT}`;
+
 // ── 共享设置（跨 Tab 读写） ──
 export type AppLanguage = 'zh' | 'en';
 

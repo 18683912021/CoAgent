@@ -41,9 +41,8 @@ _VOLC_API_KEY = os.getenv("VOLC_API_KEY", "")
 _ASR_READY = bool(_VOLC_API_KEY)
 
 # 0.5: mode → max_tokens 路由
-# 2000 tokens 足够覆盖 4 个维度的详细回答（约 3000-4000 汉字）
-# 之前 20000 过大，导致模型生成策略偏慢、回答冗余
-LLM_MAX_TOKENS = 2000
+# 5000 tokens ≈ 1500-1800 汉字，四维度深度回答绰绰有余
+LLM_MAX_TOKENS = 5000
 
 
 @router.websocket("/ws/audio/stream")
@@ -51,7 +50,10 @@ async def audio_stream(ws: WebSocket):
     await ws.accept()
     logger.info("WebSocket 已连接")
 
-    global _transcription_queue
+    global _transcription_queue, _old_sender_task
+    # 如果有旧连接残留的 sender task，先取消
+    if '_old_sender_task' in globals() and _old_sender_task is not None and not _old_sender_task.done():
+        _old_sender_task.cancel()
     _transcription_queue = asyncio.Queue(maxsize=256)
     sender_task: "asyncio.Task | None" = None
 
@@ -211,7 +213,7 @@ async def audio_stream(ws: WebSocket):
                     # 实时 ASR：按 source 路由到对应会话
                     s = asr_sessions.get(header.source)
                     if s is not None:
-                        await s.feed(pcm_payload)
+                        s.feed(pcm_payload)
                 except ProtocolError as error:
                     await send_error(ws, error.code, str(error))
 
@@ -221,7 +223,18 @@ async def audio_stream(ws: WebSocket):
         logger.exception("音频 WebSocket 异常")
         await safe_send_error(ws, "E_WEBSOCKET", str(error))
     finally:
-        # 清理 LLM worker
+        # 1. 先停 sender（不再往前端发）
+        if sender_task is not None:
+            sender_task.cancel()
+            _old_sender_task = sender_task  # 防止重连时旧 task 泄漏
+        # 2. 停 ASR 会话（不再往里发转录）
+        for s in asr_sessions.values():
+            try:
+                await s.finish()
+            except Exception:
+                pass
+        asr_sessions.clear()
+        # 3. 停 LLM worker
         if llm_worker_task is not None:
             llm_worker_task.cancel()
         if llm_service is not None:
@@ -235,8 +248,6 @@ async def audio_stream(ws: WebSocket):
             except Exception:
                 pass
         asr_sessions.clear()
-        if sender_task:
-            sender_task.cancel()
         if _transcription_queue:
             # 清空队列
             while not _transcription_queue.empty():
@@ -392,19 +403,25 @@ async def safe_send_error(ws: WebSocket, code: str, message: str) -> None:
 
 async def _transcription_sender(ws: WebSocket):
     """后台任务：从队列取转录消息并发送到客户端。
-    0.5: 不再自动触发 LLM——仅推送 transcription。"""
-    logger.info("转录发送器已启动")
+    发送前先经 asr_text_corrector 纠正，前端看到的已是修正后的文本。"""
+    from app.services.asr_text_corrector import correct_asr_text
+
+    logger.info("转录发送器已启动（含ASR纠正）")
     try:
         while True:
             text, is_final, source = await _transcription_queue.get()
             try:
+                corrected = correct_asr_text(text)
                 await ws.send_json({
                     "type": "transcription",
-                    "text": text,
+                    "text": corrected,
                     "is_final": is_final,
                     "source": source,
                 })
-                logger.info("转录已发送[%s]: %s", source, text[:50])
+                if corrected != text:
+                    logger.info("转录纠正[%s]: %.30s → %.30s", source, text, corrected)
+                else:
+                    logger.info("转录已发送[%s]: %s", source, corrected[:50])
             except Exception:
                 logger.debug("转录发送器 WebSocket 已断开")
                 break

@@ -16,7 +16,7 @@ export default function KnowledgeScreen(): React.JSX.Element {
   const t = useTheme(dark);
 
   return (
-    <SafeAreaView style={[styles.container, {backgroundColor: t.bg}]} edges={['top']}>
+    <SafeAreaView style={[styles.container, {backgroundColor: t.bg}]} edges={['top', 'bottom']}>
       <View style={styles.content}>
         <View style={[styles.iconWrap, {backgroundColor: t.accentLight}]}>
           <Text style={styles.icon}>📚</Text>

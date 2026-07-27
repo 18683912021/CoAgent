@@ -217,7 +217,7 @@ _TERM_VARIANTS: dict[str, list[str]] = {
     "防抖": ["房抖", "反抖", "防斗", "房斗", "凡抖", "debounce"],
     "节流": ["节留", "接流", "截流", "结流", "杰流", "throttle"],
     "深拷贝": ["深考贝", "生拷贝", "深靠背", "深耕贝", "深考背"],
-    "浅拷贝": ["前考贝", "钱拷贝", "钱靠背", "浅考贝", "前靠背"],
+    "浅拷贝": ["前考贝", "钱拷贝", "钱靠背", "浅考贝", "前靠背", "浅靠背"],
     "不可变性": ["不可变形", "immutability"],
 
     "Proxy": ["proxy", "p r c", "pro x y", "pro xi", "prorxy"],
@@ -231,7 +231,7 @@ _TERM_VARIANTS: dict[str, list[str]] = {
     # ── CSS / 布局 ──
     "CSS": ["css", "C S S", "c s s", "层叠样式表", "层 叠 样式 表", "级联样式表"],
     "HTML": ["html", "H T M L", "h t m l", "超文本标记语言", "超 文本 标记 语言"],
-    "DOM": ["dom", "D O M", "d o m", "文档对象模型", "文档 对象 模型", "动"],
+    "DOM": ["dom", "D O M", "d o m", "文档对象模型", "文档 对象 模型"],
     "CSSOM": ["cssom", "css om", "c s s o m", "样式对象模型", "样式 对象 模型"],
     "BOM": ["bom", "B O M", "浏览 器 对象 模型"],
     "Flexbox": ["flexbox", "flex box", "flex博客", "flesh box"],
@@ -267,7 +267,7 @@ _TERM_VARIANTS: dict[str, list[str]] = {
     "DNS": ["dns", "D N S", "d n s"],
     "CDN": ["cdn", "C D N", "c d n"],
     "QUIC": ["quic", "quick", "quick协议"],
-    "WebSocket": ["websocket", "web socket", "微博socket", "web sockey"],
+    "WebSocket": ["websocket", "web socket", "微博socket", "web sockey", "webSocket"],
     "SSE": ["sse", "s s e", "server sent", "server sent events"],
     "CORS": ["cors", "course", "扣斯", "cores", "跨域", "跨越"],
     "XSS": ["xss", "x s s", "叉ss", "跨站脚本"],
@@ -387,8 +387,14 @@ _TERM_VARIANTS: dict[str, list[str]] = {
 
     # ── Node.js ──
     "Node.js": [
-        "nodejs", "node js", "Node js", "node点js", "node j s", "node", "Node",
+        "nodejs", "node js", "Node js", "node点js", "node j s",
     ],
+    "Node 18": ["node十八", "node 十八"],
+    "Node 20": ["node二十", "node 二十"],
+    "React 18": ["react十八", "react18", "react 18", "React18", "瑞爱的18"],
+    "Webpack 5": ["webpack五", "webpack5", "webpack 5"],
+    "HTTP/2": ["http二", "http2", "HTTP2"],
+    "HTTP/3": ["http三", "http3", "HTTP3"],
     "Express": ["express", "express框架", "一克斯普瑞斯"],
     "Koa": ["koa", "k o a", "koa框架"],
     "Nest.js": ["nestjs", "nest js", "nest框架"],
@@ -618,7 +624,7 @@ _TERM_VARIANTS: dict[str, list[str]] = {
     "实例": ["实例", "instance", "因斯疼斯"],
     "指令": ["指令", "directive", "地瑞克t五"],
     "v-bind": ["v bind", "v 绑的", "v:bind", "冒号"],
-    "v-model": ["v model", "v 猫斗", "双向绑定"],
+    "v-model": ["v model", "v 猫斗"],
     "v-for": ["v for", "v 佛"],
     "v-if": ["v if", "v 衣服"],
     "v-show": ["v show", "v 受"],
@@ -789,6 +795,8 @@ def _build_lookup() -> list[tuple[str, str]]:
     return pairs
 
 _CORRECTIONS: list[tuple[str, str]] = _build_lookup()
+# 过滤掉 1 字条目——"站→栈"会误杀所有含"站"的文本
+_CORRECTIONS = [(w, c) for w, c in _CORRECTIONS if len(w) > 1]
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -835,30 +843,32 @@ def _pinyin_fuzzy_correct(text: str, threshold: float = 0.72) -> str:
 # 公开 API
 # ══════════════════════════════════════════════════════════════════
 
+# ── 优化：按错误文本长度分组，跳过长匹配 ──
+_CORRECTIONS_BY_LEN: list[tuple[int, str, str]] = sorted(
+    [(len(w), w, c) for w, c in _CORRECTIONS],
+    key=lambda x: -x[0],  # 长匹配优先
+)
+
 def correct_asr_text(text: str) -> str:
     """双层纠正。
 
-    Layer 1 — 精确匹配（归一化后查找词典，微秒级）
+    Layer 1 — 精确匹配（跳过长匹配 + 简单 str.replace，微秒级）
     Layer 2 — 拼音模糊匹配（毫秒级兜底）
     """
     if not text or not text.strip():
         return text
 
     original = text
+    max_len = len(text)
 
-    # 归一化后精确匹配
-    text_norm = _normalize(text)
-    text_nosp = _strip_spaces(text_norm)
+    for w_len, wrong, correct in _CORRECTIONS_BY_LEN:
+        if w_len > max_len:
+            continue  # 比文本还长的不可能匹配
+        if wrong in text:
+            text = text.replace(wrong, correct)
 
-    for wrong, correct in _CORRECTIONS:
-        wrong_nosp = _strip_spaces(wrong)
-        if wrong_nosp in text_nosp:
-            # 在原文本中替换（保留原文本的空格/大小写格式）
-            pattern = re.compile(re.escape(wrong), re.IGNORECASE)
-            text = pattern.sub(correct, text)
-
-    # 拼音模糊匹配兜底
-    text = _pinyin_fuzzy_correct(text)
+    # 拼音模糊匹配兜底（已禁用——阈值难调，误匹配率过高）
+    # text = _pinyin_fuzzy_correct(text)
 
     # 清理
     text = re.sub(r'\s{2,}', ' ', text).strip()
