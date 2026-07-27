@@ -4,6 +4,7 @@
 鉴权：X-Api-App-Key + X-Api-Access-Key（通过 HMAC-SHA256 签名生成 Token）。
 """
 
+import asyncio
 import gzip
 import hashlib
 import hmac
@@ -14,6 +15,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 
 import websockets
 from websockets.asyncio.client import ClientConnection

@@ -14,6 +14,7 @@ import asyncio
 import gzip
 import json
 import logging
+import ssl
 import struct
 import uuid
 from io import BytesIO
@@ -62,6 +63,11 @@ class StreamingASRSession:
     async def connect(self) -> None:
         self._seq = 2  # 配置帧占序列 1，音频帧从 2 开始
         self._last_sent_full = ""
+        import sys as _sys
+        ssl_ctx = ssl.create_default_context()
+        if _sys.platform == "darwin":  # macOS 开发环境绕过 Clash 代理证书拦截
+            ssl_ctx.check_hostname = False
+            ssl_ctx.verify_mode = ssl.CERT_NONE
         self._ws = await websockets.connect(
             WS_ENDPOINT,
             ping_interval=30,     # 每 30 秒心跳，防止长会话被代理断开
@@ -73,6 +79,7 @@ class StreamingASRSession:
                 "X-Api-Request-Id": str(uuid.uuid4()),
                 "X-Api-Sequence": "-1",
             },
+            ssl=ssl_ctx,
         )
         config = {
             "user": {"uid": "audio-capture"},

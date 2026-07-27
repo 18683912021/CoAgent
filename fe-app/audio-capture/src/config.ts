@@ -14,7 +14,9 @@ const DEFAULT_PORT = 8010;
 const DEFAULT_PATH = '/api/ws/audio/stream';
 
 /** 联调时直接改这里的值即可覆盖默认地址 */
-const STREAM_URL_OVERRIDE: string | null = 'ws://192.168.7.149:8010/api/ws/audio/stream';
+const STREAM_URL_OVERRIDE: string | null = 'ws://0.0.0.0:8010/api/ws/audio/stream';
+// const STREAM_URL_OVERRIDE: string | null = 'ws://192.168.1.14:8010/api/ws/audio/stream';
+// const STREAM_URL_OVERRIDE: string | null = 'ws://192.168.7.149:8010/api/ws/audio/stream';
 
 export const STREAM_URL: string =
   STREAM_URL_OVERRIDE ??
