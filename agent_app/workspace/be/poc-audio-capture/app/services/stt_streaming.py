@@ -55,15 +55,13 @@ class StreamingASRSession:
         self._send_queue: "asyncio.Queue[bytes]" = asyncio.Queue(maxsize=32)
         self._running = False
         self._seq = 1
-        self._last_sent = ""
-        self._last_finalized = ""  # 上一句最终文本，用于断句后裁掉旧内容
+        self._last_sent_full = ""  # 上次已发送的全量文本，用于裁剪增量
         self._text_parts: list[str] = []
         self._on_text = None  # 旧协议回调占位，避免 AttributeError
 
     async def connect(self) -> None:
         self._seq = 2  # 配置帧占序列 1，音频帧从 2 开始
-        self._last_sent = ""
-        self._last_finalized = ""
+        self._last_sent_full = ""
         self._ws = await websockets.connect(
             WS_ENDPOINT,
             ping_interval=30,     # 每 30 秒心跳，防止长会话被代理断开
@@ -99,36 +97,29 @@ class StreamingASRSession:
         logger.info("ASR 实时会话已建立")
 
     def _enqueue(self, txt: str, is_final: bool) -> None:
-        """入队前裁剪已完结的旧句，保证断句后不再串入旧内容。
+        """入队：始终发送 ASR 返回的全量累积文本，由前端 stripOverlap 去重。"""
+        # 与上次发送的全量文本完全一致 → 跳过
+        if txt == self._last_sent_full:
+            return
 
-        火山引擎 BigModel 极少发 definite=true，因此自己启发式断句：
-        文本以 。！？结尾 → 记录当前完整文本为断句锚点。
-        后续累积文本以此锚点开头**且更长** → 裁掉前缀，只入队新增内容。
-        """
-        stripped = txt.rstrip()
-        # 以句号/感叹号/问号结尾 → 视为一句完结，通知前端立即标记 done
-        if stripped and stripped[-1] in '。！？':
-            self._last_finalized = stripped
-            is_final = True  # 告诉前端可以断句了，不等 3 秒超时
-
-        # 仅当新文本**比锚点长**时裁前缀（> 而非 >=，避免把自己裁成空串）
-        if self._last_finalized and len(txt) > len(self._last_finalized) and txt.startswith(self._last_finalized):
-            txt = txt[len(self._last_finalized):].lstrip()
+        # 检测句边界（中英文句末标点或 ASR 明确标记 definite）
+        # 不在后端裁剪——标点也要发给前端，否则 stripOverlap 会把上一句
+        # 的标点混入下一句，导致新气泡以句号开头。
+        if is_final or (txt.rstrip() and txt.rstrip()[-1] in '。！？.!?'):
+            is_final = True
 
         if not txt:
             return
-        if txt == self._last_sent:
-            return
-        self._last_sent = txt
+
+        self._last_sent_full = txt
         self._text_parts.append(txt)
-        if len(self._text_parts) > 200:  # 防止长会话内存膨胀
+        if len(self._text_parts) > 200:
             self._text_parts = self._text_parts[-100:]
-        if is_final:
-            self._last_finalized = txt
         if self._tx_queue is not None:
             try:
                 self._tx_queue.put_nowait((txt, is_final, self._source))
-                logger.info("转录入队[%s]: %s", self._source, txt[:50])
+                logger.debug("转录入队[%s]%s: %s", self._source,
+                             " 最终" if is_final else "", txt[:50])
             except Exception:
                 pass
 
@@ -210,7 +201,7 @@ class StreamingASRSession:
                             ack_json = json.loads(ack_body[json_start:].decode("utf-8"))
                             result = ack_json.get("result", {})
                             txt = result.get("text", "")
-                            if txt and txt != self._last_sent:
+                            if txt and txt != self._last_sent_full:
                                 is_final = result.get("definite", False)
                                 logger.info("ASR[%s]%s: %s", self._source, " 最终" if is_final else "", txt)
                                 self._enqueue(txt, is_final)

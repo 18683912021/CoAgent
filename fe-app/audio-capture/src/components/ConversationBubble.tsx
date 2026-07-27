@@ -42,7 +42,7 @@ function RichText({text, t}: {text: string; t: ReturnType<typeof useTheme>}) {
   // 拆分为段落，再逐段解析粗体/行内代码/代码块
   const blocks = text.split(/(```[\s\S]*?```)/g);
   return (
-    <Text style={{...type.body, color: t.textPrimary, lineHeight: 24, flexShrink: 1}}>
+    <Text style={{fontSize: 14, color: t.textPrimary, lineHeight: 22, flexShrink: 1}}>
       {blocks.map((block, bi) => {
         if (block.startsWith('```') && block.endsWith('```')) {
           const code = block.slice(3, -3).replace(/^\n/, '');
@@ -169,30 +169,22 @@ const ConversationBubble = React.memo(function ConversationBubble({
   let bubbleBorder: string;
   let textColor: string;
   let avatar: string;
-  let label: string;
-  let labelColor: string;
 
   if (isInterviewer) {
     bubbleBg = t.bubbleInterviewer;
     bubbleBorder = t.divider;
     textColor = t.textPrimary;
     avatar = '🎙️';
-    label = '面试官';
-    labelColor = t.textTertiary;
   } else if (isUser) {
     bubbleBg = t.bubbleUser;
     bubbleBorder = t.bubbleUserBorder;
     textColor = '#14532D';
     avatar = '👤';
-    label = '我';
-    labelColor = '#166534';
   } else {
     bubbleBg = t.bubbleAI;
     bubbleBorder = t.bubbleAIBorder;
     textColor = t.textPrimary;
     avatar = '🤖';
-    label = 'AI 建议';
-    labelColor = t.accent;
   }
 
   const content = (
@@ -218,9 +210,8 @@ const ConversationBubble = React.memo(function ConversationBubble({
           showError && {borderColor: t.danger, borderStyle: 'dashed'},
           t.shadowSm,
         ]}>
-        {/* Label row */}
+        {/* Timestamp */}
         <View style={styles.labelRow}>
-          <Text style={[styles.label, {color: labelColor}]}>{label}</Text>
           <Text style={[styles.timestamp, {color: t.textTertiary}]}>
             {relativeTime(timestamp)}
           </Text>
@@ -232,7 +223,7 @@ const ConversationBubble = React.memo(function ConversationBubble({
         ) : isAI ? (
           <ScrollView
             ref={innerScrollRef}
-            style={{maxHeight: screenH / 3}}
+            style={{maxHeight: screenH / 2.5}}
             showsVerticalScrollIndicator={true}
             nestedScrollEnabled={true}
             keyboardShouldPersistTaps="handled">
@@ -377,16 +368,6 @@ const styles = StyleSheet.create({
   timestamp: {
     ...type.caption,
     marginLeft: 'auto',
-  },
-  modeBadge: {
-    borderRadius: radius.sm - 2,
-    paddingHorizontal: 6,
-    paddingVertical: 1.5,
-  },
-  modeBadgeText: {
-    fontSize: 10,
-    color: '#FFFFFF',
-    fontWeight: '700',
   },
 
   // Text

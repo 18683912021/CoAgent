@@ -421,7 +421,7 @@ async def _transcription_sender(ws: WebSocket):
                 if corrected != text:
                     logger.info("转录纠正[%s]: %.30s → %.30s", source, text, corrected)
                 else:
-                    logger.info("转录已发送[%s]: %s", source, corrected[:50])
+                    logger.debug("转录已发送[%s]: %s", source, corrected[:50])
             except Exception:
                 logger.debug("转录发送器 WebSocket 已断开")
                 break

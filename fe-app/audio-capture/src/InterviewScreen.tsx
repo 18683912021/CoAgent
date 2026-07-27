@@ -135,6 +135,17 @@ export default function InterviewScreen(): React.JSX.Element {
   const isEmpty = conversation.length === 0;
   const micLevel = state.levels?.mic ?? 0;
 
+  // ── 浮动回底按钮动画 ──
+  const fabOpacity = useRef(new Animated.Value(0)).current;
+  const fabScale = useRef(new Animated.Value(0.6)).current;
+  useEffect(() => {
+    const visible = showScrollBtn && !isEmpty;
+    Animated.parallel([
+      Animated.spring(fabOpacity, {toValue: visible ? 1 : 0, useNativeDriver: true, tension: 200, friction: 22}),
+      Animated.spring(fabScale, {toValue: visible ? 1 : 0.6, useNativeDriver: true, tension: 200, friction: 22}),
+    ]).start();
+  }, [showScrollBtn, isEmpty, fabOpacity, fabScale]);
+
   // ── Display list（仅结构性变化时重建，纯文本更新跳过） ──
   const displayItems: DisplayItem[] = useMemo(() => {
     const items: DisplayItem[] = [];
@@ -304,14 +315,22 @@ export default function InterviewScreen(): React.JSX.Element {
       )}
 
       {/* ── 浮动回底 ── */}
-      {showScrollBtn && !isEmpty && (
+      <Animated.View
+        pointerEvents={showScrollBtn && !isEmpty ? 'auto' : 'none'}
+        style={[
+          premiumStyles.scrollFabWrap,
+          {
+            opacity: fabOpacity,
+            transform: [{scale: fabScale}],
+          },
+        ]}>
         <TouchableOpacity
-          style={[premiumStyles.scrollFab, {backgroundColor: t.accent, ...t.shadowMd}]}
+          style={[premiumStyles.scrollFab, {backgroundColor: t.accent, borderColor: t.textInverse + '40'}, t.shadowLg]}
           onPress={() => { scrollToEnd(true); setShowScrollBtn(false); }}
-          activeOpacity={0.8}>
-          <Text style={premiumStyles.scrollFabIcon}>↓</Text>
+          activeOpacity={0.75}>
+          <Text style={premiumStyles.scrollFabIcon}>▼</Text>
         </TouchableOpacity>
-      )}
+      </Animated.View>
 
       {/* ── Bottom Control ── */}
       <View style={[premiumStyles.controlBar, {backgroundColor: t.bgSurface, borderTopColor: t.divider}, t.shadowMd]}>
@@ -528,11 +547,14 @@ const premiumStyles = StyleSheet.create({
   introEmptyText: {...type.body, textAlign: 'center', lineHeight: 24},
 
   // Scroll FAB
-  scrollFab: {
-    position: 'absolute', bottom: 100, right: space.lg,
-    width: 40, height: 40, borderRadius: 20,
-    justifyContent: 'center', alignItems: 'center',
+  scrollFabWrap: {
+    position: 'absolute', bottom: 110, right: space.lg,
     zIndex: 10,
   },
-  scrollFabIcon: {fontSize: 18, color: '#FFFFFF', fontWeight: '800'},
+  scrollFab: {
+    width: 44, height: 44, borderRadius: 22,
+    justifyContent: 'center', alignItems: 'center',
+    borderWidth: 1,
+  },
+  scrollFabIcon: {fontSize: 16, color: '#FFFFFF', fontWeight: '800'},
 });

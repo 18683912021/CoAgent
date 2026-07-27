@@ -112,42 +112,41 @@ function insertAfter<T extends {id: string}>(arr: T[], afterId: string, item: T)
 // 逐字符比较，跳过标点/空白差异。
 // 中段重叠搜索从中断点继续，而不是从 oldText 头部重新匹配。
 const _SKIP_RE = /[，。！？、；：""''.!?,;:'"\s]/;
+const _PUNCT_ONLY_RE = /^[，。！？、；：""''.!?,;:'"\s]+$/;
+function _isOnlyPunct(s: string): boolean {
+  return _PUNCT_ONLY_RE.test(s);
+}
 
 function stripOverlap(incoming: string, oldText: string): string {
   if (!oldText) { return incoming; }
   if (incoming.startsWith(oldText)) { return incoming.slice(oldText.length); }
 
-  let i = 0, j = 0;
-  while (i < incoming.length && j < oldText.length) {
-    const ci = incoming[i]!;
-    const cj = oldText[j]!;
-    if (_SKIP_RE.test(ci)) { i++; continue; }
-    if (_SKIP_RE.test(cj)) { j++; continue; }
-    if (ci.toLowerCase() !== cj.toLowerCase()) {
-      // 从中断点 j 开始搜索 oldText 剩余部分，不是从头搜
-      const rest = incoming.slice(i);
-      let ri = 0;
-      while (ri < rest.length && _SKIP_RE.test(rest[ri]!)) { ri++; }
-
-      let jj = j; // ← 关键：从中断点继续，不是 jj=0
-      let rj = ri;
-      while (rj < rest.length && jj < oldText.length) {
-        if (_SKIP_RE.test(rest[rj]!)) { rj++; continue; }
-        if (_SKIP_RE.test(oldText[jj]!)) { jj++; continue; }
-        if (rest[rj]!.toLowerCase() !== oldText[jj]!.toLowerCase()) { break; }
-        rj++; jj++;
-      }
-      while (jj < oldText.length && _SKIP_RE.test(oldText[jj]!)) { jj++; }
-      if (jj >= oldText.length) {
-        return rest.slice(rj);
-      }
-      return incoming;
-    }
-    i++; j++;
+  // Fast path: exact substring match anywhere（覆盖绝大多数场景）
+  const idx = incoming.indexOf(oldText);
+  if (idx !== -1) {
+    return (incoming.slice(0, idx) + incoming.slice(idx + oldText.length));
   }
 
-  while (j < oldText.length && _SKIP_RE.test(oldText[j]!)) { j++; }
-  return j >= oldText.length ? incoming.slice(i) : incoming;
+  // Slow path: character-by-character with SKIP chars（标点/空白容错）
+  let bestStart = -1;
+  let bestEnd = -1;
+  for (let start = 0; start <= incoming.length - oldText.length; start++) {
+    let ii = start;
+    let jj = 0;
+    let matched = true;
+    while (jj < oldText.length && ii < incoming.length) {
+      if (_SKIP_RE.test(incoming[ii]!)) { ii++; continue; }
+      if (_SKIP_RE.test(oldText[jj]!)) { jj++; continue; }
+      if (incoming[ii]!.toLowerCase() !== oldText[jj]!.toLowerCase()) { matched = false; break; }
+      ii++; jj++;
+    }
+    while (jj < oldText.length && _SKIP_RE.test(oldText[jj]!)) { jj++; }
+    if (matched && jj >= oldText.length) { bestStart = start; bestEnd = ii; break; }
+  }
+  if (bestStart >= 0) {
+    return (incoming.slice(0, bestStart) + incoming.slice(bestEnd));
+  }
+  return incoming;
 }
 
 // ── 裁剪对话 ──
@@ -192,14 +191,28 @@ function reducer(state: ControllerState, action: Action): ControllerState {
       if (streamingIdx !== -1) {
         const streamingBubble = state.conversation[streamingIdx]!;
         const gap = now - streamingBubble.timestamp;
-        const shouldSplit = gap > 3000 || action.isFinal;
+        const shouldSplit = gap > 1500 || action.isFinal;
 
         if (shouldSplit) {
           // 断句：提取新增文本，关闭旧泡，起新泡
-          const delta = stripOverlap(action.text, streamingBubble.text);
+          let delta = stripOverlap(action.text, streamingBubble.text);
+
+          // ASR 跨 VAD 重启时会带回已完结的旧句，需要再对 done 泡去重
+          const recentDone = [...state.conversation].reverse()
+            .filter(m => m.role === role && m.status === 'done')
+            .slice(0, 5);
+          for (const done of recentDone) {
+            delta = stripOverlap(delta, done.text);
+          }
+
           if (!delta.trim()) {
             return {...state, conversation: _cap(state.conversation.map((m, i) =>
               i === streamingIdx ? {...m, status: 'done' as const, timestamp: now} : m))};
+          }
+          // 纯标点增量：合并到 done 泡，不单独建泡（修复"标点占一句"）
+          if (_isOnlyPunct(delta.trim())) {
+            return {...state, conversation: _cap(state.conversation.map((m, i) =>
+              i === streamingIdx ? {...m, text: m.text + delta.trim(), status: 'done' as const, timestamp: now} : m))};
           }
           const doneBubble = {...streamingBubble, status: 'done' as const};
           const newMsg: ConversationMessage = {
@@ -232,7 +245,12 @@ function reducer(state: ControllerState, action: Action): ControllerState {
         const delta = stripOverlap(action.text, refText);
         if (!delta) { return state; }
 
-        const isReplace = forceReplace || delta.length >= streamingBubble.text.length * 0.6;
+        // 仅当 done 泡参照（forceReplace）或流式泡足够长且 delta 覆盖大半时才替换
+        // 短文本（<5字）只用追加，避免"今天"+增量"天气"→只显示"天气"
+        const isReplace = forceReplace || (
+          streamingBubble.text.length >= 5 &&
+          delta.length >= streamingBubble.text.length * 0.6
+        );
 
         return {
           ...state,

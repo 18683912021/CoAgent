@@ -235,7 +235,8 @@ class AudioCaptureEngine(
               AudioFormat.ENCODING_PCM_16BIT,
           )
           check(minBuffer > 0) { "Unsupported system audio format" }
-          val bufferSize = max(minBuffer * 2, sampleRate * channelCount * 2 / 5)
+          val target40Ms = sampleRate * channelCount * 2 / 25
+          val bufferSize = max(minBuffer, target40Ms)
           val format = AudioFormat.Builder()
               .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
               .setSampleRate(sampleRate)
@@ -273,7 +274,10 @@ class AudioCaptureEngine(
     val channelCount = if (channelMask == AudioFormat.CHANNEL_IN_MONO) 1 else 2
     val minBuffer = AudioRecord.getMinBufferSize(sampleRate, channelMask, AudioFormat.ENCODING_PCM_16BIT)
     check(minBuffer > 0) { "Unsupported AudioRecord format" }
-    val bufferSize = max(minBuffer * 2, sampleRate * channelCount * 2 / 5)
+    // READ_BLOCKING 缓冲区：目标 40ms，不低于硬件最小值
+    // 原来 / 5 = 200ms，延迟 160ms 浪费在手机端
+    val target40Ms = sampleRate * channelCount * 2 / 25
+    val bufferSize = max(minBuffer, target40Ms)
     val format = AudioFormat.Builder()
         .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
         .setSampleRate(sampleRate)

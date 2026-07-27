@@ -843,7 +843,7 @@ def _pinyin_fuzzy_correct(text: str, threshold: float = 0.72) -> str:
 # 公开 API
 # ══════════════════════════════════════════════════════════════════
 
-# ── 优化：按错误文本长度分组，跳过长匹配 ──
+# ── 按错误文本长度分组，跳过长匹配 ──
 _CORRECTIONS_BY_LEN: list[tuple[int, str, str]] = sorted(
     [(len(w), w, c) for w, c in _CORRECTIONS],
     key=lambda x: -x[0],  # 长匹配优先
