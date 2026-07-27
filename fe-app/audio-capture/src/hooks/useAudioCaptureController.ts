@@ -108,45 +108,10 @@ function insertAfter<T extends {id: string}>(arr: T[], afterId: string, item: T)
   return [...arr.slice(0, idx + 1), item, ...arr.slice(idx + 1)];
 }
 
-// ── ASR 累积文本裁剪 ──
-// 逐字符比较，跳过标点/空白差异。
-// 中段重叠搜索从中断点继续，而不是从 oldText 头部重新匹配。
-const _SKIP_RE = /[，。！？、；：""''.!?,;:'"\s]/;
+// ── 纯标点检测 ──
 const _PUNCT_ONLY_RE = /^[，。！？、；：""''.!?,;:'"\s]+$/;
 function _isOnlyPunct(s: string): boolean {
   return _PUNCT_ONLY_RE.test(s);
-}
-
-function stripOverlap(incoming: string, oldText: string): string {
-  if (!oldText) { return incoming; }
-  if (incoming.startsWith(oldText)) { return incoming.slice(oldText.length); }
-
-  // Fast path: exact substring match anywhere（覆盖绝大多数场景）
-  const idx = incoming.indexOf(oldText);
-  if (idx !== -1) {
-    return (incoming.slice(0, idx) + incoming.slice(idx + oldText.length));
-  }
-
-  // Slow path: character-by-character with SKIP chars（标点/空白容错）
-  let bestStart = -1;
-  let bestEnd = -1;
-  for (let start = 0; start <= incoming.length - oldText.length; start++) {
-    let ii = start;
-    let jj = 0;
-    let matched = true;
-    while (jj < oldText.length && ii < incoming.length) {
-      if (_SKIP_RE.test(incoming[ii]!)) { ii++; continue; }
-      if (_SKIP_RE.test(oldText[jj]!)) { jj++; continue; }
-      if (incoming[ii]!.toLowerCase() !== oldText[jj]!.toLowerCase()) { matched = false; break; }
-      ii++; jj++;
-    }
-    while (jj < oldText.length && _SKIP_RE.test(oldText[jj]!)) { jj++; }
-    if (matched && jj >= oldText.length) { bestStart = start; bestEnd = ii; break; }
-  }
-  if (bestStart >= 0) {
-    return (incoming.slice(0, bestStart) + incoming.slice(bestEnd));
-  }
-  return incoming;
 }
 
 // ── 裁剪对话 ──
@@ -179,111 +144,96 @@ function reducer(state: ControllerState, action: Action): ControllerState {
       // 不覆盖 source（用户手动选择的优先）
       return {...state, ...action.value, source: state.source};
 
-    // ── 0.5: Transcription → bubble（3 秒断句）──
+    // ── 0.5: Transcription → bubble（1.5 秒断句）──
     case 'transcription': {
       const role = action.source === 'system' ? 'interviewer' : 'user';
       const now = action.timestamp;
+
+      // 核心思路：把当前已显示的所有文本拼起来，incoming 切掉已显示前缀，
+      // 剩下的就是增量。不搞复杂的字符匹配算法。
+      const displayedText = state.conversation
+        .filter(m => m.role === role)
+        .map(m => m.text)
+        .join('');
+      // 只在 incoming 是已显示文本的**严格延续**（更长）时才切片取增量。
+      // incoming ≤ 已显示 → ASR 重置了累积文本（用户重说/补充），整段当新的。
+      let delta = action.text;
+      if (displayedText && action.text.length > displayedText.length && action.text.startsWith(displayedText)) {
+        delta = action.text.slice(displayedText.length);
+      }
+
+      // 纯标点/空白增量不处理
+      if (!delta || _isOnlyPunct(delta.trim())) {
+        // 但有 streaming 泡且 isFinal 时，关闭它
+        const si = state.conversation.findIndex(
+          m => m.role === role && m.status === 'streaming',
+        );
+        if (si !== -1 && action.isFinal) {
+          return {...state, conversation: _cap(state.conversation.map((m, i) =>
+            i === si ? {...m, status: 'done' as const, timestamp: now} : m))};
+        }
+        return state;
+      }
 
       const streamingIdx = state.conversation.findIndex(
         m => m.role === role && m.status === 'streaming',
       );
 
       if (streamingIdx !== -1) {
+        // 有 streaming 泡 → 追加增量
         const streamingBubble = state.conversation[streamingIdx]!;
         const gap = now - streamingBubble.timestamp;
         const shouldSplit = gap > 1500 || action.isFinal;
 
         if (shouldSplit) {
-          // 断句：提取新增文本，关闭旧泡，起新泡
-          let delta = stripOverlap(action.text, streamingBubble.text);
-
-          // ASR 跨 VAD 重启时会带回已完结的旧句，需要再对 done 泡去重
-          const recentDone = [...state.conversation].reverse()
-            .filter(m => m.role === role && m.status === 'done')
-            .slice(0, 5);
-          for (const done of recentDone) {
-            delta = stripOverlap(delta, done.text);
-          }
-
-          if (!delta.trim()) {
-            return {...state, conversation: _cap(state.conversation.map((m, i) =>
-              i === streamingIdx ? {...m, status: 'done' as const, timestamp: now} : m))};
-          }
-          // 纯标点增量：合并到 done 泡，不单独建泡（修复"标点占一句"）
-          if (_isOnlyPunct(delta.trim())) {
-            return {...state, conversation: _cap(state.conversation.map((m, i) =>
-              i === streamingIdx ? {...m, text: m.text + delta.trim(), status: 'done' as const, timestamp: now} : m))};
-          }
-          const doneBubble = {...streamingBubble, status: 'done' as const};
-          const newMsg: ConversationMessage = {
-            id: genId(role === 'interviewer' ? 'int' : 'usr'),
-            role,
-            text: delta.trim(),
-            status: 'streaming',
-            timestamp: now,
-          };
+          // 断句：关旧泡，delta 起新泡
           return {
             ...state,
             conversation: _cap(state.conversation.map((m, i) =>
-              i === streamingIdx ? doneBubble : m,
-            ).concat(newMsg)),
+              i === streamingIdx
+                ? {...m, status: 'done' as const, timestamp: now}
+                : m,
+            ).concat({
+              id: genId(role === 'interviewer' ? 'int' : 'usr'),
+              role,
+              text: delta.trim(),
+              status: 'streaming' as const,
+              timestamp: now,
+            })),
           };
         }
 
-        // 流式更新：提取增量。
-        // 断句后新泡只有 delta，但 ASR 累积文本可能从上一句 done 泡开头。
-        let refText = streamingBubble.text;
-        let forceReplace = false;
-        const lastDone = [...state.conversation].reverse().find(
-          m => m.role === role && m.status === 'done',
-        );
-        if (lastDone && action.text.startsWith(lastDone.text)) {
-          refText = lastDone.text;
-          forceReplace = true; // 以 done 泡为参照 → 流式泡内容替换而非追加
-        }
-
-        const delta = stripOverlap(action.text, refText);
-        if (!delta) { return state; }
-
-        // 仅当 done 泡参照（forceReplace）或流式泡足够长且 delta 覆盖大半时才替换
-        // 短文本（<5字）只用追加，避免"今天"+增量"天气"→只显示"天气"
-        const isReplace = forceReplace || (
-          streamingBubble.text.length >= 5 &&
-          delta.length >= streamingBubble.text.length * 0.6
-        );
-
+        // 追加增量
         return {
           ...state,
           conversation: _cap(state.conversation.map((m, i) =>
             i === streamingIdx
-              ? {
-                  ...m,
-                  text: isReplace ? delta.trim() : m.text + delta,
-                  timestamp: now,
-                }
+              ? {...m, text: m.text + delta, timestamp: now}
               : m,
           )),
         };
       }
 
-      // 无 streaming 气泡 → 新句子起泡，检查最近 5 句 done 气泡裁掉重叠
-      let cleanText = action.text;
-      const recentDone = [...state.conversation].reverse()
-        .filter(m => m.role === role && m.status === 'done')
-        .slice(0, 5);
-      for (const done of recentDone) {
-        cleanText = stripOverlap(cleanText, done.text);
+      // 无 streaming 泡 → 起新泡。delta 开头可能带上一句 done 泡的标点尾巴，裁掉
+      let cleanText = delta.trim();
+      const lastDone = [...state.conversation].reverse().find(
+        m => m.role === role && m.status === 'done',
+      );
+      if (lastDone && cleanText.startsWith(lastDone.text)) {
+        cleanText = cleanText.slice(lastDone.text.length).trim();
       }
-      if (!cleanText.trim()) { return state; }
+      if (!cleanText) { return state; }
 
-      const newMsg: ConversationMessage = {
-        id: genId(role === 'interviewer' ? 'int' : 'usr'),
-        role,
-        text: cleanText.trim(),
-        status: 'streaming',
-        timestamp: now,
+      return {
+        ...state,
+        conversation: _cap([...state.conversation, {
+          id: genId(role === 'interviewer' ? 'int' : 'usr'),
+          role,
+          text: cleanText,
+          status: 'streaming' as const,
+          timestamp: now,
+        }]),
       };
-      return {...state, conversation: _cap([...state.conversation, newMsg])};
     }
 
     // ── 0.5: Insert loading AI bubble after clicked ──
