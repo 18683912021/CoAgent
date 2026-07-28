@@ -22,7 +22,7 @@ import {
   type StreamStats,
   type TrackSource,
 } from '../native';
-import {STREAM_URL, getLanguage, onLanguageChange} from '../config';
+import {STREAM_URL, getLanguage, getProgLang, onLanguageChange} from '../config';
 
 // ── Constants ──────────────────────────────────────────────
 const EMPTY_LEVELS: AudioLevels = {mic: 0, system: 0};
@@ -640,6 +640,7 @@ export function useAudioCaptureController() {
       type: 'llm_query',
       text: clickedMsg.text,
       language: getLanguage(),
+      track: getProgLang().toLowerCase(),
       bubble_source: bubbleSource,
     });
 
@@ -671,6 +672,7 @@ export function useAudioCaptureController() {
       type: 'llm_query',
       text: clickedMsg.text,
       language: getLanguage(),
+      track: getProgLang().toLowerCase(),
       bubble_source: bubbleSource,
     });
   }, [state.conversation]);

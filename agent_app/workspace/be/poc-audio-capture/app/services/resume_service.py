@@ -23,9 +23,16 @@ _STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 _INTRO_FILE = _STORAGE_DIR / "intro.json"
 
 
-def _build_self_intro_prompt(resume_text: str) -> str:
-    """生成自我介绍的 LLM 提示词。"""
-    return f"""你是一位资深面试辅导专家。请根据以下简历内容，为候选人撰写一段面试开场用的自我介绍。
+def _build_self_intro_prompt(resume_text: str, track_key: str | None = None) -> str:
+    """生成自我介绍的 LLM 提示词。track_key 控制赛道侧重。"""
+    track_extra = ""
+    if track_key:
+        from app.services.tracks import get_track
+        track = get_track(track_key)
+        if track and track.get("resume_intro_extra"):
+            track_extra = "\n" + track["resume_intro_extra"]
+
+    return f"""你是一位资深面试辅导专家。请根据以下简历内容，为候选人撰写一段面试开场用的自我介绍。{track_extra}
 
 要求：
 1. 时长约 1-2 分钟（200-350 字）
@@ -53,13 +60,13 @@ def parse_pdf(file_bytes: bytes) -> str:
     return "\n\n".join(text_parts).strip()
 
 
-async def generate_intro(resume_text: str) -> str:
+async def generate_intro(resume_text: str, track_key: str | None = None) -> str:
     """调用 LLM 生成自我介绍。"""
     llm = LLMService()
     if not llm.ready:
         raise RuntimeError("LLM API Key 未配置，无法生成自我介绍")
 
-    prompt = _build_self_intro_prompt(resume_text)
+    prompt = _build_self_intro_prompt(resume_text, track_key)
     full_text: str = ""
 
     async for chunk, is_final in llm.stream_answer(

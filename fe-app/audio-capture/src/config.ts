@@ -37,3 +37,16 @@ export function onLanguageChange(fn: (lang: AppLanguage) => void): () => void {
     if (idx !== -1) { _listeners.splice(idx, 1); }
   };
 }
+
+// ── 编程语言赛道 ──
+export type ProgLang = 'JavaScript' | 'Java' | 'Python' | 'C#' | 'C++';
+
+let _progLang: ProgLang = 'JavaScript';
+
+export function getProgLang(): ProgLang {
+  return _progLang;
+}
+
+export function setProgLang(lang: ProgLang): void {
+  _progLang = lang;
+}

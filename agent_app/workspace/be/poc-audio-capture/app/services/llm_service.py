@@ -15,10 +15,13 @@ from app.services.asr_text_corrector import correct_asr_text
 
 logger = logging.getLogger("llm")
 
-# ── 系统提示词（双层纠正：代码层 + AI 自纠） ──
-SYSTEM_PROMPT = """你是资深前端面试辅助 AI。用户正在进行线上面试，收到的文字是通过**语音转文字**（ASR）实时转写的，可能存在以下典型错误：
-- 技术术语被转成同音字（如"闭包"→"必报"、"React"→"瑞爱的"、"微服务"→"为服务"）
-- 英文单词被拆成中文谐音字母（如"API"→"诶批挨"、"Vue"→"V U E"）
+# ── 系统提示词模板 ──
+# {intro} 由赛道 system_prompt_extra 注入
+# {language_name} 由 LANGUAGE_INSTRUCTIONS 注入
+
+_SYSTEM_PROMPT_TEMPLATE = """{intro}用户正在进行技术面试，收到的文字是通过**语音转文字**（ASR）实时转写的，可能存在以下典型错误：
+- 技术术语被转成同音字（如"闭包"→"必报"、"React"→"瑞爱的"）
+- 英文单词被拆成中文谐音字母（如"API"→"诶批挨"、"Django"→"江狗"）
 - 数字和汉字混淆（如"事件"→"4件"、"ES6"→"ES六"）
 - 断句错误或标点缺失
 
@@ -56,6 +59,17 @@ LANGUAGE_INSTRUCTIONS: dict[str, str] = {
     "en": "English",
 }
 
+_DEFAULT_INTRO = "你是资深前端面试辅助 AI。"
+
+
+def build_system_prompt(track_key: str | None = None, language: str = "zh") -> str:
+    """根据赛道和语言构建系统提示词。"""
+    from app.services.tracks import get_track
+    track = get_track(track_key) if track_key else None
+    intro = track.get("system_prompt_extra", _DEFAULT_INTRO) if track else _DEFAULT_INTRO
+    lang_name = LANGUAGE_INSTRUCTIONS.get(language, "中文")
+    return _SYSTEM_PROMPT_TEMPLATE.format(intro=intro, language_name=lang_name)
+
 
 class LLMService:
     """封装 DeepSeek Chat API 流式调用。"""
@@ -83,20 +97,19 @@ class LLMService:
         model: str = "deepseek-chat",
         max_tokens: int = 300,
         language: str = "zh",
+        track: str | None = None,
     ) -> AsyncGenerator[tuple[str, bool], None]:
         """流式调用 DeepSeek。
 
-        question 会在发送前经 correct_asr_text() 做代码级纠正，
-        不再依赖 LLM 自行纠正语音识别错误。
+        track: 编程语言赛道 key（javascript/python/java/...），用于加载赛道提示词。
         """
         if not self._api_key:
             raise RuntimeError("ANTHROPIC_API_KEY 未配置")
 
-        # ── 代码级 ASR 纠正（微秒级，替代原 7000-token 提示词） ──
+        # ── 代码级 ASR 纠正（微秒级） ──
         corrected = correct_asr_text(question)
 
-        lang_name = LANGUAGE_INSTRUCTIONS.get(language, "中文")
-        system_prompt = SYSTEM_PROMPT.format(language_name=lang_name)
+        system_prompt = build_system_prompt(track, language)
 
         client = await self._get_client()
 

@@ -21,7 +21,7 @@ import {
 import {SafeAreaView} from 'react-native-safe-area-context';
 
 import {AudioCapture} from '../native';
-import {API_BASE} from '../config';
+import {API_BASE, getProgLang, setProgLang, type ProgLang} from '../config';
 import {useTheme, space, radius, type} from '../theme';
 
 const PROGRAMMING_LANGUAGES = ['JavaScript', 'Java', 'Python', 'C#', 'C++'] as const;
@@ -90,7 +90,7 @@ function SectionTitle({title}: {title: string}) {
 export default function ProfileScreen(): React.JSX.Element {
   const dark = useColorScheme() === 'dark';
   const t = useTheme(dark);
-  const [progLang, setProgLang] = useState<ProgrammingLanguage>('JavaScript');
+  const [progLang, setProgLangLocal] = useState<ProgLang>(getProgLang());
   const [showLangPicker, setShowLangPicker] = useState(false);
 
   const [resumeLabel, setResumeLabel] = useState('未上传');
@@ -243,7 +243,7 @@ export default function ProfileScreen(): React.JSX.Element {
                   pickerStyles.option,
                   {backgroundColor: lang === progLang ? t.accentLight : 'transparent'},
                 ]}
-                onPress={() => { setProgLang(lang); setShowLangPicker(false); }}
+                onPress={() => { setProgLangLocal(lang); setProgLang(lang); setShowLangPicker(false); }}
                 activeOpacity={0.6}>
                 <Text style={[pickerStyles.optionText, {
                   color: lang === progLang ? t.accent : t.textPrimary,

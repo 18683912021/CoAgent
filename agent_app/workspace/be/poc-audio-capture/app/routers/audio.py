@@ -156,10 +156,11 @@ async def audio_stream(ws: WebSocket):
                             except (asyncio.CancelledError, asyncio.TimeoutError):
                                 pass
 
+                        track = payload.get("track", "javascript")
                         llm_worker_task = asyncio.create_task(
-                            _llm_single(ws, text_val, language, llm_service, llm_config)
+                            _llm_single(ws, text_val, language, track, llm_service, llm_config)
                         )
-                        logger.info("LLM 新请求: lang=%s text=%.60s", language, text_val)
+                        logger.info("LLM 新请求: lang=%s track=%s text=%.60s", language, track, text_val)
                     else:
                         # 非 llm_query 控制消息（session_start / track_start 等）
                         was_new = v1_session is None
@@ -429,6 +430,7 @@ async def _llm_single(
     ws: WebSocket,
     question: str,
     language: str,
+    track: str,
     llm_service: LLMService,
     llm_config: dict[str, Any],
 ):
@@ -465,7 +467,7 @@ async def _llm_single(
 
         chunk_index: int = 0
         async for chunk, is_final in llm_service.stream_answer(
-            question, model=model, max_tokens=max_tokens, language=language,
+            question, model=model, max_tokens=max_tokens, language=language, track=track,
         ):
             full_answer += chunk
             if is_final:
