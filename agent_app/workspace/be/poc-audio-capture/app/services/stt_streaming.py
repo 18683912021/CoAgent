@@ -55,6 +55,7 @@ class StreamingASRSession:
         self._send_task = None
         self._send_queue: "asyncio.Queue[bytes]" = asyncio.Queue(maxsize=32)
         self._running = False
+        self._restarting = False  # 正在重启 ASR 会话（断句后重建连接）
         self._seq = 1
         self._last_sent_full = ""  # 上次已发送的全量文本，用于裁剪增量
         self._text_parts: list[str] = []
@@ -63,6 +64,7 @@ class StreamingASRSession:
     async def connect(self) -> None:
         self._seq = 2  # 配置帧占序列 1，音频帧从 2 开始
         self._last_sent_full = ""
+        self._restarting = False
         import sys as _sys
         ssl_ctx = ssl.create_default_context()
         if _sys.platform == "darwin":  # macOS 开发环境绕过 Clash 代理证书拦截
@@ -110,10 +112,9 @@ class StreamingASRSession:
             return
 
         # 检测句边界（中英文句末标点或 ASR 明确标记 definite）
-        # 不在后端裁剪——标点也要发给前端，否则 stripOverlap 会把上一句
-        # 的标点混入下一句，导致新气泡以句号开头。
         if is_final or (txt.rstrip() and txt.rstrip()[-1] in '。！？.!?'):
             is_final = True
+            self._needs_restart = True  # 断句后重建 ASR 连接，清除火山引擎累积文本
 
         if not txt:
             return
@@ -144,8 +145,8 @@ class StreamingASRSession:
                 break
 
     def feed(self, pcm: bytes) -> None:
-        """音频帧非阻塞入队——告别 await send() 导致的串行延迟。"""
-        if not self._ws or not self._running:
+        """音频帧非阻塞入队。"""
+        if self._restarting or not self._ws or not self._running:
             return
         try:
             seq_bytes = struct.pack(">I", self._seq)
@@ -158,6 +159,28 @@ class StreamingASRSession:
             logger.debug("ASR 发送队列满，丢弃一帧")
         except websockets.exceptions.ConnectionClosed:
             self._running = False
+
+    def _maybe_restart(self) -> None:
+        """断句后立刻重建 ASR 连接（在沉默期内完成，不丢下一句的音频）。"""
+        if not getattr(self, '_needs_restart', False):
+            return
+        self._needs_restart = False
+        if self._restarting:
+            return
+        self._restarting = True
+        asyncio.create_task(self._do_restart())
+
+    async def _do_restart(self) -> None:
+        """关闭旧 ASR 连接并重建，新会话从零开始累积文本。"""
+        try:
+            logger.info("ASR[%s] 断句重启中…", self._source)
+            await self.finish()
+            await self.connect()
+            logger.info("ASR[%s] 重启完成，新句开始", self._source)
+        except Exception:
+            logger.exception("ASR[%s] 重启失败", self._source)
+        finally:
+            self._restarting = False
 
     async def finish(self) -> str:
         """结束帧: Header + 负序列号 + PayloadSize=0。"""
@@ -212,6 +235,7 @@ class StreamingASRSession:
                                 is_final = result.get("definite", False)
                                 logger.info("ASR[%s]%s: %s", self._source, " 最终" if is_final else "", txt)
                                 self._enqueue(txt, is_final)
+                                self._maybe_restart()
                         except Exception:
                             pass
                     continue
@@ -238,6 +262,7 @@ class StreamingASRSession:
                         is_final = result.get("definite", False)
                         logger.info("ASR[%s]%s: %s", self._source, " 最终" if is_final else "", txt)
                         self._enqueue(txt, is_final)
+                        self._maybe_restart()
 
                     if flags == 0b0011:
                         return

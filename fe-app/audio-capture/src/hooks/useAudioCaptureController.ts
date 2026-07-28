@@ -145,58 +145,48 @@ function reducer(state: ControllerState, action: Action): ControllerState {
       return {...state, ...action.value, source: state.source};
 
     // ── 0.5: Transcription → bubble（1.5 秒断句）──
+    // 后端每个句子完结后会重建 ASR 连接，火山引擎不再返回跨句累积文本。
+    // 前端只需句内取增量——对比 streaming 泡即可，不需要跨句去重。
     case 'transcription': {
       const role = action.source === 'system' ? 'interviewer' : 'user';
       const now = action.timestamp;
-
-      // 核心思路：把当前已显示的所有文本拼起来，incoming 切掉已显示前缀，
-      // 剩下的就是增量。不搞复杂的字符匹配算法。
-      const displayedText = state.conversation
-        .filter(m => m.role === role)
-        .map(m => m.text)
-        .join('');
-      // 只在 incoming 是已显示文本的**严格延续**（更长）时才切片取增量。
-      // incoming ≤ 已显示 → ASR 重置了累积文本（用户重说/补充），整段当新的。
-      let delta = action.text;
-      if (displayedText && action.text.length > displayedText.length && action.text.startsWith(displayedText)) {
-        delta = action.text.slice(displayedText.length);
-      }
-
-      // 纯标点/空白增量不处理
-      if (!delta || _isOnlyPunct(delta.trim())) {
-        // 但有 streaming 泡且 isFinal 时，关闭它
-        const si = state.conversation.findIndex(
-          m => m.role === role && m.status === 'streaming',
-        );
-        if (si !== -1 && action.isFinal) {
-          return {...state, conversation: _cap(state.conversation.map((m, i) =>
-            i === si ? {...m, status: 'done' as const, timestamp: now} : m))};
-        }
-        return state;
-      }
+      const incoming = action.text;
+      if (!incoming) { return state; }
 
       const streamingIdx = state.conversation.findIndex(
         m => m.role === role && m.status === 'streaming',
       );
 
+      // 句内增量：incoming 切掉 streaming 泡已有的前缀
+      let delta = incoming;
       if (streamingIdx !== -1) {
-        // 有 streaming 泡 → 追加增量
+        const cur = state.conversation[streamingIdx]!.text;
+        if (incoming.startsWith(cur)) { delta = incoming.slice(cur.length); }
+      }
+
+      // 纯标点跳过，但 isFinal 时关掉 streaming 泡
+      if (_isOnlyPunct(delta.trim())) {
+        if (streamingIdx !== -1 && action.isFinal) {
+          return {...state, conversation: _cap(state.conversation.map((m, i) =>
+            i === streamingIdx ? {...m, status: 'done' as const, timestamp: now} : m))};
+        }
+        return state;
+      }
+
+      if (streamingIdx !== -1) {
         const streamingBubble = state.conversation[streamingIdx]!;
-        const gap = now - streamingBubble.timestamp;
-        const shouldSplit = gap > 1500 || action.isFinal;
+        const shouldSplit = (now - streamingBubble.timestamp > 1500) || action.isFinal;
 
         if (shouldSplit) {
-          // 断句：关旧泡，delta 起新泡
+          // 断句：关旧泡，全文起新泡（新 ASR 会话不夹带旧句，全文就是当前句）
           return {
             ...state,
             conversation: _cap(state.conversation.map((m, i) =>
-              i === streamingIdx
-                ? {...m, status: 'done' as const, timestamp: now}
-                : m,
+              i === streamingIdx ? {...m, status: 'done' as const, timestamp: now} : m,
             ).concat({
               id: genId(role === 'interviewer' ? 'int' : 'usr'),
               role,
-              text: delta.trim(),
+              text: incoming.trim(),
               status: 'streaming' as const,
               timestamp: now,
             })),
@@ -214,22 +204,13 @@ function reducer(state: ControllerState, action: Action): ControllerState {
         };
       }
 
-      // 无 streaming 泡 → 起新泡。delta 开头可能带上一句 done 泡的标点尾巴，裁掉
-      let cleanText = delta.trim();
-      const lastDone = [...state.conversation].reverse().find(
-        m => m.role === role && m.status === 'done',
-      );
-      if (lastDone && cleanText.startsWith(lastDone.text)) {
-        cleanText = cleanText.slice(lastDone.text.length).trim();
-      }
-      if (!cleanText) { return state; }
-
+      // 无 streaming 泡 → 直接用全文起新泡
       return {
         ...state,
         conversation: _cap([...state.conversation, {
           id: genId(role === 'interviewer' ? 'int' : 'usr'),
           role,
-          text: cleanText,
+          text: incoming.trim(),
           status: 'streaming' as const,
           timestamp: now,
         }]),
