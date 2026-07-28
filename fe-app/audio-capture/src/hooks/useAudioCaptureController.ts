@@ -175,7 +175,8 @@ function reducer(state: ControllerState, action: Action): ControllerState {
 
       if (streamingIdx !== -1) {
         const streamingBubble = state.conversation[streamingIdx]!;
-        const shouldSplit = (now - streamingBubble.timestamp > 1500) || action.isFinal;
+        // 断句完全交给 ASR VAD——is_final 就是句子结束信号
+        const shouldSplit = action.isFinal;
 
         if (shouldSplit) {
           // 断句：关旧泡，全文起新泡（新 ASR 会话不夹带旧句，全文就是当前句）

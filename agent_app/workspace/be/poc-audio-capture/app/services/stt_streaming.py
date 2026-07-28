@@ -174,13 +174,18 @@ class StreamingASRSession:
         """关闭旧 ASR 连接并重建，新会话从零开始累积文本。"""
         try:
             logger.info("ASR[%s] 断句重启中…", self._source)
-            await self.finish()
-            await self.connect()
+            await asyncio.wait_for(self._do_restart_inner(), timeout=8.0)
             logger.info("ASR[%s] 重启完成，新句开始", self._source)
+        except asyncio.TimeoutError:
+            logger.error("ASR[%s] 重启超时（8s），强制清理", self._source)
         except Exception:
             logger.exception("ASR[%s] 重启失败", self._source)
         finally:
             self._restarting = False
+
+    async def _do_restart_inner(self) -> None:
+        await self.finish()
+        await self.connect()
 
     async def finish(self) -> str:
         """结束帧: Header + 负序列号 + PayloadSize=0。"""
@@ -195,15 +200,15 @@ class StreamingASRSession:
             self._recv_task.cancel()
 
         try:
-            await self._ws.send(
+            await asyncio.wait_for(self._ws.send(
                 _header(0b0010, 0b0011, 0, 0) + struct.pack(">i", -self._seq) + struct.pack(">I", 0)
-            )
+            ), timeout=3.0)
         except Exception:
             pass
 
         try:
-            await self._ws.close()
-        except (Exception, asyncio.CancelledError):
+            await asyncio.wait_for(self._ws.close(), timeout=3.0)
+        except Exception:
             pass
         self._ws = None
         return "".join(self._text_parts)

@@ -7,7 +7,7 @@ const TEST_HOSTS = {
 } as const;
 
 /** 联调时在这里选一个环境 */
-const ACTIVE_HOST: string = TEST_HOSTS.home;
+const ACTIVE_HOST: string = TEST_HOSTS.company;
 
 export const STREAM_URL: string = `ws://${ACTIVE_HOST}:8010/api/ws/audio/stream`;
 
