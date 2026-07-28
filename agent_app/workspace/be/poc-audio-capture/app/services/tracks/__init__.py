@@ -16,6 +16,10 @@ _TRACK_FILES = [
     "app.services.tracks.common",
     "app.services.tracks.javascript",
     "app.services.tracks.python",
+    "app.services.tracks.java",
+    "app.services.tracks.csharp",
+    "app.services.tracks.cpp",
+    "app.services.tracks.go",
 ]
 
 _tracks: dict[str, dict] = {}       # key → TRACK
@@ -94,6 +98,8 @@ def resolve_track(language: str) -> Optional[dict]:
         "csharp": "csharp",
         "c++": "cpp",
         "cpp": "cpp",
+        "go": "go",
+        "golang": "go",
     }
     key = mapping.get(language.lower(), language.lower())
     return _tracks.get(key)

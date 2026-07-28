@@ -39,7 +39,7 @@ export function onLanguageChange(fn: (lang: AppLanguage) => void): () => void {
 }
 
 // ── 编程语言赛道 ──
-export type ProgLang = 'JavaScript' | 'Java' | 'Python' | 'C#' | 'C++';
+export type ProgLang = 'JavaScript' | 'Java' | 'Python' | 'C#' | 'C++' | 'Go';
 
 let _progLang: ProgLang = 'JavaScript';
 

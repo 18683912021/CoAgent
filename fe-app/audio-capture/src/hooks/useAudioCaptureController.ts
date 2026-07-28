@@ -1,6 +1,5 @@
 import {useCallback, useEffect, useMemo, useReducer, useRef} from 'react';
 import {
-  Alert,
   AppState,
   PermissionsAndroid,
   Platform,
@@ -23,6 +22,7 @@ import {
   type TrackSource,
 } from '../native';
 import {STREAM_URL, getLanguage, getProgLang, onLanguageChange} from '../config';
+import {useAppAlert} from '../components/AppAlert';
 
 // ── Constants ──────────────────────────────────────────────
 const EMPTY_LEVELS: AudioLevels = {mic: 0, system: 0};
@@ -347,7 +347,9 @@ const REQUIRED_PERMISSIONS: PermissionSpec[] =
     ? [{permission: PermissionsAndroid.PERMISSIONS.RECORD_AUDIO, label: '麦克风'}]
     : [];
 
-async function requestRuntimePermissions(): Promise<boolean> {
+async function requestRuntimePermissions(
+  showAlert: (cfg: {title: string; message: string}) => void,
+): Promise<boolean> {
   if (REQUIRED_PERMISSIONS.length === 0) { return true; }
   const results = await PermissionsAndroid.requestMultiple(
     REQUIRED_PERMISSIONS.map(p => p.permission),
@@ -357,7 +359,7 @@ async function requestRuntimePermissions(): Promise<boolean> {
   );
   if (denied.length > 0) {
     const names = denied.map(p => p.label).join('、');
-    Alert.alert('需要授权', `需要${names}权限才能使用语音转文字功能。请在系统设置中开启。`);
+    showAlert({title: '需要授权', message: `需要${names}权限才能使用语音转文字功能。请在系统设置中开启。`});
     throw new Error(`${names}权限被拒绝`);
   }
   return true;
@@ -365,6 +367,7 @@ async function requestRuntimePermissions(): Promise<boolean> {
 
 // ── Hook ──────────────────────────────────────────────────
 export function useAudioCaptureController() {
+  const {showAlert} = useAppAlert();
   const [state, dispatch] = useReducer(reducer, INITIAL_STATE);
   const operationCounter = useRef(0);
   // 0.6: LLM chunk + 转录 帧缓冲合并，减少双轨同时输出时的无效渲染
@@ -572,11 +575,11 @@ export function useAudioCaptureController() {
   const start = useCallback(async () => {
     dispatch({type: 'error', value: null});
     try {
-      await requestRuntimePermissions();
+      await requestRuntimePermissions(showAlert);
       if (!state.projectionGranted) {
         const granted = await authorizeSystemAudio();
         if (!granted) {
-          Alert.alert('需要授权', '系统音频权限未授予，无法采集面试官的声音。仅采集麦克风也可以正常使用。');
+          showAlert({title: '需要授权', message: '系统音频权限未授予，无法采集面试官的声音。仅采集麦克风也可以正常使用。'});
           // 不抛异常，继续用 mic-only 模式
         }
       }

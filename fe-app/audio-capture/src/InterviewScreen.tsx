@@ -1,6 +1,5 @@
 import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {
-  Alert,
   Animated,
   FlatList,
   Modal,
@@ -21,8 +20,9 @@ import {
 } from './hooks/useAudioCaptureController';
 import ConversationBubble from './components/ConversationBubble';
 import SeparatorLine from './components/SeparatorLine';
-import {API_BASE} from './config';
+import {useAppAlert} from './components/AppAlert';
 import {useTheme, space, radius, type} from './theme';
+import {hasResume, getIntro} from './api/resume';
 
 // ── Display item for FlatList (bubble or separator) ──
 type DisplayItem =
@@ -85,6 +85,7 @@ function MicLevelBar({level, dark}: {level: number; dark: boolean}) {
 // ── Screen ──
 export default function InterviewScreen(): React.JSX.Element {
   const controller = useAudioCaptureController();
+  const {showAlert} = useAppAlert();
   const {state} = controller;
   const dark = useColorScheme() === 'dark';
   const t = useTheme(dark);
@@ -98,28 +99,21 @@ export default function InterviewScreen(): React.JSX.Element {
   const [showNoResume, setShowNoResume] = useState(false);
 
   const fetchIntro = useCallback(async () => {
-    // 先检查是否已上传简历
     try {
-      const check = await fetch(`${API_BASE}/api/resume/has`);
-      const checkData = await check.json();
+      const checkData = await hasResume();
       if (!checkData.has_intro) {
         setShowNoResume(true);
         return;
       }
     } catch {
-      // 网络错误不阻塞，继续尝试加载
+      // 网络错误不阻塞
     }
 
     setShowIntro(true);
     setIntroLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/api/resume/intro`);
-      const data = await res.json();
-      if (data.ok && data.intro) {
-        setIntroText(data.intro);
-      } else {
-        setIntroText('');
-      }
+      const data = await getIntro();
+      setIntroText(data.ok && data.intro ? data.intro : '');
     } catch {
       setIntroText('');
     } finally {
@@ -239,10 +233,14 @@ export default function InterviewScreen(): React.JSX.Element {
       : {label: '就绪', color: t.accent, dot: false};
 
   const handleStop = () => {
-    Alert.alert('结束面试', '确定要结束当前面试吗？对话将被清空。', [
-      {text: '取消', style: 'cancel'},
-      {text: '结束', style: 'destructive', onPress: controller.stop},
-    ]);
+    showAlert({
+      title: '结束面试',
+      message: '确定要结束当前面试吗？对话将被清空。',
+      confirmText: '结束',
+      confirmDestructive: true,
+      showCancel: true,
+      onConfirm: controller.stop,
+    });
   };
 
   return (
@@ -377,7 +375,7 @@ export default function InterviewScreen(): React.JSX.Element {
         </TouchableOpacity>
       </View>
       {/* ── 未上传简历提示 ── */}
-      <Modal visible={showNoResume} transparent animationType="fade" statusBarTranslucent>
+      <Modal visible={showNoResume} transparent animationType="fade" statusBarTranslucent onRequestClose={() => setShowNoResume(false)}>
         <View style={[premiumStyles.alertBackdrop, {backgroundColor: t.backdrop}]}>
           <View style={[premiumStyles.alertCard, {backgroundColor: t.bgSurface}, t.shadowLg]}>
             <Text style={[premiumStyles.alertTitle, {color: t.textPrimary}]}>未上传简历</Text>
@@ -395,7 +393,7 @@ export default function InterviewScreen(): React.JSX.Element {
       </Modal>
 
       {/* ── 自我介绍弹窗 ── */}
-      <Modal visible={showIntro} animationType="slide" presentationStyle="pageSheet" statusBarTranslucent transparent>
+      <Modal visible={showIntro} animationType="slide" presentationStyle="pageSheet" statusBarTranslucent transparent onRequestClose={() => setShowIntro(false)}>
         <View style={[premiumStyles.safe, {backgroundColor: t.backdrop, justifyContent: 'flex-end'}]}>
         <View style={[premiumStyles.introModalCard, {backgroundColor: t.bgSurface}]}>
           <View style={[premiumStyles.introModalHeader, {borderBottomColor: t.divider}]}>

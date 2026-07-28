@@ -6,10 +6,9 @@
  *   Menu Sections —— 面试历史 / 面试语言 / 答案风格 / 简历上传
  */
 
-import React, {useCallback, useEffect, useState} from 'react';
+import React, {useCallback, useContext, useEffect, useState} from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Modal,
   ScrollView,
   StyleSheet,
@@ -21,10 +20,14 @@ import {
 import {SafeAreaView} from 'react-native-safe-area-context';
 
 import {AudioCapture} from '../native';
-import {API_BASE, getProgLang, setProgLang, type ProgLang} from '../config';
+import {getProgLang, setProgLang, type ProgLang} from '../config';
 import {useTheme, space, radius, type} from '../theme';
+import {useAppAlert} from '../components/AppAlert';
+import {AuthContext} from '../utils/AuthContext';
+import {hasResume, uploadResume} from '../api/resume';
+import {ApiError} from '../api/client';
 
-const PROGRAMMING_LANGUAGES = ['JavaScript', 'Java', 'Python', 'C#', 'C++'] as const;
+const PROGRAMMING_LANGUAGES = ['JavaScript', 'Java', 'Python', 'C#', 'C++', 'Go'] as const;
 type ProgrammingLanguage = (typeof PROGRAMMING_LANGUAGES)[number];
 
 // ── Types ──
@@ -90,6 +93,8 @@ function SectionTitle({title}: {title: string}) {
 export default function ProfileScreen(): React.JSX.Element {
   const dark = useColorScheme() === 'dark';
   const t = useTheme(dark);
+  const {showAlert} = useAppAlert();
+  const {logout} = useContext(AuthContext);
   const [progLang, setProgLangLocal] = useState<ProgLang>(getProgLang());
   const [showLangPicker, setShowLangPicker] = useState(false);
 
@@ -98,8 +103,7 @@ export default function ProfileScreen(): React.JSX.Element {
 
   // 检查是否已有简历
   useEffect(() => {
-    fetch(`${API_BASE}/api/resume/has`)
-      .then(r => r.json())
+    hasResume()
       .then(d => { if (d.has_intro) { setResumeLabel('已上传'); } })
       .catch(() => {});
   }, []);
@@ -109,7 +113,7 @@ export default function ProfileScreen(): React.JSX.Element {
     try {
       const result = await AudioCapture.pickPDF();
       if (!result?.uri) {
-        return; // 用户取消
+        return;
       }
 
       setUploading(true);
@@ -122,21 +126,13 @@ export default function ProfileScreen(): React.JSX.Element {
         name: result.name ?? 'resume.pdf',
       } as any);
 
-      const res = await fetch(`${API_BASE}/api/resume/upload`, {
-        method: 'POST',
-        body: formData,
-      });
-
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.detail ?? '上传失败');
-      }
+      await uploadResume(formData);
 
       setResumeLabel('已上传');
-      Alert.alert('上传成功', '自我介绍已生成，面试中可随时查看');
-    } catch (err: any) {
+      showAlert({title: '上传成功', message: '自我介绍已生成，面试中可随时查看'});
+    } catch (err) {
       setResumeLabel('上传失败');
-      console.error('[Resume] 上传失败:', err.message);
+      console.error('[Resume] 上传失败:', err instanceof ApiError ? err.detail : String(err));
     } finally {
       setUploading(false);
     }
@@ -160,7 +156,16 @@ export default function ProfileScreen(): React.JSX.Element {
     {
       title: '系统',
       items: [
-        {icon: '⚙️', label: '设置', onPress: () => {}},
+        {icon: '🚪', label: '退出登录', onPress: () => {
+          showAlert({
+            title: '退出登录',
+            message: '确定要退出当前账号吗？',
+            confirmText: '退出',
+            confirmDestructive: true,
+            showCancel: true,
+            onConfirm: logout,
+          });
+        }},
       ],
     },
   ];

@@ -1,11 +1,13 @@
 /**
- * AuthScreen — 登录 / 注册 / 找回密码
+ * AuthScreen — 登录 / 注册
  *
- * 当前仅前端样式，预留 onLogin / onRegister 回调接入后端 API。
+ * 布局参考主流 App：上方品牌区 → 输入区 → 按钮区 → 底部协议
+ * 质感增强版：渐变光晕背景 + 卡片阴影 + 输入框精致化
  */
 
 import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {
+  ActivityIndicator,
   Keyboard,
   KeyboardAvoidingView,
   Modal,
@@ -22,466 +24,467 @@ import {
 import {SafeAreaView} from 'react-native-safe-area-context';
 
 import {useTheme, space, radius, type} from '../theme';
+import {saveToken} from '../utils/token';
+import {useAppAlert} from '../components/AppAlert';
+import {sendCode, checkEmail, login, register} from '../api/auth';
+import {ApiError} from '../api/client';
 import AgreementScreen from './AgreementScreen';
 
-// ── Types ──
-type AuthMode = 'login' | 'register' | 'forgot';
+type AuthMode = 'login' | 'register';
+type LoginMethod = 'phone' | 'email';
 type AgreementType = 'service' | 'privacy' | null;
 
-interface Props {
-  onLogin?: () => void;
-  onRegister?: () => void;
-}
-
-// ── Screen ──
-export default function AuthScreen({onLogin, onRegister}: Props) {
+export default function AuthScreen({onLogin, onRegister}: {onLogin?: () => void; onRegister?: () => void}) {
   const dark = useColorScheme() === 'dark';
   const t = useTheme(dark);
+  const {showAlert} = useAppAlert();
   const [mode, setMode] = useState<AuthMode>('login');
+  // TODO: 短信服务接入后改为 true
+  const SHOW_PHONE = false;
+  const [method, setMethod] = useState<LoginMethod>(SHOW_PHONE ? 'phone' : 'email');
+
+  // phone fields
   const [phone, setPhone] = useState('');
   const [code, setCode] = useState('');
+  const [codeCountdown, setCodeCountdown] = useState(0);
+
+  // email fields
+  const [email, setEmail] = useState('');
+  const [emailCode, setEmailCode] = useState('');
+  const [emailCodeCountdown, setEmailCodeCountdown] = useState(0);
+
+  // password (register)
   const [password, setPassword] = useState('');
   const [confirmPwd, setConfirmPwd] = useState('');
   const [agreed, setAgreed] = useState(false);
-  const [codeSending, setCodeSending] = useState(false);
-  const [codeCountdown, setCodeCountdown] = useState(0);
+  const [agreedTouched, setAgreedTouched] = useState(false);
   const [showAgreement, setShowAgreement] = useState<AgreementType>(null);
+  const [loading, setLoading] = useState(false);
+
+  // ── 行内校验态 ──
+  const [emailTouched, setEmailTouched] = useState(false);
+  const [emailError, setEmailError] = useState('');
+  const [pwdTouched, setPwdTouched] = useState(false);
+  const [pwdError, setPwdError] = useState('');
 
   const pwdRef = useRef<TextInput>(null);
   const confirmRef = useRef<TextInput>(null);
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const mountedRef = useRef(true); // 防止卸载后 setState
-
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-      if (timerRef.current) { clearInterval(timerRef.current); }
-    };
-  }, []);
-
   const isLogin = mode === 'login';
-  const isRegister = mode === 'register';
-  const isForgot = mode === 'forgot';
+  const isPhone = method === 'phone';
 
-  // 切换模式时清空敏感字段
-  const switchMode = useCallback((m: AuthMode) => {
-    setMode(m);
-    setCode('');
-    setPassword('');
-    setConfirmPwd('');
+  // ── 邮箱格式校验 ──
+  const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  const isEmailValid = EMAIL_RE.test(email.trim());
+  // 发送验证码按钮是否可用
+  const canSendCode = isEmailValid && emailCodeCountdown === 0;
+  // 提交按钮是否可用
+  const codeTrim = emailCode.trim();
+  const canSubmit = isLogin
+    ? (isEmailValid && codeTrim.length > 0 && agreed)
+    : (isEmailValid && codeTrim.length > 0 && password.trim().length >= 6 && password === confirmPwd && agreed);
+
+  const switchMode = useCallback(() => {
+    setMode(m => m === 'login' ? 'register' : 'login');
+    setCode(''); setEmailCode(''); setPassword(''); setConfirmPwd('');
+    setEmailTouched(false); setEmailError('');
+    setPwdTouched(false); setPwdError('');
+    setAgreedTouched(false);
   }, []);
 
-  // ── 发送验证码 ──
-  const sendCode = useCallback(() => {
-    if (codeCountdown > 0) { return; }
-    setCodeSending(true);
-    setTimeout(() => { if (mountedRef.current) { setCodeSending(false); } }, 600);
-    setCodeCountdown(60);
-    if (timerRef.current) { clearInterval(timerRef.current); }
-    timerRef.current = setInterval(() => {
-      setCodeCountdown(prev => {
-        if (prev <= 1) { if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; } return 0; }
-        return prev - 1;
-      });
+  const handleEmailChange = useCallback((val: string) => {
+    setEmail(val);
+    if (emailError) { setEmailError(''); }
+  }, [emailError]);
+
+  const handlePasswordChange = useCallback((val: string) => {
+    setPassword(val);
+    if (pwdError) { setPwdError(''); }
+  }, [pwdError]);
+
+  // ── 发送邮箱验证码 ──
+  const handleSendEmailCode = useCallback(async () => {
+    if (!email.trim()) {
+      setEmailTouched(true);
+      setEmailError('请输入邮箱地址');
+      return;
+    }
+    if (!isEmailValid) {
+      setEmailTouched(true);
+      setEmailError('邮箱格式不正确');
+      return;
+    }
+    if (emailCodeCountdown > 0) { return; }
+    setEmailError('');
+
+    // 检查帐号是否存在
+    try {
+      const {exists} = await checkEmail(email.trim());
+      if (isLogin && !exists) {
+        setEmailTouched(true);
+        setEmailError('该邮箱未注册，请先注册');
+        return;
+      }
+      if (!isLogin && exists) {
+        setEmailTouched(true);
+        setEmailError('该邮箱已注册，请直接登录');
+        return;
+      }
+    } catch (err) {
+      if (err instanceof ApiError) {
+        showAlert({title: '发送失败', message: err.detail});
+        return;
+      }
+    }
+
+    try {
+      await sendCode(email.trim());
+      startCountdown(setEmailCodeCountdown);
+    } catch (err) {
+      showAlert({title: '发送失败', message: err instanceof ApiError ? err.detail : '请稍后重试'});
+    }
+  }, [email, emailCodeCountdown, isLogin]);
+
+  // ── 发送手机验证码（暂不支持，占位） ──
+  const handleSendPhoneCode = useCallback(async () => {
+    if (!phone.trim() || phone.trim().length < 11) {
+      showAlert({title: '提示', message: '请输入正确的手机号'});
+      return;
+    }
+    showAlert({title: '提示', message: '手机验证码功能尚未接入短信服务，请使用邮箱登录'});
+  }, [phone]);
+
+  // ── 倒计时 ──
+  const startCountdown = useCallback((setter: React.Dispatch<React.SetStateAction<number>>) => {
+    setter(60);
+    const id = setInterval(() => {
+      setter((prev: number) => { if (prev <= 1) { clearInterval(id); return 0; } return prev - 1; });
     }, 1000);
-  }, [codeCountdown]);
+  }, []);
 
   // ── 提交 ──
-  const submit = useCallback(() => {
+  const submit = useCallback(async () => {
     Keyboard.dismiss();
-    if (mode === 'login') { onLogin?.(); }
-    else if (mode === 'register') { onRegister?.(); }
-  }, [mode, onLogin, onRegister]);
 
-  // ── 一键登录 ──
-  const oneClickLogin = useCallback(() => {
-    onLogin?.();
-  }, [onLogin]);
+    if (!agreed) {
+      setAgreedTouched(true);
+      return;
+    }
+
+    if (isPhone) {
+      if (!code.trim()) {
+        showAlert({title: '提示', message: '请输入验证码'});
+        return;
+      }
+      showAlert({title: '提示', message: '手机验证码功能尚未接入短信服务，请使用邮箱登录'});
+      return;
+    }
+
+    // ── 邮箱登录 / 注册 —— 行内校验 → 定位到第一个错误 ──
+    const emailTrimVal = email.trim();
+    const codeTrimVal = emailCode.trim();
+
+    if (!emailTrimVal || !isEmailValid) {
+      setEmailTouched(true);
+      setEmailError(!emailTrimVal ? '请输入邮箱地址' : '邮箱格式不正确');
+      return;
+    }
+    if (!codeTrimVal) {
+      showAlert({title: '提示', message: '请输入验证码'});
+      return;
+    }
+    if (!isLogin) {
+      if (!password.trim()) {
+        setPwdTouched(true);
+        setPwdError('请设置密码');
+        return;
+      }
+      if (password.trim().length < 6) {
+        setPwdTouched(true);
+        setPwdError('密码至少 6 位');
+        return;
+      }
+      if (password !== confirmPwd) {
+        setPwdTouched(true);
+        setPwdError('两次输入的密码不一致');
+        return;
+      }
+    }
+
+    setLoading(true);
+    try {
+      const data = isLogin
+        ? await login(emailTrimVal, codeTrimVal)
+        : await register(emailTrimVal, codeTrimVal, password);
+
+      if (data.token) {
+        await saveToken(data.token);
+      }
+
+      if (isLogin) { onLogin?.(); } else { onRegister?.(); }
+    } catch (err) {
+      showAlert({
+        title: isLogin ? '登录失败' : '注册失败',
+        message: err instanceof ApiError ? err.detail : '请稍后重试',
+      });
+    } finally {
+      setLoading(false);
+    }
+  }, [isLogin, isPhone, email, phone, emailCode, code, password, confirmPwd, agreed, onLogin, onRegister]);
 
   return (
     <SafeAreaView style={[styles.root, {backgroundColor: t.bg}]} edges={['top', 'bottom']}>
-      <KeyboardAvoidingView
-        style={styles.flex}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-        <ScrollView
-          contentContainerStyle={styles.scroll}
-          keyboardShouldPersistTaps="handled"
-          showsVerticalScrollIndicator={false}>
+      <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+
+          {/* ── 装饰光晕 ── */}
+          <View style={styles.glowWrap} pointerEvents="none">
+            <View style={[styles.glowBlob, styles.glowTop, {backgroundColor: t.accent}]} />
+            <View style={[styles.glowBlob, styles.glowBottom, {backgroundColor: t.accent}]} />
+          </View>
 
           {/* ── Brand ── */}
           <View style={styles.brand}>
-            <View style={[styles.logo, {backgroundColor: t.accentLight}]}>
-              <Text style={styles.logoText}>🎯</Text>
+            <View style={[styles.brandIconWrap, {backgroundColor: t.accentLight, borderColor: t.accentSoft}]}>
+              <View style={[styles.brandIconGlow, {backgroundColor: t.accent + '20'}]} />
+              <Text style={styles.brandIcon}>🎯</Text>
             </View>
-            <Text style={[styles.appName, {color: t.textPrimary}]}>AI面试助手</Text>
-            <Text style={[styles.brandSub, {color: t.textTertiary}]}>
-              实时转写 · AI 辅助 · 面试无忧
-            </Text>
+            <Text style={[styles.brandName, {color: t.textPrimary}]}>AI面试助手</Text>
+            <Text style={[styles.brandSub, {color: t.textTertiary}]}>实时转写 · AI 辅助面试</Text>
           </View>
 
-          {/* ── Mode Tabs ── */}
-          <View style={[styles.tabRow, {backgroundColor: t.divider}]}>
-            {(['login', 'register'] as AuthMode[]).map(m => (
-              <Pressable
-                key={m}
-                style={[
-                  styles.tab,
-                  mode === m && {backgroundColor: t.bgSurface, ...t.shadowSm},
-                ]}
-                onPress={() => switchMode(m)}>
-                <Text style={[styles.tabText, {color: mode === m ? t.accent : t.textTertiary}]}>
-                  {m === 'login' ? '登录' : '注册'}
-                </Text>
-              </Pressable>
-            ))}
-          </View>
+          {/* ── Form Card ── */}
+          <View style={[styles.formCard, {backgroundColor: t.bgSurface, borderColor: t.divider}, t.shadowLg]}>
 
-          {/* ── Form ── */}
-          <View style={[styles.form, {backgroundColor: t.bgSurface}, t.shadowMd]}>
-            {/* 手机号 */}
-            <View style={[styles.inputRow, {borderColor: t.divider}]}>
-              <Text style={[styles.countryCode, {color: t.textPrimary}]}>+86</Text>
-              <View style={[styles.inputDivider, {backgroundColor: t.divider}]} />
-              <TextInput
-                style={[styles.input, {color: t.textPrimary}]}
-                placeholder="请输入手机号"
-                placeholderTextColor={t.textTertiary}
-                keyboardType="phone-pad"
-                maxLength={11}
-                value={phone}
-                onChangeText={setPhone}
-                returnKeyType={isForgot ? 'done' : 'next'}
-                onSubmitEditing={() => pwdRef.current?.focus()}
-              />
+            {/* 手机 / 邮箱 切换（短信接入后恢复 SHOW_PHONE=true） */}
+            {SHOW_PHONE && (
+            <View style={styles.switchRow}>
+              <TouchableOpacity style={isPhone ? styles.switchActive : styles.switchInactive} onPress={() => setMethod('phone')} activeOpacity={0.7}>
+                <Text style={[styles.switchText, {color: isPhone ? t.accent : t.textTertiary}]}>手机</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={!isPhone ? styles.switchActive : styles.switchInactive} onPress={() => setMethod('email')} activeOpacity={0.7}>
+                <Text style={[styles.switchText, {color: !isPhone ? t.accent : t.textTertiary}]}>邮箱</Text>
+              </TouchableOpacity>
             </View>
+            )}
+
+            {/* 手机号 / 邮箱 */}
+            {isPhone ? (
+              <View style={[styles.inputWrap, {backgroundColor: t.bg, borderColor: t.divider}]}>
+                <Text style={[styles.prefix, {color: t.textPrimary}]}>+86</Text>
+                <View style={[styles.vr, {backgroundColor: t.divider}]} />
+                <TextInput style={[styles.input, {color: t.textPrimary}]} placeholder="手机号" placeholderTextColor={t.textTertiary} keyboardType="phone-pad" maxLength={11} value={phone} onChangeText={setPhone} />
+              </View>
+            ) : (
+              <>
+                <View style={[styles.inputWrap, {backgroundColor: t.bg, borderColor: emailError ? t.danger : t.divider}]}>
+                  <TextInput
+                    style={[styles.input, {color: t.textPrimary}]}
+                    placeholder="邮箱地址"
+                    placeholderTextColor={t.textTertiary}
+                    keyboardType="email-address"
+                    autoCapitalize="none"
+                    value={email}
+                    onChangeText={handleEmailChange}
+                    onBlur={() => { setEmailTouched(true); if (!email.trim()) { setEmailError('请输入邮箱地址'); } else if (!isEmailValid) { setEmailError('邮箱格式不正确'); } }}
+                  />
+                </View>
+                {emailTouched && emailError ? (
+                  <Text style={[styles.hint, {color: t.danger}]}>{emailError}</Text>
+                ) : null}
+              </>
+            )}
 
             {/* 验证码 */}
-            {!isForgot && (
-              <View style={[styles.inputRow, {borderColor: t.divider}]}>
-                <TextInput
-                  style={[styles.input, {color: t.textPrimary}]}
-                  placeholder="验证码"
-                  placeholderTextColor={t.textTertiary}
-                  keyboardType="number-pad"
-                  maxLength={6}
-                  value={code}
-                  onChangeText={setCode}
-                />
-                <TouchableOpacity
-                  style={[styles.codeBtn, {backgroundColor: codeCountdown > 0 ? t.divider : t.accent}]}
-                  onPress={sendCode}
-                  activeOpacity={0.7}
-                  disabled={codeCountdown > 0 || !phone}>
-                  <Text style={[styles.codeBtnText, {color: codeCountdown > 0 ? t.textTertiary : '#FFF'}]}>
-                    {codeSending ? '发送中…' : codeCountdown > 0 ? `${codeCountdown}s` : '获取验证码'}
-                  </Text>
-                </TouchableOpacity>
-              </View>
-            )}
-
-            {/* 密码（注册 / 找回密码） */}
-            {(isRegister || isForgot) && (
-              <View style={[styles.inputRow, {borderColor: t.divider}]}>
-                <TextInput
-                  ref={pwdRef}
-                  style={[styles.input, {color: t.textPrimary}]}
-                  placeholder={isForgot ? '设置新密码' : '设置密码（6-20位）'}
-                  placeholderTextColor={t.textTertiary}
-                  secureTextEntry
-                  value={password}
-                  onChangeText={setPassword}
-                  returnKeyType={isRegister ? 'next' : 'done'}
-                  onSubmitEditing={() => isRegister ? confirmRef.current?.focus() : undefined}
-                />
-              </View>
-            )}
-
-            {/* 确认密码（仅注册） */}
-            {isRegister && (
-              <View style={[styles.inputRow, {borderColor: t.divider}]}>
-                <TextInput
-                  ref={confirmRef}
-                  style={[styles.input, {color: t.textPrimary}]}
-                  placeholder="确认密码"
-                  placeholderTextColor={t.textTertiary}
-                  secureTextEntry
-                  value={confirmPwd}
-                  onChangeText={setConfirmPwd}
-                  returnKeyType="done"
-                />
-              </View>
-            )}
-
-            {/* 服务协议 */}
-            <Pressable style={styles.agreeRow} onPress={() => setAgreed(!agreed)}>
-              <View style={[styles.checkbox, {borderColor: agreed ? t.accent : t.dividerStrong, backgroundColor: agreed ? t.accent : 'transparent'}]}>
-                {agreed && <Text style={styles.checkmark}>✓</Text>}
-              </View>
-              <Text style={[styles.agreeText, {color: t.textSecondary}]}>
-                已阅读并同意
-              </Text>
-              <Text
-                style={[styles.agreeLink, {color: t.accent}]}
-                onPress={() => setShowAgreement('service')}>
-                《服务协议》
-              </Text>
-              <Text style={[styles.agreeText, {color: t.textSecondary}]}>和</Text>
-              <Text
-                style={[styles.agreeLink, {color: t.accent}]}
-                onPress={() => setShowAgreement('privacy')}>
-                《隐私政策》
-              </Text>
-            </Pressable>
-
-            {/* 提交按钮 */}
-            <TouchableOpacity
-              style={[styles.submitBtn, {backgroundColor: t.accent}]}
-              onPress={submit}
-              activeOpacity={0.8}>
-              <Text style={styles.submitText}>
-                {isLogin ? '登录' : isRegister ? '注册' : '重置密码'}
-              </Text>
-            </TouchableOpacity>
-
-            {/* 一键登录（仅登录模式） */}
-            {isLogin && (
+            <View style={[styles.inputWrap, {backgroundColor: t.bg, borderColor: t.divider}]}>
+              <TextInput style={[styles.input, {color: t.textPrimary}]} placeholder="验证码" placeholderTextColor={t.textTertiary} keyboardType="number-pad" maxLength={6} value={isPhone ? code : emailCode} onChangeText={isPhone ? setCode : setEmailCode} />
               <TouchableOpacity
-                style={[styles.oneClickBtn, {borderColor: t.divider}]}
-                onPress={oneClickLogin}
-                activeOpacity={0.7}>
-                <Text style={[styles.oneClickText, {color: t.accent}]}>
-                  📱 手机号一键登录
+                style={[styles.codeBtn, {backgroundColor: canSendCode ? t.accentLight : t.bg}]}
+                onPress={isPhone ? handleSendPhoneCode : handleSendEmailCode}
+                activeOpacity={canSendCode ? 0.7 : 1}
+                disabled={!canSendCode}>
+                <Text style={[styles.codeBtnText, {color: canSendCode ? t.accent : t.textTertiary}]}>
+                  {isPhone
+                    ? (codeCountdown > 0 ? `${codeCountdown}s` : '获取验证码')
+                    : (emailCodeCountdown > 0 ? `${emailCodeCountdown}s` : '获取验证码')}
                 </Text>
               </TouchableOpacity>
+            </View>
+
+            {/* 注册密码 */}
+            {!isLogin && (
+              <>
+                <View style={[styles.inputWrap, {backgroundColor: t.bg, borderColor: pwdError ? t.danger : t.divider}]}>
+                  <TextInput
+                    ref={pwdRef}
+                    style={[styles.input, {color: t.textPrimary}]}
+                    placeholder="设置密码（至少 6 位）"
+                    placeholderTextColor={t.textTertiary}
+                    secureTextEntry
+                    value={password}
+                    onChangeText={handlePasswordChange}
+                    onBlur={() => { setPwdTouched(true); if (password && password.length < 6) { setPwdError('密码至少 6 位'); } }}
+                    returnKeyType="next"
+                    onSubmitEditing={() => confirmRef.current?.focus()}
+                  />
+                </View>
+                <View style={[styles.inputWrap, {backgroundColor: t.bg, borderColor: pwdError ? t.danger : t.divider}]}>
+                  <TextInput
+                    ref={confirmRef}
+                    style={[styles.input, {color: t.textPrimary}]}
+                    placeholder="确认密码"
+                    placeholderTextColor={t.textTertiary}
+                    secureTextEntry
+                    value={confirmPwd}
+                    onChangeText={newVal => { setConfirmPwd(newVal); if (pwdError) { setPwdError(''); } }}
+                    returnKeyType="done"
+                  />
+                </View>
+                {pwdTouched && pwdError ? (
+                  <Text style={[styles.hint, {color: t.danger}]}>{pwdError}</Text>
+                ) : null}
+              </>
             )}
 
-            {/* 找回密码（仅登录模式） */}
-            {isLogin && (
-              <TouchableOpacity
-                style={styles.forgotBtn}
-                onPress={() => setMode('forgot')}
-                activeOpacity={0.6}>
-                <Text style={[styles.forgotText, {color: t.textTertiary}]}>忘记密码？</Text>
-              </TouchableOpacity>
-            )}
+            {/* 协议 */}
+            <Pressable style={styles.agreeRow} onPress={() => { setAgreed(!agreed); setAgreedTouched(false); }}>
+              <View style={[styles.cb, {borderColor: (agreedTouched && !agreed) ? t.danger : agreed ? t.accent : t.dividerStrong, backgroundColor: agreed ? t.accent : 'transparent'}]}>
+                {agreed && <Text style={styles.cbMark}>✓</Text>}
+              </View>
+              <Text style={[styles.agreeText, {color: t.textTertiary}]}>已阅读并同意</Text>
+              <Text style={[styles.agreeLink, {color: t.accent}]} onPress={() => setShowAgreement('service')}>《服务协议》</Text>
+              <Text style={[styles.agreeText, {color: t.textTertiary}]}>和</Text>
+              <Text style={[styles.agreeLink, {color: t.accent}]} onPress={() => setShowAgreement('privacy')}>《隐私政策》</Text>
+            </Pressable>
+            {agreedTouched && !agreed ? (
+              <Text style={[styles.hint, {color: t.danger}]}>请先阅读并同意协议</Text>
+            ) : null}
+
+            {/* 提交 */}
+            <TouchableOpacity
+              style={[styles.submit, {backgroundColor: t.accent}, t.shadowLg]}
+              onPress={submit}
+              activeOpacity={0.85}
+              disabled={loading}>
+              {loading ? (
+                <ActivityIndicator color="#FFFFFF" size="small" />
+              ) : (
+                <Text style={styles.submitText}>{isLogin ? '登录' : '注册'}</Text>
+              )}
+            </TouchableOpacity>
+
           </View>
 
           {/* ── 底部切换 ── */}
-          {!isForgot && (
-            <View style={styles.footer}>
-              <Text style={[styles.footerText, {color: t.textSecondary}]}>
-                {isLogin ? '还没有账号？' : '已有账号？'}
-              </Text>
-              <TouchableOpacity onPress={() => switchMode(isLogin ? 'register' : 'login')} activeOpacity={0.6}>
-                <Text style={[styles.footerLink, {color: t.accent}]}>
-                  {isLogin ? '去注册' : '去登录'}
-                </Text>
-              </TouchableOpacity>
-            </View>
-          )}
-
-          {/* ── 忘记密码模式：返回登录 ── */}
-          {isForgot && (
-            <View style={styles.footer}>
-              <TouchableOpacity onPress={() => setMode('login')} activeOpacity={0.6}>
-                <Text style={[styles.footerLink, {color: t.accent}]}>← 返回登录</Text>
-              </TouchableOpacity>
-            </View>
-          )}
+          <View style={styles.footer}>
+            <Text style={[styles.footerText, {color: t.textSecondary}]}>{isLogin ? '还没有账号？' : '已有账号？'}</Text>
+            <TouchableOpacity onPress={switchMode} activeOpacity={0.6}>
+              <Text style={[styles.footerLink, {color: t.accent}]}>{isLogin ? '去注册' : '去登录'}</Text>
+            </TouchableOpacity>
+          </View>
 
         </ScrollView>
       </KeyboardAvoidingView>
 
-      {/* ── 协议弹窗 ── */}
+      {/* 协议弹窗 */}
       <Modal visible={showAgreement != null} animationType="slide" presentationStyle="pageSheet">
-        {showAgreement != null && (
-          <AgreementScreen type={showAgreement} onClose={() => setShowAgreement(null)} />
-        )}
+        {showAgreement != null && <AgreementScreen type={showAgreement} onClose={() => setShowAgreement(null)} />}
       </Modal>
     </SafeAreaView>
   );
 }
 
-// ── Styles ──
 const styles = StyleSheet.create({
   root: {flex: 1},
   flex: {flex: 1},
-  scroll: {paddingBottom: 40, alignItems: 'center', paddingHorizontal: space.lg},
+  scroll: {flexGrow: 1, justifyContent: 'flex-start', paddingTop: '18%', paddingHorizontal: 28, paddingBottom: 40},
 
-  // Brand
-  brand: {
-    alignItems: 'center',
-    marginTop: space['3xl'],
-    marginBottom: space['2xl'],
+  // ── Decorative glow blobs ──
+  glowWrap: {
+    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+    overflow: 'hidden',
   },
-  logo: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: space.lg,
+  glowBlob: {
+    position: 'absolute',
+    width: 280, height: 280, borderRadius: 140,
+    opacity: 0.08,
   },
-  logoText: {fontSize: 34},
-  appName: {
-    ...type.title,
-    fontWeight: '800',
-    letterSpacing: 0.5,
-    marginBottom: 6,
-  },
-  brandSub: {
-    ...type.bodySm,
-  },
+  glowTop: {top: -80, right: -80},
+  glowBottom: {bottom: -100, left: -100, width: 240, height: 240, borderRadius: 120, opacity: 0.05},
 
-  // Mode tabs
-  tabRow: {
-    flexDirection: 'row',
-    borderRadius: radius.md,
-    padding: 3,
-    width: 220,
-    marginBottom: space.xl,
+  // ── Brand ──
+  brand: {alignItems: 'center', marginBottom: 32},
+  brandIconWrap: {
+    width: 88, height: 88, borderRadius: 44,
+    justifyContent: 'center', alignItems: 'center',
+    borderWidth: 1,
+    marginBottom: 16,
+    overflow: 'hidden',
   },
-  tab: {
-    flex: 1,
-    paddingVertical: 10,
-    borderRadius: radius.sm + 2,
-    alignItems: 'center',
+  brandIconGlow: {
+    position: 'absolute',
+    width: 60, height: 60, borderRadius: 30,
+    top: 14,
   },
-  tabText: {
-    fontSize: 15,
-    fontWeight: '700',
-  },
+  brandIcon: {fontSize: 40},
+  brandName: {fontSize: 24, fontWeight: '800', letterSpacing: 1.5, marginBottom: 6},
+  brandSub: {fontSize: 13, letterSpacing: 1, lineHeight: 18},
 
-  // Form card
-  form: {
-    width: '100%',
-    paddingHorizontal: space.lg,
-    paddingTop: space.lg,
-    paddingBottom: space['2xl'],
+  // ── Form Card ──
+  formCard: {
+    borderWidth: StyleSheet.hairlineWidth,
     borderRadius: radius.xl,
-    gap: space.md,
+    padding: 22,
+    gap: 14,
   },
 
-  // Inputs
-  inputRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderWidth: 1,
+  // ── Switch ──
+  switchRow: {flexDirection: 'row', marginBottom: 1},
+  switchActive: {marginRight: 24},
+  switchInactive: {marginRight: 24},
+  switchText: {fontSize: 17, fontWeight: '700'},
+
+  // ── Input ──
+  inputWrap: {
+    flexDirection: 'row', alignItems: 'center',
+    borderWidth: StyleSheet.hairlineWidth,
     borderRadius: radius.md,
     height: 50,
   },
-  countryCode: {
-    ...type.body,
-    fontWeight: '700',
-    paddingHorizontal: space.md,
+  prefix: {fontSize: 16, fontWeight: '700', paddingHorizontal: 16},
+  vr: {width: StyleSheet.hairlineWidth, height: 24},
+  input: {flex: 1, fontSize: 16, paddingHorizontal: 14},
+
+  // ── Inline hint ──
+  hint: {
+    fontSize: 12, lineHeight: 16,
+    marginTop: -8, marginLeft: 4,
   },
-  inputDivider: {
-    width: 1,
-    height: 24,
-  },
-  input: {
-    flex: 1,
-    ...type.body,
-    paddingHorizontal: space.md,
-    height: '100%',
-    ...(Platform.OS === 'android' ? {textAlignVertical: 'center'} : {}),
-  },
+
+  // ── Code button ──
   codeBtn: {
-    paddingHorizontal: 14,
-    height: 36,
-    borderRadius: radius.sm,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 7,
+    paddingHorizontal: 14, height: 34, borderRadius: radius.sm,
+    justifyContent: 'center', alignItems: 'center',
+    marginRight: 8,
   },
-  codeBtnText: {
-    fontSize: 12,
-    fontWeight: '700',
-  },
+  codeBtnText: {fontSize: 13, fontWeight: '700'},
 
-  // Agreement
-  agreeRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flexWrap: 'wrap',
-    paddingVertical: 4,
-    gap: 3,
-  },
-  checkbox: {
-    width: 18,
-    height: 18,
-    borderRadius: 4,
-    borderWidth: 1.5,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 4,
-  },
-  checkmark: {
-    fontSize: 11,
-    color: '#FFF',
-    fontWeight: '800',
-    lineHeight: 14,
-  },
-  agreeText: {
-    ...type.caption,
-    lineHeight: 18,
-  },
-  agreeLink: {
-    ...type.caption,
-    fontWeight: '700',
-    lineHeight: 18,
-  },
+  // ── Agreement ──
+  agreeRow: {flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', paddingVertical: 4, gap: 2},
+  cb: {width: 17, height: 17, borderRadius: 4, borderWidth: 1.5, justifyContent: 'center', alignItems: 'center', marginRight: 4},
+  cbMark: {fontSize: 11, color: '#FFF', fontWeight: '800'},
+  agreeText: {fontSize: 12, lineHeight: 18},
+  agreeLink: {fontSize: 12, fontWeight: '700', lineHeight: 18},
 
-  // Submit
-  submitBtn: {
-    height: 50,
-    borderRadius: radius.lg,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginTop: space.xs,
+  // ── Submit ──
+  submit: {
+    height: 52, borderRadius: radius.lg,
+    justifyContent: 'center', alignItems: 'center',
+    marginTop: 4,
   },
-  submitText: {
-    fontSize: 16,
-    fontWeight: '800',
-    color: '#FFFFFF',
-    letterSpacing: 0.5,
-  },
+  submitText: {fontSize: 17, fontWeight: '800', color: '#FFFFFF', letterSpacing: 3},
 
-  // One-click
-  oneClickBtn: {
-    height: 46,
-    borderRadius: radius.lg,
-    borderWidth: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  oneClickText: {
-    fontSize: 15,
-    fontWeight: '600',
-  },
-
-  // Forgot password
-  forgotBtn: {
-    alignItems: 'center',
-    paddingVertical: 4,
-  },
-  forgotText: {
-    ...type.bodySm,
-  },
-
-  // Footer
-  footer: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    marginTop: space.xl,
-    gap: 4,
-  },
-  footerText: {
-    ...type.bodySm,
-  },
-  footerLink: {
-    ...type.bodySm,
-    fontWeight: '700',
-  },
+  // ── Footer ──
+  footer: {flexDirection: 'row', justifyContent: 'center', marginTop: 28, gap: 4},
+  footerText: {fontSize: 14},
+  footerLink: {fontSize: 14, fontWeight: '700'},
 });
