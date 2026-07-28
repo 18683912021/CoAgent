@@ -10,6 +10,7 @@ import React, {useCallback, useEffect, useState} from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Modal,
   ScrollView,
   StyleSheet,
   Text,
@@ -20,8 +21,11 @@ import {
 import {SafeAreaView} from 'react-native-safe-area-context';
 
 import {AudioCapture} from '../native';
-import {getLanguage, setLanguage, type AppLanguage, API_BASE} from '../config';
+import {API_BASE} from '../config';
 import {useTheme, space, radius, type} from '../theme';
+
+const PROGRAMMING_LANGUAGES = ['JavaScript', 'Java', 'Python', 'C#', 'C++'] as const;
+type ProgrammingLanguage = (typeof PROGRAMMING_LANGUAGES)[number];
 
 // ── Types ──
 interface MenuItem {
@@ -86,7 +90,8 @@ function SectionTitle({title}: {title: string}) {
 export default function ProfileScreen(): React.JSX.Element {
   const dark = useColorScheme() === 'dark';
   const t = useTheme(dark);
-  const [lang, setLang] = useState<AppLanguage>(getLanguage());
+  const [progLang, setProgLang] = useState<ProgrammingLanguage>('JavaScript');
+  const [showLangPicker, setShowLangPicker] = useState(false);
 
   const [resumeLabel, setResumeLabel] = useState('未上传');
   const [uploading, setUploading] = useState(false);
@@ -98,12 +103,6 @@ export default function ProfileScreen(): React.JSX.Element {
       .then(d => { if (d.has_intro) { setResumeLabel('已上传'); } })
       .catch(() => {});
   }, []);
-
-  const toggleLanguage = () => {
-    const next: AppLanguage = lang === 'zh' ? 'en' : 'zh';
-    setLang(next);
-    setLanguage(next);
-  };
 
   // ── 简历上传 ──
   const handleUploadResume = useCallback(async () => {
@@ -143,8 +142,6 @@ export default function ProfileScreen(): React.JSX.Element {
     }
   }, []);
 
-  const langLabel = lang === 'zh' ? '中文' : 'English';
-
   const menuSections: {title: string; items: MenuItem[]}[] = [
     {
       title: '数据',
@@ -155,7 +152,7 @@ export default function ProfileScreen(): React.JSX.Element {
     {
       title: '偏好',
       items: [
-        {icon: '🌐', label: '面试语言', value: langLabel, onPress: toggleLanguage},
+        {icon: '🌐', label: '面试语言', value: progLang, onPress: () => setShowLangPicker(true)},
         {icon: '✍️', label: '答案风格', value: '标准书面', onPress: () => {}},
         {icon: '📄', label: '简历上传', value: uploading ? '上传中…' : resumeLabel, onPress: handleUploadResume},
       ],
@@ -230,6 +227,38 @@ export default function ProfileScreen(): React.JSX.Element {
           AI面试助手 v1.0.0
         </Text>
       </ScrollView>
+
+      {/* ── 编程语言选择弹窗 ── */}
+      <Modal visible={showLangPicker} transparent animationType="fade" statusBarTranslucent>
+        <TouchableOpacity
+          style={[pickerStyles.backdrop, {backgroundColor: t.backdrop}]}
+          activeOpacity={1}
+          onPress={() => setShowLangPicker(false)}>
+          <View style={[pickerStyles.card, {backgroundColor: t.bgSurface}, t.shadowLg]}>
+            <Text style={[pickerStyles.title, {color: t.textPrimary}]}>选择面试语言</Text>
+            {PROGRAMMING_LANGUAGES.map(lang => (
+              <TouchableOpacity
+                key={lang}
+                style={[
+                  pickerStyles.option,
+                  {backgroundColor: lang === progLang ? t.accentLight : 'transparent'},
+                ]}
+                onPress={() => { setProgLang(lang); setShowLangPicker(false); }}
+                activeOpacity={0.6}>
+                <Text style={[pickerStyles.optionText, {
+                  color: lang === progLang ? t.accent : t.textPrimary,
+                  fontWeight: lang === progLang ? '700' : '400',
+                }]}>
+                  {lang}
+                </Text>
+                {lang === progLang && (
+                  <Text style={[pickerStyles.check, {color: t.accent}]}>✓</Text>
+                )}
+              </TouchableOpacity>
+            ))}
+          </View>
+        </TouchableOpacity>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -371,4 +400,22 @@ const styles = StyleSheet.create({
     marginTop: space['3xl'],
     marginBottom: space.lg,
   },
+});
+
+const pickerStyles = StyleSheet.create({
+  backdrop: {
+    flex: 1, justifyContent: 'center', alignItems: 'center',
+    paddingHorizontal: space['2xl'],
+  },
+  card: {
+    width: '100%', borderRadius: radius.lg, paddingVertical: space.lg,
+    paddingHorizontal: space.lg,
+  },
+  title: {...type.heading, marginBottom: space.md, textAlign: 'center'},
+  option: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingVertical: 14, paddingHorizontal: space.md, borderRadius: radius.sm,
+  },
+  optionText: {...type.body},
+  check: {fontSize: 18, fontWeight: '700'},
 });

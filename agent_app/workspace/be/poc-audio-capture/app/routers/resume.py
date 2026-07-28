@@ -20,8 +20,10 @@ router = APIRouter()
 @router.post("/resume/upload")
 async def upload_resume(file: UploadFile = File(...)):
     """上传 PDF 简历，解析并生成自我介绍。"""
-    # 校验文件类型
-    if not file.filename or not file.filename.lower().endswith(".pdf"):
+    # 校验文件类型——优先看 content_type，文件名可能不含 .pdf 后缀
+    content_type = file.content_type or ""
+    filename = (file.filename or "").lower()
+    if not ("pdf" in content_type or filename.endswith(".pdf")):
         raise HTTPException(400, "仅支持 PDF 格式")
 
     # 读取文件

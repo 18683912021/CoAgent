@@ -164,11 +164,15 @@ function reducer(state: ControllerState, action: Action): ControllerState {
         if (incoming.startsWith(cur)) { delta = incoming.slice(cur.length); }
       }
 
-      // 纯标点跳过，但 isFinal 时关掉 streaming 泡
+      // 纯标点增量：追加到当前泡（不跳过——否则句号永远丢失）
       if (_isOnlyPunct(delta.trim())) {
-        if (streamingIdx !== -1 && action.isFinal) {
+        if (streamingIdx !== -1) {
           return {...state, conversation: _cap(state.conversation.map((m, i) =>
-            i === streamingIdx ? {...m, status: 'done' as const, timestamp: now} : m))};
+            i === streamingIdx
+              ? {...m, text: m.text + delta.trim(),
+                 status: (action.isFinal ? 'done' : m.status) as ConversationBubbleStatus,
+                 timestamp: now}
+              : m))};
         }
         return state;
       }
@@ -179,27 +183,38 @@ function reducer(state: ControllerState, action: Action): ControllerState {
         const shouldSplit = action.isFinal;
 
         if (shouldSplit) {
-          // 断句：关旧泡，全文起新泡（新 ASR 会话不夹带旧句，全文就是当前句）
+          // 断句：关旧泡。delta 非空才起新泡（静音断句的 is_final 纯标记不会带新文本）
+          const newText = (delta || incoming).trim();
+          const needNewBubble = newText && newText !== streamingBubble.text;
           return {
             ...state,
-            conversation: _cap(state.conversation.map((m, i) =>
-              i === streamingIdx ? {...m, status: 'done' as const, timestamp: now} : m,
-            ).concat({
-              id: genId(role === 'interviewer' ? 'int' : 'usr'),
-              role,
-              text: incoming.trim(),
-              status: 'streaming' as const,
-              timestamp: now,
-            })),
+            conversation: _cap(
+              (needNewBubble
+                ? state.conversation.map((m, i) =>
+                    i === streamingIdx ? {...m, status: 'done' as const, timestamp: now} : m,
+                  ).concat({
+                    id: genId(role === 'interviewer' ? 'int' : 'usr'),
+                    role,
+                    text: newText,
+                    status: 'streaming' as const,
+                    timestamp: now,
+                  })
+                : state.conversation.map((m, i) =>
+                    i === streamingIdx ? {...m, status: 'done' as const, timestamp: now} : m,
+                  )
+              ),
+            ),
           };
         }
 
-        // 追加增量
+        // 流式更新。incoming 以 streaming 泡开头 → 追加增量；
+        // 否则 ASR 修正了前面的词（如 "长款"→"强缓存"）→ 用全文替换。
+        const append = incoming.startsWith(streamingBubble.text);
         return {
           ...state,
           conversation: _cap(state.conversation.map((m, i) =>
             i === streamingIdx
-              ? {...m, text: m.text + delta, timestamp: now}
+              ? {...m, text: append ? m.text + delta : incoming, timestamp: now}
               : m,
           )),
         };
@@ -352,9 +367,11 @@ async function requestRuntimePermissions(): Promise<boolean> {
 export function useAudioCaptureController() {
   const [state, dispatch] = useReducer(reducer, INITIAL_STATE);
   const operationCounter = useRef(0);
-  // 0.6: LLM chunk 帧缓冲合并，减少无效渲染
+  // 0.6: LLM chunk + 转录 帧缓冲合并，减少双轨同时输出时的无效渲染
   const llmChunkBuf = useRef('');
   const llmChunkRaf = useRef<number | null>(null);
+  const transBuf = useRef<{text: string; isFinal: boolean; source: 'mic' | 'system'} | null>(null);
+  const transRaf = useRef<number | null>(null);
   // 防卡死：限制对话历史长度 + 节流高频事件
   const MAX_CONVERSATION = 60;
   const levelsThrottle = useRef(0);
@@ -415,13 +432,32 @@ export function useAudioCaptureController() {
       }),
       AudioCapture.onTranscription(event => {
         if (__DEV__) { console.log('[转录]', event.source, event.text.slice(0, 40), 'final:', event.isFinal); }
-        dispatch({
-          type: 'transcription',
-          text: event.text,
-          isFinal: event.isFinal,
-          source: event.source,
-          timestamp: Date.now(),
-        });
+        // isFinal 立即处理，不停 RAF 缓冲——断句需要即时响应
+        if (event.isFinal) {
+          if (transRaf.current !== null) {
+            cancelAnimationFrame(transRaf.current);
+            transRaf.current = null;
+          }
+          const pending = transBuf.current;
+          transBuf.current = null;
+          if (pending) {
+            dispatch({type: 'transcription', text: pending.text, isFinal: pending.isFinal, source: pending.source, timestamp: Date.now()});
+          }
+          dispatch({type: 'transcription', text: event.text, isFinal: true, source: event.source, timestamp: Date.now()});
+          return;
+        }
+        // 非 isFinal：RAF 合并，同一帧内只保留最新的一条
+        transBuf.current = {text: event.text, isFinal: false, source: event.source};
+        if (transRaf.current === null) {
+          transRaf.current = requestAnimationFrame(() => {
+            const evt = transBuf.current;
+            transBuf.current = null;
+            transRaf.current = null;
+            if (evt) {
+              dispatch({type: 'transcription', text: evt.text, isFinal: false, source: evt.source, timestamp: Date.now()});
+            }
+          });
+        }
       }),
       AudioCapture.onLLMStart((event: LLMStartEvent) => {
         if (__DEV__) { console.log('[LLM] start lang=%s qText=%s',
@@ -491,6 +527,10 @@ export function useAudioCaptureController() {
       if (llmChunkRaf.current !== null) {
         cancelAnimationFrame(llmChunkRaf.current!);
         llmChunkRaf.current = null;
+      }
+      if (transRaf.current !== null) {
+        cancelAnimationFrame(transRaf.current!);
+        transRaf.current = null;
       }
       subscriptions.forEach(s => s.remove());
       appStateSub.remove();
@@ -577,6 +617,13 @@ export function useAudioCaptureController() {
   const sendLLMQuery = useCallback((bubbleId: string) => {
     const clickedMsg = state.conversation.find(m => m.id === bubbleId);
     if (!clickedMsg || clickedMsg.role === 'ai') { return; }
+
+    // 已经回答完毕的不再重复发送
+    const clickedIdx = state.conversation.findIndex(m => m.id === bubbleId);
+    const nextMsg = clickedIdx >= 0 ? state.conversation[clickedIdx + 1] : undefined;
+    if (nextMsg && nextMsg.role === 'ai' && nextMsg.status === 'done') {
+      return;
+    }
 
     const aiBubbleId = genId('llm');
     const bubbleSource = clickedMsg.role === 'interviewer' ? 'system' : 'mic';

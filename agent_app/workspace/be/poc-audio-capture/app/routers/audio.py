@@ -58,7 +58,6 @@ async def audio_stream(ws: WebSocket):
     sender_task: "asyncio.Task | None" = None
 
     # ── LLM 上下文（per-connection，按需启动） ──
-    llm_queue: "asyncio.Queue[tuple[str, str]]" = asyncio.Queue(maxsize=32)  # (text, language)
     llm_worker_task: "asyncio.Task | None" = None
     llm_service: LLMService | None = None
     llm_config: dict[str, Any] = {}  # FE 可通过 config 帧动态覆盖 enabled/max_tokens/model
@@ -131,7 +130,7 @@ async def audio_stream(ws: WebSocket):
                         await ws.send_json({"type": "config_ack", "llm": llm_config})
 
                     elif msg_type == "llm_query":
-                        # ── 手动触发 LLM，支持 language ──
+                        # ── 手动触发 LLM——总是响应用户最新点击 ──
                         if v1_session is None:
                             raise ProtocolError("E_SESSION_STATE", "session_start is required before llm_query")
                         if llm_config.get("enabled") is False:
@@ -143,27 +142,24 @@ async def audio_stream(ws: WebSocket):
                         if not text_val:
                             raise ProtocolError("E_CONTROL_MESSAGE", "llm_query requires text")
 
-                        # 按需启动 LLM worker
-                        if llm_worker_task is None:
-                            if llm_service is None:
-                                llm_service = LLMService()
-                            if llm_service.ready:
-                                llm_worker_task = asyncio.create_task(
-                                    _llm_worker(ws, llm_queue, llm_service, llm_config)
-                                )
-                                logger.info("LLM worker 已启动（按需）")
-                            else:
-                                logger.warning("ANTHROPIC_API_KEY 未配置，LLM 不可用")
-
-                        if llm_service and llm_service.ready:
-                            try:
-                                llm_queue.put_nowait((text_val, language))
-                                logger.info("LLM 手动触发入队: lang=%s text=%.60s", language, text_val)
-                            except asyncio.QueueFull:
-                                logger.warning("LLM 队列满，丢弃 llm_query")
-                                await send_error(ws, "E_LLM_QUEUE_FULL", "LLM 请求过于频繁，请稍后重试")
-                        else:
+                        if llm_service is None:
+                            llm_service = LLMService()
+                        if not llm_service.ready:
                             await send_error(ws, "E_LLM_UNAVAILABLE", "LLM 服务不可用，请检查 API Key")
+                            continue
+
+                        # 取消正在进行的旧回答，立即响应新请求
+                        if llm_worker_task is not None and not llm_worker_task.done():
+                            llm_worker_task.cancel()
+                            try:
+                                await asyncio.wait_for(llm_worker_task, timeout=2.0)
+                            except (asyncio.CancelledError, asyncio.TimeoutError):
+                                pass
+
+                        llm_worker_task = asyncio.create_task(
+                            _llm_single(ws, text_val, language, llm_service, llm_config)
+                        )
+                        logger.info("LLM 新请求: lang=%s text=%.60s", language, text_val)
                     else:
                         # 非 llm_query 控制消息（session_start / track_start 等）
                         was_new = v1_session is None
@@ -429,102 +425,100 @@ async def _transcription_sender(ws: WebSocket):
         pass
 
 
-async def _llm_worker(
+async def _llm_single(
     ws: WebSocket,
-    queue: "asyncio.Queue[tuple[str, str]]",  # (text, language)
+    question: str,
+    language: str,
     llm_service: LLMService,
     llm_config: dict[str, Any],
 ):
-    """后台任务：串行消费 LLM 触发队列。
+    """处理单次 LLM 请求——被新请求取消时立即停止。
 
     协议（v2 — 对标 FE 三态）：
-        llm_start  → FE 创建 interviewer + AI loading 气泡
+        llm_start  → FE 创建 AI loading 气泡
         llm_chunk  → FE 追加 delta 到当前 AI 气泡
-        llm_done   → FE 用完整答案覆盖 + 标记 done
+        llm_done   → FE 标记 done（含取消/失败场景）
     """
-    logger.info("LLM worker 已启动 | config=%s", llm_config)
+    model: str = llm_config.get("model") or "deepseek-chat"
+    max_tokens: int = llm_config.get("max_tokens") or LLM_MAX_TOKENS
+    ts = int(_time.time() * 1000)
+    full_answer: str = ""
 
     try:
-        while True:
-            question, language = await queue.get()
+        chunk_queue: "asyncio.Queue[dict[str, Any] | None]" = asyncio.Queue(maxsize=64)
 
-            # 动态读取 config（FE 可能在运行时更新）
-            model: str = llm_config.get("model") or "deepseek-chat"
-            max_tokens: int = llm_config.get("max_tokens") or LLM_MAX_TOKENS
-            ts = int(_time.time() * 1000)
+        async def _chunk_sender():
+            while True:
+                msg = await chunk_queue.get()
+                if msg is None:
+                    break
+                await ws.send_json(msg)
 
-            try:
-                # ── 异步发送队列：SSE 读取不受 WebSocket send 阻塞 ──
-                chunk_queue: "asyncio.Queue[dict[str, Any]]" = asyncio.Queue(maxsize=64)
+        sender_task = asyncio.create_task(_chunk_sender())
 
-                async def _chunk_sender():
-                    while True:
-                        msg = await chunk_queue.get()
-                        if msg is None:  # 哨兵：停止发送
-                            break
-                        await ws.send_json(msg)
+        await ws.send_json({
+            "type": "llm_start",
+            "question_text": question,
+            "language": language,
+            "timestamp": ts,
+        })
 
-                sender_task = asyncio.create_task(_chunk_sender())
+        chunk_index: int = 0
+        async for chunk, is_final in llm_service.stream_answer(
+            question, model=model, max_tokens=max_tokens, language=language,
+        ):
+            full_answer += chunk
+            if is_final:
+                break
+            chunk_queue.put_nowait({
+                "type": "llm_chunk",
+                "chunk_index": chunk_index,
+                "delta": chunk,
+                "timestamp": int(_time.time() * 1000),
+            })
+            chunk_index += 1
 
-                # ── 1. llm_start ──
-                await ws.send_json({
-                    "type": "llm_start",
-                    "question_text": question,
-                    "language": language,
-                    "timestamp": ts,
-                })
+        chunk_queue.put_nowait(None)
+        await sender_task
 
-                # ── 2. llm_chunk（流式增量） ──
-                full_answer: str = ""
-                chunk_index: int = 0
-                async for chunk, is_final in llm_service.stream_answer(
-                    question, model=model, max_tokens=max_tokens, language=language,
-                ):
-                    full_answer += chunk
+        await ws.send_json({
+            "type": "llm_done",
+            "full_answer": full_answer,
+            "timestamp": int(_time.time() * 1000),
+        })
+        logger.info("LLM 完成: %.50s → %d chunks", question, chunk_index + 1)
 
-                    if is_final:
-                        break
-
-                    chunk_queue.put_nowait({
-                        "type": "llm_chunk",
-                        "chunk_index": chunk_index,
-                        "delta": chunk,
-                        "timestamp": int(_time.time() * 1000),
-                    })
-                    chunk_index += 1
-
-                # 等待发送队列清空，然后发 llm_done
-                chunk_queue.put_nowait(None)  # 哨兵
-                await sender_task
-
-                # ── 3. llm_done（完整答案） ──
-                await ws.send_json({
-                    "type": "llm_done",
-                    "full_answer": full_answer,
-                    "timestamp": int(_time.time() * 1000),
-                })
-                logger.info("LLM 完成 [%d tokens]: %.50s → %d chunks",
-                            max_tokens, question, chunk_index + 1)
-
-            except Exception as exc:
-                logger.exception("LLM 本轮失败: %.50s", question)
-                # 清理发送队列
-                if 'sender_task' in locals() and not sender_task.done():
-                    try:
-                        chunk_queue.put_nowait(None)
-                        sender_task.cancel()
-                    except Exception:
-                        pass
-                try:
-                    await ws.send_json({
-                        "type": "llm_done",
-                        "full_answer": f"[生成失败] {exc}",
-                        "error": str(exc),
-                        "timestamp": int(_time.time() * 1000),
-                    })
-                except Exception:
-                    break  # WebSocket 已关闭，退出 worker
     except asyncio.CancelledError:
-        pass
-    finally:
-        logger.info("LLM worker 已停止")
+        logger.info("LLM 被新请求中断: %.50s", question)
+        if 'sender_task' in locals() and not sender_task.done():
+            try:
+                chunk_queue.put_nowait(None)
+                sender_task.cancel()
+            except Exception:
+                pass
+        try:
+            await ws.send_json({
+                "type": "llm_done",
+                "full_answer": full_answer,
+                "timestamp": int(_time.time() * 1000),
+            })
+        except Exception:
+            pass
+
+    except Exception as exc:
+        logger.exception("LLM 失败: %.50s", question)
+        if 'sender_task' in locals() and not sender_task.done():
+            try:
+                chunk_queue.put_nowait(None)
+                sender_task.cancel()
+            except Exception:
+                pass
+        try:
+            await ws.send_json({
+                "type": "llm_done",
+                "full_answer": f"[生成失败] {exc}",
+                "error": str(exc),
+                "timestamp": int(_time.time() * 1000),
+            })
+        except Exception:
+            pass

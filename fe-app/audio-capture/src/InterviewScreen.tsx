@@ -95,8 +95,21 @@ export default function InterviewScreen(): React.JSX.Element {
   const [showIntro, setShowIntro] = useState(false);
   const [introText, setIntroText] = useState('');
   const [introLoading, setIntroLoading] = useState(false);
+  const [showNoResume, setShowNoResume] = useState(false);
 
   const fetchIntro = useCallback(async () => {
+    // 先检查是否已上传简历
+    try {
+      const check = await fetch(`${API_BASE}/api/resume/has`);
+      const checkData = await check.json();
+      if (!checkData.has_intro) {
+        setShowNoResume(true);
+        return;
+      }
+    } catch {
+      // 网络错误不阻塞，继续尝试加载
+    }
+
     setShowIntro(true);
     setIntroLoading(true);
     try {
@@ -201,7 +214,11 @@ export default function InterviewScreen(): React.JSX.Element {
           text={msg.text}
           status={msg.status}
           timestamp={msg.timestamp}
-          onPress={msg.role !== 'ai' ? () => controllerRef.current.sendLLMQuery(msg.id) : undefined}
+          onPress={
+            msg.role !== 'ai'
+              ? () => controllerRef.current.sendLLMQuery(msg.id)
+              : undefined
+          }
           dark={dark}
         />
       );
@@ -359,9 +376,28 @@ export default function InterviewScreen(): React.JSX.Element {
           <Text style={premiumStyles.captureLabel}>{active ? '结束面试' : '开始面试'}</Text>
         </TouchableOpacity>
       </View>
+      {/* ── 未上传简历提示 ── */}
+      <Modal visible={showNoResume} transparent animationType="fade" statusBarTranslucent>
+        <View style={[premiumStyles.alertBackdrop, {backgroundColor: t.backdrop}]}>
+          <View style={[premiumStyles.alertCard, {backgroundColor: t.bgSurface}, t.shadowLg]}>
+            <Text style={[premiumStyles.alertTitle, {color: t.textPrimary}]}>未上传简历</Text>
+            <Text style={[premiumStyles.alertMsg, {color: t.textSecondary}]}>
+              请先在「我的」页面上传 PDF 简历，AI 将为您生成面试自我介绍
+            </Text>
+            <TouchableOpacity
+              style={[premiumStyles.alertBtn, {backgroundColor: t.accent}]}
+              onPress={() => setShowNoResume(false)}
+              activeOpacity={0.7}>
+              <Text style={premiumStyles.alertBtnText}>知道了</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
       {/* ── 自我介绍弹窗 ── */}
-      <Modal visible={showIntro} animationType="slide" presentationStyle="pageSheet">
-        <SafeAreaView style={[premiumStyles.safe, {backgroundColor: t.bg}]} edges={['top', 'bottom']}>
+      <Modal visible={showIntro} animationType="slide" presentationStyle="pageSheet" statusBarTranslucent transparent>
+        <View style={[premiumStyles.safe, {backgroundColor: t.backdrop, justifyContent: 'flex-end'}]}>
+        <View style={[premiumStyles.introModalCard, {backgroundColor: t.bgSurface}]}>
           <View style={[premiumStyles.introModalHeader, {borderBottomColor: t.divider}]}>
             <View style={{width: 50}} />
             <Text style={[premiumStyles.introModalTitle, {color: t.textPrimary}]}>自我介绍</Text>
@@ -385,7 +421,8 @@ export default function InterviewScreen(): React.JSX.Element {
               </Text>
             </View>
           )}
-        </SafeAreaView>
+        </View>
+        </View>
       </Modal>
     </SafeAreaView>
   );
@@ -528,7 +565,29 @@ const premiumStyles = StyleSheet.create({
   },
   introBtnIcon: {fontSize: 16},
 
+  // ── Alert Modal ──
+  alertBackdrop: {
+    flex: 1, justifyContent: 'center', alignItems: 'center',
+    paddingHorizontal: space['2xl'],
+  },
+  alertCard: {
+    width: '100%', borderRadius: radius.lg, padding: space.xl,
+  },
+  alertTitle: {...type.heading, marginBottom: space.sm},
+  alertMsg: {...type.body, lineHeight: 24, marginBottom: space.xl},
+  alertBtn: {
+    alignSelf: 'flex-end', borderRadius: radius.sm,
+    paddingHorizontal: space.xl, paddingVertical: space.sm + 2,
+  },
+  alertBtnText: {...type.bodySm, color: '#FFFFFF', fontWeight: '700'},
+
   // ── Intro Modal ──
+  introModalCard: {
+    flex: 0.75,
+    borderTopLeftRadius: radius.xl,
+    borderTopRightRadius: radius.xl,
+    overflow: 'hidden',
+  },
   introModalHeader: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     paddingHorizontal: space.lg, paddingVertical: space.md,
