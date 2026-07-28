@@ -12,7 +12,7 @@ from sqlalchemy.orm import DeclarativeBase
 LOCAL_DEV = os.getenv("LOCAL_DEV", "").lower() in ("1", "true", "yes")
 
 if LOCAL_DEV:
-    _db_path = Path(__file__).resolve().parents[2] / "data" / "dev.db"
+    _db_path = Path(__file__).resolve().parents[1] / "data" / "dev.db"
     _db_path.parent.mkdir(parents=True, exist_ok=True)
     DATABASE_URL = f"sqlite+aiosqlite:///{_db_path}"
     _engine_kw = dict(echo=False)
@@ -43,7 +43,7 @@ async def get_db() -> AsyncSession:
 async def init_db():
     """启动时创建所有表。"""
     async with engine.begin() as conn:
-        from app.models.db_models import User, Token  # noqa: F401
+        from app.models.db_models import Resume, Token, User  # noqa: F401
         await conn.run_sync(Base.metadata.create_all)
 
 

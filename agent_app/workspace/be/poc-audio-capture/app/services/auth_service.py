@@ -48,9 +48,33 @@ async def get_or_create_user(db: AsyncSession, email: str) -> tuple[User, bool]:
     result = await db.execute(select(User).where(User.email == email))
     user = result.scalar_one_or_none()
     if user:
+        # 老用户补全默认值
+        dirty = False
+        if not user.name:
+            user.name = email.split("@")[0]
+            dirty = True
+        if not user.membership:
+            user.membership = "高级会员"
+            dirty = True
+        if not user.remaining_seconds:
+            user.remaining_seconds = 86400
+            dirty = True
+        if not user.expires_at:
+            user.expires_at = time.time() + 86400
+            dirty = True
+        if not user.programming_language:
+            user.programming_language = "javascript"
+            dirty = True
+        if not user.interview_language:
+            user.interview_language = "zh"
+            dirty = True
+        if dirty:
+            await db.commit()
+            await db.refresh(user)
         return user, False
 
-    user = User(email=email)
+    name = email.split("@")[0] if "@" in email else email
+    user = User(email=email, name=name)
     db.add(user)
     await db.commit()
     await db.refresh(user)
@@ -119,3 +143,19 @@ async def verify_token(db: AsyncSession, raw_token: str) -> str | None:
             await db.commit()
         return None
     return row.email
+
+
+def user_to_profile(user: User) -> dict:
+    """将 User 模型转为前端需要的 profile 字典。"""
+    return {
+        "email": user.email,
+        "name": user.name or user.email.split("@")[0],
+        "avatar": user.avatar,
+        "membership": user.membership,
+        "remaining_seconds": user.remaining_seconds,
+        "expires_at": user.expires_at,
+        "programming_language": user.programming_language,
+        "interview_language": user.interview_language,
+        "interview_count": user.interview_count,
+        "answer_style": user.answer_style,
+    }

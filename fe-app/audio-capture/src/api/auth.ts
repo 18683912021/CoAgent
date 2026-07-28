@@ -1,55 +1,64 @@
 /**
- * 认证 API —— 邮箱验证码登录 / 注册 / Token 校验
+ * 认证 API —— 邮箱验证码登录 / 注册 / Token 校验 / 用户信息
  */
 
 import {api} from './client';
 
-export interface SendCodeResult {
-  ok: boolean;
-  message: string;
-  cooldown: number;
-}
-
-export interface CheckEmailResult {
-  ok: boolean;
-  exists: boolean;
-}
-
-export interface LoginResult {
-  ok: boolean;
-  token: string;
+export interface UserProfile {
   email: string;
-  is_new: boolean;
-  expires_in: number;
+  name: string;
+  avatar: string;
+  membership: string;
+  remaining_seconds: number;
   expires_at: number;
+  programming_language: string;
+  interview_language: string;
+  interview_count: number;
+  answer_style: string;
 }
 
-export interface VerifyResult {
-  ok: boolean;
-  email: string;
-}
+export interface SendCodeResult { ok: boolean; message: string; cooldown: number; }
+export interface CheckEmailResult { ok: boolean; exists: boolean; }
+export interface LoginResult { ok: boolean; token: string; email: string; is_new?: boolean; expires_in: number; expires_at: number; }
+export interface VerifyResult { ok: boolean; email: string; }
+export interface ProfileResult { ok: boolean; user: UserProfile; }
+export interface DeductResult { ok: boolean; user: UserProfile; }
 
-/** 发送邮箱验证码 */
 export function sendCode(email: string): Promise<SendCodeResult> {
-  return api.post<SendCodeResult>('/api/auth/send-code', {email});
+  return api.post('/api/auth/send-code', {email});
 }
 
-/** 检查邮箱是否已注册 */
 export function checkEmail(email: string): Promise<CheckEmailResult> {
-  return api.post<CheckEmailResult>('/api/auth/check-email', {email});
+  return api.post('/api/auth/check-email', {email});
 }
 
-/** 验证码登录 */
 export function login(email: string, code: string): Promise<LoginResult> {
-  return api.post<LoginResult>('/api/auth/login', {email, code});
+  return api.post('/api/auth/login', {email, code});
 }
 
-/** 验证码注册（带密码） */
+export function loginPassword(email: string, password: string): Promise<LoginResult> {
+  return api.post('/api/auth/login-password', {email, password});
+}
+
 export function register(email: string, code: string, password: string): Promise<LoginResult> {
-  return api.post<LoginResult>('/api/auth/register', {email, code, password});
+  return api.post('/api/auth/register', {email, code, password});
 }
 
-/** 校验 Token 有效性 */
 export function verify(token: string): Promise<VerifyResult> {
-  return api.post<VerifyResult>('/api/auth/verify', {token});
+  return api.post('/api/auth/verify', {token});
+}
+
+/** 获取用户信息（需认证） */
+export function getProfile(): Promise<ProfileResult> {
+  return api.get<ProfileResult>('/api/user/profile', true);
+}
+
+/** 扣除面试时长（需认证） */
+export function deductTime(seconds: number): Promise<DeductResult> {
+  return api.post<DeductResult>('/api/user/deduct-time', {seconds}, true);
+}
+
+/** 更新用户偏好 */
+export function updateProfile(data: {programming_language?: string; interview_language?: string}): Promise<ProfileResult> {
+  return api.put<ProfileResult>('/api/user/profile', data, true);
 }

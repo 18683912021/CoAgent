@@ -222,7 +222,7 @@ Entity Framework 数据访问能力、云服务（Azure/AWS）使用经验、
         # ── 杂项 ──
         "序列化": ["序列化", "序列画", "serializable", "希尔来泽波"],
         "反序列化": ["反序列化", "返序列画", "deserialize"],
-        "特性": ["特性", "attribute", "阿吹biu特", "attribute"],
+        "特性": ["阿吹标", "阿吹biu特"],
         "反射": ["反射", "reflection", "瑞福莱克神", "reflect"],
         "动态": ["dynamic", "dynamic", "dynamic"],
         "多线程": ["多线程", "multithreading", "马欧体斯瑞丁"],

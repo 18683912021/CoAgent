@@ -24,14 +24,15 @@ import {
 import {SafeAreaView} from 'react-native-safe-area-context';
 
 import {useTheme, space, radius, type} from '../theme';
-import {saveToken} from '../utils/token';
+import {saveToken, refreshProfile} from '../utils/token';
 import {useAppAlert} from '../components/AppAlert';
-import {sendCode, checkEmail, login, register} from '../api/auth';
+import {sendCode, checkEmail, login, loginPassword, register} from '../api/auth';
 import {ApiError} from '../api/client';
 import AgreementScreen from './AgreementScreen';
 
 type AuthMode = 'login' | 'register';
 type LoginMethod = 'phone' | 'email';
+type LoginSubMode = 'code' | 'password';
 type AgreementType = 'service' | 'privacy' | null;
 
 export default function AuthScreen({onLogin, onRegister}: {onLogin?: () => void; onRegister?: () => void}) {
@@ -42,6 +43,7 @@ export default function AuthScreen({onLogin, onRegister}: {onLogin?: () => void;
   // TODO: 短信服务接入后改为 true
   const SHOW_PHONE = false;
   const [method, setMethod] = useState<LoginMethod>(SHOW_PHONE ? 'phone' : 'email');
+  const [loginSubMode, setLoginSubMode] = useState<LoginSubMode>('code');
 
   // phone fields
   const [phone, setPhone] = useState('');
@@ -79,9 +81,12 @@ export default function AuthScreen({onLogin, onRegister}: {onLogin?: () => void;
   const canSendCode = isEmailValid && emailCodeCountdown === 0;
   // 提交按钮是否可用
   const codeTrim = emailCode.trim();
-  const canSubmit = isLogin
-    ? (isEmailValid && codeTrim.length > 0 && agreed)
-    : (isEmailValid && codeTrim.length > 0 && password.trim().length >= 6 && password === confirmPwd && agreed);
+  const usePasswordLogin = isLogin && loginSubMode === 'password';
+  const canSubmit = usePasswordLogin
+    ? (isEmailValid && password.trim().length > 0 && agreed)
+    : isLogin
+      ? (isEmailValid && codeTrim.length > 0 && agreed)
+      : (isEmailValid && codeTrim.length > 0 && password.trim().length >= 6 && password === confirmPwd && agreed);
 
   const switchMode = useCallback(() => {
     setMode(m => m === 'login' ? 'register' : 'login');
@@ -89,6 +94,7 @@ export default function AuthScreen({onLogin, onRegister}: {onLogin?: () => void;
     setEmailTouched(false); setEmailError('');
     setPwdTouched(false); setPwdError('');
     setAgreedTouched(false);
+    setLoginSubMode('code');
   }, []);
 
   const handleEmailChange = useCallback((val: string) => {
@@ -120,20 +126,16 @@ export default function AuthScreen({onLogin, onRegister}: {onLogin?: () => void;
     try {
       const {exists} = await checkEmail(email.trim());
       if (isLogin && !exists) {
-        setEmailTouched(true);
-        setEmailError('该邮箱未注册，请先注册');
+        showAlert({title: '无法发送', message: '该邮箱未注册，请先注册'});
         return;
       }
       if (!isLogin && exists) {
-        setEmailTouched(true);
-        setEmailError('该邮箱已注册，请直接登录');
+        showAlert({title: '无法发送', message: '该邮箱已注册，请直接登录'});
         return;
       }
     } catch (err) {
-      if (err instanceof ApiError) {
-        showAlert({title: '发送失败', message: err.detail});
-        return;
-      }
+      showAlert({title: '发送失败', message: err instanceof ApiError ? err.detail : '请稍后重试'});
+      return;
     }
 
     try {
@@ -155,7 +157,7 @@ export default function AuthScreen({onLogin, onRegister}: {onLogin?: () => void;
 
   // ── 倒计时 ──
   const startCountdown = useCallback((setter: React.Dispatch<React.SetStateAction<number>>) => {
-    setter(60);
+    setter(30);
     const id = setInterval(() => {
       setter((prev: number) => { if (prev <= 1) { clearInterval(id); return 0; } return prev - 1; });
     }, 1000);
@@ -188,11 +190,26 @@ export default function AuthScreen({onLogin, onRegister}: {onLogin?: () => void;
       setEmailError(!emailTrimVal ? '请输入邮箱地址' : '邮箱格式不正确');
       return;
     }
-    if (!codeTrimVal) {
-      showAlert({title: '提示', message: '请输入验证码'});
-      return;
-    }
-    if (!isLogin) {
+
+    if (usePasswordLogin) {
+      // 密码登录：校验密码
+      if (!password.trim()) {
+        setPwdTouched(true);
+        setPwdError('请输入密码');
+        return;
+      }
+    } else if (isLogin) {
+      // 验证码登录：校验验证码
+      if (!codeTrimVal) {
+        showAlert({title: '提示', message: '请输入验证码'});
+        return;
+      }
+    } else {
+      // 注册：校验验证码 + 密码
+      if (!codeTrimVal) {
+        showAlert({title: '提示', message: '请输入验证码'});
+        return;
+      }
       if (!password.trim()) {
         setPwdTouched(true);
         setPwdError('请设置密码');
@@ -212,12 +229,18 @@ export default function AuthScreen({onLogin, onRegister}: {onLogin?: () => void;
 
     setLoading(true);
     try {
-      const data = isLogin
-        ? await login(emailTrimVal, codeTrimVal)
-        : await register(emailTrimVal, codeTrimVal, password);
+      let data;
+      if (usePasswordLogin) {
+        data = await loginPassword(emailTrimVal, password);
+      } else if (isLogin) {
+        data = await login(emailTrimVal, codeTrimVal);
+      } else {
+        data = await register(emailTrimVal, codeTrimVal, password);
+      }
 
       if (data.token) {
         await saveToken(data.token);
+        await refreshProfile();
       }
 
       if (isLogin) { onLogin?.(); } else { onRegister?.(); }
@@ -229,7 +252,7 @@ export default function AuthScreen({onLogin, onRegister}: {onLogin?: () => void;
     } finally {
       setLoading(false);
     }
-  }, [isLogin, isPhone, email, phone, emailCode, code, password, confirmPwd, agreed, onLogin, onRegister]);
+  }, [isLogin, isPhone, usePasswordLogin, loginSubMode, email, phone, emailCode, code, password, confirmPwd, agreed, onLogin, onRegister]);
 
   return (
     <SafeAreaView style={[styles.root, {backgroundColor: t.bg}]} edges={['top', 'bottom']}>
@@ -294,7 +317,8 @@ export default function AuthScreen({onLogin, onRegister}: {onLogin?: () => void;
               </>
             )}
 
-            {/* 验证码 */}
+            {/* 验证码输入（非密码登录模式） */}
+            {!usePasswordLogin && (
             <View style={[styles.inputWrap, {backgroundColor: t.bg, borderColor: t.divider}]}>
               <TextInput style={[styles.input, {color: t.textPrimary}]} placeholder="验证码" placeholderTextColor={t.textTertiary} keyboardType="number-pad" maxLength={6} value={isPhone ? code : emailCode} onChangeText={isPhone ? setCode : setEmailCode} />
               <TouchableOpacity
@@ -309,40 +333,56 @@ export default function AuthScreen({onLogin, onRegister}: {onLogin?: () => void;
                 </Text>
               </TouchableOpacity>
             </View>
+            )}
 
-            {/* 注册密码 */}
-            {!isLogin && (
+            {/* 密码输入 */}
+            {(usePasswordLogin || !isLogin) && (
               <>
                 <View style={[styles.inputWrap, {backgroundColor: t.bg, borderColor: pwdError ? t.danger : t.divider}]}>
                   <TextInput
                     ref={pwdRef}
                     style={[styles.input, {color: t.textPrimary}]}
-                    placeholder="设置密码（至少 6 位）"
+                    placeholder={usePasswordLogin ? '输入密码' : '设置密码（至少 6 位）'}
                     placeholderTextColor={t.textTertiary}
                     secureTextEntry
                     value={password}
                     onChangeText={handlePasswordChange}
-                    onBlur={() => { setPwdTouched(true); if (password && password.length < 6) { setPwdError('密码至少 6 位'); } }}
-                    returnKeyType="next"
-                    onSubmitEditing={() => confirmRef.current?.focus()}
+                    returnKeyType={!isLogin ? 'next' : 'done'}
+                    onSubmitEditing={!isLogin ? () => confirmRef.current?.focus() : undefined}
                   />
                 </View>
-                <View style={[styles.inputWrap, {backgroundColor: t.bg, borderColor: pwdError ? t.danger : t.divider}]}>
-                  <TextInput
-                    ref={confirmRef}
-                    style={[styles.input, {color: t.textPrimary}]}
-                    placeholder="确认密码"
-                    placeholderTextColor={t.textTertiary}
-                    secureTextEntry
-                    value={confirmPwd}
-                    onChangeText={newVal => { setConfirmPwd(newVal); if (pwdError) { setPwdError(''); } }}
-                    returnKeyType="done"
-                  />
-                </View>
+                {/* 注册模式：确认密码 */}
+                {!isLogin && (
+                  <View style={[styles.inputWrap, {backgroundColor: t.bg, borderColor: pwdError ? t.danger : t.divider}]}>
+                    <TextInput
+                      ref={confirmRef}
+                      style={[styles.input, {color: t.textPrimary}]}
+                      placeholder="确认密码"
+                      placeholderTextColor={t.textTertiary}
+                      secureTextEntry
+                      value={confirmPwd}
+                      onChangeText={newVal => { setConfirmPwd(newVal); if (pwdError) { setPwdError(''); } }}
+                      returnKeyType="done"
+                    />
+                  </View>
+                )}
                 {pwdTouched && pwdError ? (
                   <Text style={[styles.hint, {color: t.danger}]}>{pwdError}</Text>
                 ) : null}
               </>
+            )}
+
+            {/* 登录模式：验证码 / 密码 切换 */}
+            {isLogin && (
+              <View style={styles.loginMethodRow}>
+                <TouchableOpacity onPress={() => setLoginSubMode('code')} activeOpacity={0.6}>
+                  <Text style={[styles.loginMethodText, {color: loginSubMode === 'code' ? t.accent : t.textTertiary}]}>验证码登录</Text>
+                </TouchableOpacity>
+                <Text style={[styles.loginMethodSep, {color: t.dividerStrong}]}>|</Text>
+                <TouchableOpacity onPress={() => setLoginSubMode('password')} activeOpacity={0.6}>
+                  <Text style={[styles.loginMethodText, {color: loginSubMode === 'password' ? t.accent : t.textTertiary}]}>密码登录</Text>
+                </TouchableOpacity>
+              </View>
             )}
 
             {/* 协议 */}
@@ -436,6 +476,14 @@ const styles = StyleSheet.create({
     padding: 22,
     gap: 14,
   },
+
+  // ── Login method toggle ──
+  loginMethodRow: {
+    flexDirection: 'row', justifyContent: 'flex-end',
+    alignItems: 'center', gap: 8,
+  },
+  loginMethodText: {fontSize: 12, fontWeight: '600'},
+  loginMethodSep: {fontSize: 11},
 
   // ── Switch ──
   switchRow: {flexDirection: 'row', marginBottom: 1},

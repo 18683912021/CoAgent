@@ -528,6 +528,39 @@ class AudioCaptureModule(
     putString("wavSha256", result.wavSha256)
   }
 
+  @ReactMethod
+  fun storePreference(key: String, value: String, promise: Promise) {
+    try {
+      val prefs = reactApplicationContext.getSharedPreferences("ai_interview_prefs", Context.MODE_PRIVATE)
+      prefs.edit().putString(key, value).apply()
+      promise.resolve(null)
+    } catch (e: Exception) {
+      promise.reject("E_PREF", e.message, e)
+    }
+  }
+
+  @ReactMethod
+  fun getPreference(key: String, promise: Promise) {
+    try {
+      val prefs = reactApplicationContext.getSharedPreferences("ai_interview_prefs", Context.MODE_PRIVATE)
+      val value = prefs.getString(key, null)
+      promise.resolve(value)
+    } catch (e: Exception) {
+      promise.reject("E_PREF", e.message, e)
+    }
+  }
+
+  @ReactMethod
+  fun removePreference(key: String, promise: Promise) {
+    try {
+      val prefs = reactApplicationContext.getSharedPreferences("ai_interview_prefs", Context.MODE_PRIVATE)
+      prefs.edit().remove(key).apply()
+      promise.resolve(null)
+    } catch (e: Exception) {
+      promise.reject("E_PREF", e.message, e)
+    }
+  }
+
   private fun formatToMap(format: AudioFormatSpec): WritableMap = Arguments.createMap().apply {
     putInt("sampleRate", format.sampleRate)
     putInt("channelCount", format.channelCount)

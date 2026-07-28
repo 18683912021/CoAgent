@@ -107,7 +107,7 @@ class LLMService:
             raise RuntimeError("ANTHROPIC_API_KEY 未配置")
 
         # ── 代码级 ASR 纠正（微秒级） ──
-        corrected = correct_asr_text(question)
+        corrected = correct_asr_text(question, track)
 
         system_prompt = build_system_prompt(track, language)
 

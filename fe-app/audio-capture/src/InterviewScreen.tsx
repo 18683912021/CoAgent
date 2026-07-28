@@ -23,6 +23,9 @@ import SeparatorLine from './components/SeparatorLine';
 import {useAppAlert} from './components/AppAlert';
 import {useTheme, space, radius, type} from './theme';
 import {hasResume, getIntro} from './api/resume';
+import {deductTime} from './api/auth';
+import {refreshProfile} from './utils/token';
+import {setInterviewActive} from './utils/interviewState';
 
 // ── Display item for FlatList (bubble or separator) ──
 type DisplayItem =
@@ -122,12 +125,15 @@ export default function InterviewScreen(): React.JSX.Element {
   }, []);
 
   const active = state.captureState === 'capturing';
+  // 面试中锁定 Tab 切换
+  useEffect(() => { setInterviewActive(active); }, [active]);
   // 面试计时
   const [elapsed, setElapsed] = useState(0);
+  const elapsedRef = useRef(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   useEffect(() => {
     if (active) {
-      timerRef.current = setInterval(() => setElapsed(e => e + 1), 1000);
+      timerRef.current = setInterval(() => setElapsed(e => { const v = e + 1; elapsedRef.current = v; return v; }), 1000);
     } else {
       if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
       setElapsed(0);
@@ -135,6 +141,17 @@ export default function InterviewScreen(): React.JSX.Element {
     return () => { if (timerRef.current) { clearInterval(timerRef.current); } };
   }, [active]);
   const fmtElapsed = () => { const m = Math.floor(elapsed / 60); const s = elapsed % 60; return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`; };
+  // 扣除面试时长 → 刷新用户信息
+  const deductElapsed = useCallback(async () => {
+    const seconds = elapsedRef.current;
+    if (seconds < 10) { return; }
+    try {
+      await deductTime(seconds);
+      await refreshProfile();
+    } catch (e) {
+      console.log('[deduct] failed:', e);
+    }
+  }, []);
 
   const connecting = state.streamState === 'connecting';
   const streamReady = state.streamState === 'ready';
@@ -176,20 +193,25 @@ export default function InterviewScreen(): React.JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversation]);
 
+  // 滚动回底按钮逻辑
+  const scrollDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
   const scrollToEnd = useCallback((force = false) => {
     if (!force && !isNearBottom.current) { return; }
-    setTimeout(() => flatListRef.current?.scrollToEnd({animated: false}), 50);
+    flatListRef.current?.scrollToEnd({animated: false});
   }, []);
 
   const onContentSizeChange = useCallback(() => scrollToEnd(), [scrollToEnd]);
-
   const onFlatListLayout = useCallback(() => scrollToEnd(true), [scrollToEnd]);
 
   const onScroll = useCallback((event: {nativeEvent: {contentOffset: {y: number}; contentSize: {height: number}; layoutMeasurement: {height: number}}}) => {
     const {contentOffset, contentSize, layoutMeasurement} = event.nativeEvent;
     const distToBottom = contentSize.height - contentOffset.y - layoutMeasurement.height;
-    isNearBottom.current = distToBottom < 50;
-    setShowScrollBtn(distToBottom > 200);
+    isNearBottom.current = distToBottom < 60;
+    // 防抖 100ms，避免频繁切换
+    if (scrollDebounce.current) { clearTimeout(scrollDebounce.current); }
+    scrollDebounce.current = setTimeout(() => {
+      setShowScrollBtn(distToBottom > 300 && contentSize.height > layoutMeasurement.height * 1.2);
+    }, 100);
   }, []);
 
   // 用 ref 稳定回调引用，避免 renderItem 随每次转录事件重建
@@ -231,6 +253,16 @@ export default function InterviewScreen(): React.JSX.Element {
     : connecting
       ? {label: '连接中', color: t.warning, dot: true}
       : {label: '就绪', color: t.accent, dot: false};
+
+  // 面试结束时扣除时长
+  const wasCapturing = useRef(false);
+  useEffect(() => {
+    if (state.captureState === 'capturing') { wasCapturing.current = true; }
+    if (wasCapturing.current && (state.captureState === 'completed' || state.captureState === 'idle')) {
+      wasCapturing.current = false;
+      deductElapsed();
+    }
+  }, [state.captureState, deductElapsed]);
 
   const handleStop = () => {
     showAlert({
@@ -322,10 +354,8 @@ export default function InterviewScreen(): React.JSX.Element {
           showsVerticalScrollIndicator={false}
           ListFooterComponent={<View style={{height: space.lg}} />}
           keyboardShouldPersistTaps="handled"
-          maxToRenderPerBatch={5}
-          updateCellsBatchingPeriod={30}
-          windowSize={5}
-          removeClippedSubviews={Platform.OS === 'android'}
+          maxToRenderPerBatch={10}
+          windowSize={10}
         />
       )}
 

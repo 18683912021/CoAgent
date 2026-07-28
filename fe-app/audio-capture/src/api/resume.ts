@@ -25,12 +25,12 @@ export interface UploadResult {
 
 /** 获取自我介绍 */
 export function getIntro(): Promise<IntroResult> {
-  return api.get<IntroResult>('/api/resume/intro');
+  return api.get<IntroResult>('/api/resume/intro', true);
 }
 
 /** 检查是否已上传简历 */
 export function hasResume(): Promise<HasResult> {
-  return api.get<HasResult>('/api/resume/has');
+  return api.get<HasResult>('/api/resume/has', true);
 }
 
 /** 上传 PDF 简历 */

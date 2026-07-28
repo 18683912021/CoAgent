@@ -78,20 +78,36 @@ _CORRECTIONS_BY_LEN: list[tuple[int, str, str]] = []
 _LOADED = False
 
 
-def _load_terms() -> None:
-    """延迟加载 tracks 术语表（避免循环导入）。"""
-    global _TERM_VARIANTS, _CORRECTIONS, _CORRECTIONS_BY_LEN, _LOADED
-    if _LOADED:
+_TRACK_LOADED: str | None = None  # 当前已加载的 track_key
+
+def _load_terms(track_key: str | None = None) -> None:
+    """延迟加载术语表。track_key 为 None 时只加载 common 术语。"""
+    global _TERM_VARIANTS, _CORRECTIONS, _CORRECTIONS_BY_LEN, _TRACK_LOADED
+    key = track_key or "common"
+    if _TRACK_LOADED == key:
         return
-    _LOADED = True
-    from app.services.tracks import get_all_terms
-    _TERM_VARIANTS = get_all_terms()
+    _TRACK_LOADED = key
+    from app.services.tracks import get_track
+    from app.services.tracks.common import TRACK as common_track
+
+    terms: dict[str, list[str]] = dict(common_track.get("terms", {}))
+    if track_key:
+        track = get_track(track_key)
+        if track:
+            for term, variants in track.get("terms", {}).items():
+                if term in terms:
+                    terms[term].extend(variants)
+                else:
+                    terms[term] = list(variants)
+
+    _TERM_VARIANTS = terms
     _CORRECTIONS = _build_lookup()
     _CORRECTIONS = [(w, c) for w, c in _CORRECTIONS if len(w) > 1]
     _CORRECTIONS_BY_LEN = sorted(
         [(len(w), w, c) for w, c in _CORRECTIONS],
         key=lambda x: -x[0],
     )
+    logger.info("ASR 纠正器已加载 track=%s，%d 个术语", key, len(terms))
 
 
 def _build_lookup() -> list[tuple[str, str]]:
@@ -155,7 +171,7 @@ def _pinyin_fuzzy_correct(text: str, threshold: float = 0.72) -> str:
 # 公开 API
 # ══════════════════════════════════════════════════════════════════
 
-def correct_asr_text(text: str) -> str:
+def correct_asr_text(text: str, track_key: str | None = None) -> str:
     """双层纠正。
 
     Layer 1 — 精确匹配（跳过长匹配 + 简单 str.replace，微秒级）
@@ -164,7 +180,7 @@ def correct_asr_text(text: str) -> str:
     if not text or not text.strip():
         return text
 
-    _load_terms()
+    _load_terms(track_key)
 
     original = text
     max_len = len(text)
@@ -174,8 +190,6 @@ def correct_asr_text(text: str) -> str:
             continue
         if wrong in text:
             text = text.replace(wrong, correct)
-
-    # text = _pinyin_fuzzy_correct(text)
 
     text = re.sub(r'\s{2,}', ' ', text).strip()
 

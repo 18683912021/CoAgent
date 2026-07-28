@@ -65,7 +65,23 @@ def _load() -> None:
         except Exception:
             logger.exception("加载赛道失败: %s", path)
 
-    _all_terms = merged_terms
+    # 清理：通用中文词不能作为英文术语的变体，否则会导致误纠正
+    # 如 "特性"→"attribute"、"事件"→"Event"
+    _CN_BLACKLIST = {
+        '特性', '属性', '事件', '模块', '状态', '路由', '渲染', '组件',
+        '服务', '实例', '接口', '方法', '对象', '类型', '泛型', '继承',
+        '多态', '封装', '抽象', '反射', '注解', '配置', '部署', '日志',
+        '缓存', '消息', '队列', '线程', '进程', '内存', '编译', '调试',
+        '测试', '异常', '序列', '并发', '同步', '异步', '指针', '函数',
+    }
+    cleaned: dict[str, list[str]] = {}
+    for term, variants in merged_terms.items():
+        term_is_cn = any(ord(c) > 127 for c in term)
+        if term_is_cn:
+            cleaned[term] = variants
+        else:
+            cleaned[term] = [v for v in variants if v not in _CN_BLACKLIST]
+    _all_terms = cleaned
     logger.info("全部赛道加载完成，%d 个赛道，%d 个术语", len(_tracks), len(_all_terms))
 
 

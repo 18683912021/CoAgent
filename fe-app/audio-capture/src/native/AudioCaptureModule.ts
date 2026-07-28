@@ -136,4 +136,16 @@ export const AudioCapture = {
   async pickPDF(): Promise<{uri: string; name: string; type: string; size: number} | null> {
     return NativeModules.FilePicker?.pickPDF() ?? null;
   },
+
+  storePreference(key: string, value: string): Promise<void> {
+    return requireNative().storePreference(key, value);
+  },
+
+  getPreference(key: string): Promise<string | null> {
+    return requireNative().getPreference(key);
+  },
+
+  removePreference(key: string): Promise<void> {
+    return requireNative().removePreference(key);
+  },
 };

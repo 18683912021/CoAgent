@@ -61,6 +61,7 @@ async def audio_stream(ws: WebSocket):
     llm_worker_task: "asyncio.Task | None" = None
     llm_service: LLMService | None = None
     llm_config: dict[str, Any] = {}  # FE 可通过 config 帧动态覆盖 enabled/max_tokens/model
+    current_track: list[str] = ["javascript"]  # 可变容器，sender 和 config handler 共享引用
 
     legacy_session: AudioSession | None = None
     legacy_validator: PCMValidator | None = None
@@ -126,8 +127,12 @@ async def audio_stream(ws: WebSocket):
                             llm_config["model"] = llm_cfg.get("model")
                         else:
                             llm_config.clear()
-                        logger.info("LLM config 已更新: %s", llm_config)
-                        await ws.send_json({"type": "config_ack", "llm": llm_config})
+                        # 赛道切换
+                        track_val = payload.get("track")
+                        if track_val and isinstance(track_val, str):
+                            current_track[0] = track_val.lower()
+                        logger.info("LLM config 已更新: %s, track=%s", llm_config, current_track[0])
+                        await ws.send_json({"type": "config_ack", "llm": llm_config, "track": current_track[0]})
 
                     elif msg_type == "llm_query":
                         # ── 手动触发 LLM——总是响应用户最新点击 ──
@@ -169,7 +174,7 @@ async def audio_stream(ws: WebSocket):
                         if was_new and v1_session is not None and _ASR_READY:
                             if sender_task is None:
                                 sender_task = asyncio.create_task(
-                                    _transcription_sender(ws)
+                                    _transcription_sender(ws, current_track[0])
                                 )
                             source_mode = payload.get("source_mode", "mic")
                             track_sources: list[str] = []
@@ -398,17 +403,22 @@ async def safe_send_error(ws: WebSocket, code: str, message: str) -> None:
         pass
 
 
-async def _transcription_sender(ws: WebSocket):
+async def _transcription_sender(ws: WebSocket, track: str | None = None):
     """后台任务：从队列取转录消息并发送到客户端。
     发送前先经 asr_text_corrector 纠正，前端看到的已是修正后的文本。"""
     from app.services.asr_text_corrector import correct_asr_text
 
-    logger.info("转录发送器已启动（含ASR纠正）")
+    logger.info("转录发送器已启动（含ASR纠正，track=%s）", track)
     try:
         while True:
             text, is_final, source = await _transcription_queue.get()
+            logger.info("转录发送器收到: [%s] %s (final=%s)", source, text[:50], is_final)
             try:
-                corrected = correct_asr_text(text)
+                corrected = correct_asr_text(text, track)
+            except Exception as e:
+                logger.exception("ASR 纠正异常，用原文: %.30s", text[:30])
+                corrected = text
+            try:
                 await ws.send_json({
                     "type": "transcription",
                     "text": corrected,

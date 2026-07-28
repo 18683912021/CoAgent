@@ -591,7 +591,7 @@ STL（容器/算法/迭代器/allocator）、C++11/14/17/20/23 新特性、
         "implicit转换": ["implicit转换", "implicit cast", "隐式转换"],
         "窄化转换": ["窄化转换", "narrowing conversion", "narrowing"],
         "用户定义字面量": ["用户定义字面量", "user defined literal", "user literal", "自定义字面量"],
-        "attribute": ["attribute", "at tribute", "attribute", "阿吹标", "属性", "c++属性", "特性"],
+        "attribute": ["attribute", "at tribute", "阿吹标"],
         "deprecated": ["deprecated", "de pre cat ed", "deprecated", "已弃用"],
         "maybe_unused": ["maybeunused", "maybe unused", "maybe unused"],
         "fallthrough": ["fallthrough", "fall through", "fall through"],

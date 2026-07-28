@@ -146,4 +146,7 @@ export interface AudioCaptureNativeModule {
   retryBackfill(): Promise<void>;
   sendControl(message: string): void;
   shareOutput(sessionId: string, source: TrackSource, kind: 'pcm' | 'wav'): Promise<void>;
+  storePreference(key: string, value: string): Promise<void>;
+  getPreference(key: string): Promise<string | null>;
+  removePreference(key: string): Promise<void>;
 }

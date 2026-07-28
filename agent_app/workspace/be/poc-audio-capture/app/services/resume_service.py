@@ -1,30 +1,24 @@
-"""简历服务：PDF 解析 → LLM 生成自我介绍 → 持久化存储。
+"""简历服务：PDF 解析 → LLM 生成自我介绍 → 按用户存 PostgreSQL。
 
-存储位置：workspace/shared/resume_intro.json
+每个用户独立存储，不共享。
 """
 
-import json
 import logging
-import os
 from datetime import datetime, timezone
 from io import BytesIO
-from pathlib import Path
 from typing import Optional
 
 import pdfplumber
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.db_models import Resume
 from app.services.llm_service import LLMService
 
 logger = logging.getLogger("resume")
 
-# 存储路径
-_STORAGE_DIR = Path(__file__).resolve().parents[3] / "shared" / "resume"
-_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
-_INTRO_FILE = _STORAGE_DIR / "intro.json"
-
 
 def _build_self_intro_prompt(resume_text: str, track_key: str | None = None) -> str:
-    """生成自我介绍的 LLM 提示词。track_key 控制赛道侧重。"""
     track_extra = ""
     if track_key:
         from app.services.tracks import get_track
@@ -50,7 +44,6 @@ def _build_self_intro_prompt(resume_text: str, track_key: str | None = None) -> 
 
 
 def parse_pdf(file_bytes: bytes) -> str:
-    """解析 PDF 文件，返回纯文本。"""
     text_parts: list[str] = []
     with pdfplumber.open(BytesIO(file_bytes)) as pdf:
         for page in pdf.pages:
@@ -61,7 +54,6 @@ def parse_pdf(file_bytes: bytes) -> str:
 
 
 async def generate_intro(resume_text: str, track_key: str | None = None) -> str:
-    """调用 LLM 生成自我介绍。"""
     llm = LLMService()
     if not llm.ready:
         raise RuntimeError("LLM API Key 未配置，无法生成自我介绍")
@@ -77,29 +69,27 @@ async def generate_intro(resume_text: str, track_key: str | None = None) -> str:
     return full_text.strip()
 
 
-def save_intro(intro: str, filename: str = "") -> dict:
-    """保存自我介绍到持久化存储，返回存储的数据。"""
-    data = {
-        "intro": intro,
-        "filename": filename,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "resume_hash": "",  # 后续可用于检测简历变更
-    }
-    _INTRO_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    logger.info("自我介绍已保存: %s", _INTRO_FILE)
-    return data
+async def save_resume(db: AsyncSession, email: str, intro: str, filename: str = "") -> Resume:
+    """保存或更新用户的自我介绍。"""
+    result = await db.execute(select(Resume).where(Resume.email == email))
+    row = result.scalar_one_or_none()
+    if row:
+        row.intro = intro
+        row.filename = filename
+    else:
+        row = Resume(email=email, intro=intro, filename=filename)
+        db.add(row)
+    await db.commit()
+    await db.refresh(row)
+    logger.info("简历已保存: %s", email)
+    return row
 
 
-def load_intro() -> Optional[dict]:
-    """加载已存储的自我介绍，无数据返回 None。"""
-    if not _INTRO_FILE.exists():
-        return None
-    try:
-        return json.loads(_INTRO_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return None
+async def get_resume(db: AsyncSession, email: str) -> Resume | None:
+    result = await db.execute(select(Resume).where(Resume.email == email))
+    return result.scalar_one_or_none()
 
 
-def has_intro() -> bool:
-    """是否有已生成的自我介绍。"""
-    return _INTRO_FILE.exists()
+async def has_resume(db: AsyncSession, email: str) -> bool:
+    result = await db.execute(select(Resume).where(Resume.email == email))
+    return result.scalar_one_or_none() is not None

@@ -24,8 +24,12 @@ import {getProgLang, setProgLang, type ProgLang} from '../config';
 import {useTheme, space, radius, type} from '../theme';
 import {useAppAlert} from '../components/AppAlert';
 import {AuthContext} from '../utils/AuthContext';
+import {getProfile} from '../utils/token';
 import {hasResume, uploadResume} from '../api/resume';
 import {ApiError} from '../api/client';
+import type {UserProfile} from '../api/auth';
+import {updateProfile as updateProfileApi} from '../api/auth';
+import {saveProfile} from '../utils/token';
 
 const PROGRAMMING_LANGUAGES = ['JavaScript', 'Java', 'Python', 'C#', 'C++', 'Go'] as const;
 type ProgrammingLanguage = (typeof PROGRAMMING_LANGUAGES)[number];
@@ -38,19 +42,16 @@ interface MenuItem {
   onPress?: () => void;
 }
 
-// ── Mock Data（后续接入真实数据源） ──
-const USER = {
-  name: '前端开发者',
-  avatar: '👨‍💻',
-  membership: '高级会员',
-  remainingSeconds: 23 * 3600 + 45 * 60 + 12, // 23:45:12
-};
-
 function formatTime(totalSeconds: number): string {
   const h = Math.floor(totalSeconds / 3600);
   const m = Math.floor((totalSeconds % 3600) / 60);
   const s = totalSeconds % 60;
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
+function formatExpiry(timestamp: number): string {
+  const d = new Date(timestamp * 1000);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
 // ── Menu Row Component ──
@@ -90,16 +91,37 @@ function SectionTitle({title}: {title: string}) {
 }
 
 // ── Screen ──
-export default function ProfileScreen(): React.JSX.Element {
+export default function ProfileScreen({isFocused}: {isFocused?: boolean}): React.JSX.Element {
   const dark = useColorScheme() === 'dark';
   const t = useTheme(dark);
   const {showAlert} = useAppAlert();
   const {logout} = useContext(AuthContext);
   const [progLang, setProgLangLocal] = useState<ProgLang>(getProgLang());
   const [showLangPicker, setShowLangPicker] = useState(false);
+  const [profile, setProfile] = useState<UserProfile | null>(null);
 
   const [resumeLabel, setResumeLabel] = useState('未上传');
   const [uploading, setUploading] = useState(false);
+
+  useEffect(() => {
+    getProfile().then(p => setProfile(p ?? null));
+  }, []);
+
+  useEffect(() => {
+    if (isFocused) {
+      getProfile().then(p => {
+        if (p) {
+          setProfile(p);
+          // 同步编程语言到全局 config
+          if (p.programming_language) {
+            const lang = p.programming_language.charAt(0).toUpperCase() + p.programming_language.slice(1) as ProgLang;
+            setProgLang(lang);
+            setProgLangLocal(lang);
+          }
+        }
+      });
+    }
+  }, [isFocused]);
 
   // 检查是否已有简历
   useEffect(() => {
@@ -142,14 +164,14 @@ export default function ProfileScreen(): React.JSX.Element {
     {
       title: '数据',
       items: [
-        {icon: '📋', label: '面试历史', value: '12 次', onPress: () => {}},
+        {icon: '📋', label: '面试历史', value: `${profile?.interview_count ?? 0} 次`, onPress: () => {}},
       ],
     },
     {
       title: '偏好',
       items: [
         {icon: '🌐', label: '面试语言', value: progLang, onPress: () => setShowLangPicker(true)},
-        {icon: '✍️', label: '答案风格', value: '标准书面', onPress: () => {}},
+        {icon: '✍️', label: '答案风格', value: profile?.answer_style ?? '标准书面', onPress: () => {}},
         {icon: '📄', label: '简历上传', value: uploading ? '上传中…' : resumeLabel, onPress: handleUploadResume},
       ],
     },
@@ -181,12 +203,12 @@ export default function ProfileScreen(): React.JSX.Element {
           {/* Avatar + Name */}
           <View style={styles.headerTop}>
             <View style={[styles.avatar, {backgroundColor: t.accentLight, borderColor: t.accent}]}>
-              <Text style={styles.avatarText}>{USER.avatar}</Text>
+              <Text style={styles.avatarText}>{profile?.avatar ?? '👨‍💻'}</Text>
             </View>
             <View style={styles.nameBlock}>
-              <Text style={[styles.userName, {color: t.textPrimary}]}>{USER.name}</Text>
+              <Text style={[styles.userName, {color: t.textPrimary}]}>{profile?.name ?? '--'}</Text>
               <View style={[styles.membershipBadge, {backgroundColor: t.accent}]}>
-                <Text style={styles.membershipText}>✨ {USER.membership}</Text>
+                <Text style={styles.membershipText}>✨ {profile?.membership ?? '高级会员'}</Text>
               </View>
             </View>
           </View>
@@ -196,12 +218,12 @@ export default function ProfileScreen(): React.JSX.Element {
             <View style={styles.timeLeft}>
               <Text style={[styles.timeLabel, {color: t.textSecondary}]}>剩余时长</Text>
               <Text style={[styles.timeValue, {color: t.accent}]}>
-                {formatTime(USER.remainingSeconds)}
+                {profile ? formatTime(profile.remaining_seconds) : '--:--:--'}
               </Text>
             </View>
             <View style={styles.timeMeta}>
               <Text style={[styles.timeMetaText, {color: t.textTertiary}]}>
-                有效期至 2026-08-24
+                有效期至 {profile ? formatExpiry(profile.expires_at) : '----'}
               </Text>
               <TouchableOpacity activeOpacity={0.6}>
                 <Text style={[styles.renewBtn, {color: t.accent}]}>续费 ›</Text>
@@ -248,7 +270,12 @@ export default function ProfileScreen(): React.JSX.Element {
                   pickerStyles.option,
                   {backgroundColor: lang === progLang ? t.accentLight : 'transparent'},
                 ]}
-                onPress={() => { setProgLangLocal(lang); setProgLang(lang); setShowLangPicker(false); }}
+                onPress={() => {
+                setProgLangLocal(lang); setProgLang(lang); setShowLangPicker(false);
+                updateProfileApi({programming_language: lang.toLowerCase()}).then(d => {
+                  if (d.user) { saveProfile(d.user); setProfile(d.user); }
+                }).catch(() => {});
+              }}
                 activeOpacity={0.6}>
                 <Text style={[pickerStyles.optionText, {
                   color: lang === progLang ? t.accent : t.textPrimary,

@@ -137,7 +137,8 @@ function reducer(state: ControllerState, action: Action): ControllerState {
     case 'streamStats':
       return {...state, streamStats: action.value};
     case 'result':
-      return {...state, result: action.value, captureState: 'completed', levels: EMPTY_LEVELS};
+      return {...state, result: action.value, captureState: 'completed', levels: EMPTY_LEVELS,
+        conversation: [], pendingLLMQueue: [], currentStreamingAIId: null};
     case 'error':
       return {...state, error: action.value};
     case 'snapshot':
@@ -589,6 +590,8 @@ export function useAudioCaptureController() {
         dispatch({type: 'streamState', value: 'idle'});
       }
       try { await AudioCapture.connectStream(STREAM_URL); } catch (e) { /* 可选 */ }
+      // 发送初始赛道配置
+      AudioCapture.sendControl({type: 'config', llm: {}, track: getProgLang().toLowerCase()});
       operationCounter.current += 1;
       const operationId = `${Date.now()}-${operationCounter.current}`;
       dispatch({type: 'captureState', value: 'preparing', payload: {result: null, startedAtUtc: null}});
@@ -694,6 +697,7 @@ export function useAudioCaptureController() {
     AudioCapture.sendControl({
       type: 'config',
       llm: llmConfig,
+      track: getProgLang().toLowerCase(),
     });
     if (__DEV__) { console.log('[LLM] 发送 config:', JSON.stringify(llmConfig)); }
   }, []);

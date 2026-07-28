@@ -13,6 +13,7 @@
 import React, {createContext, useCallback, useContext, useRef, useState} from 'react';
 import {
   Animated,
+  Keyboard,
   Modal,
   Pressable,
   StyleSheet,
@@ -66,6 +67,7 @@ export function AppAlertProvider({children}: {children: React.ReactNode}) {
   const configRef = useRef<AlertConfig>({title: '', message: ''});
 
   const showAlert = useCallback((cfg: AlertConfig) => {
+    Keyboard.dismiss();
     configRef.current = cfg;
     setConfig(cfg);
     setVisible(true);

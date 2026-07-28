@@ -5,6 +5,7 @@
  */
 
 import {API_BASE} from '../config';
+import {getToken} from '../utils/token';
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 
@@ -18,11 +19,21 @@ export class ApiError extends Error {
   }
 }
 
+async function _headers(withAuth: boolean, extra: Record<string, string> = {}): Promise<Record<string, string> | undefined> {
+  const h: Record<string, string> = {...extra};
+  if (withAuth) {
+    const token = await getToken();
+    if (token) { h['Authorization'] = `Bearer ${token}`; }
+  }
+  return Object.keys(h).length > 0 ? h : undefined;
+}
+
 async function request<T = any>(
   method: string,
   path: string,
   body?: Record<string, unknown>,
   timeoutMs: number = DEFAULT_TIMEOUT_MS,
+  withAuth: boolean = false,
 ): Promise<T> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -30,7 +41,9 @@ async function request<T = any>(
   try {
     const res = await fetch(`${API_BASE}${path}`, {
       method,
-      headers: body ? {'Content-Type': 'application/json'} : undefined,
+      headers: body
+        ? {...(await _headers(withAuth)), 'Content-Type': 'application/json'}
+        : await _headers(withAuth),
       body: body ? JSON.stringify(body) : undefined,
       signal: controller.signal,
     });
@@ -38,7 +51,12 @@ async function request<T = any>(
     const data = await res.json().catch(() => ({}));
 
     if (!res.ok) {
-      throw new ApiError(res.status, data.detail || `请求失败 (${res.status})`);
+      let detail = data.detail || `请求失败 (${res.status})`;
+      // Pydantic 422 返回 [{type, loc, msg, input}]，提取 msg
+      if (Array.isArray(detail)) {
+        detail = detail.map((e: any) => e.msg || JSON.stringify(e)).join('；');
+      }
+      throw new ApiError(res.status, detail);
     }
 
     return data as T;
@@ -54,21 +72,31 @@ async function request<T = any>(
 }
 
 export const api = {
-  get: <T = any>(path: string) => request<T>('GET', path),
-  post: <T = any>(path: string, body?: Record<string, unknown>) =>
-    request<T>('POST', path, body),
+  get: <T = any>(path: string, withAuth = false) => request<T>('GET', path, undefined, DEFAULT_TIMEOUT_MS, withAuth),
+  post: <T = any>(path: string, body?: Record<string, unknown>, withAuth = false) =>
+    request<T>('POST', path, body, DEFAULT_TIMEOUT_MS, withAuth),
+  put: <T = any>(path: string, body?: Record<string, unknown>, withAuth = false) =>
+    request<T>('PUT', path, body, DEFAULT_TIMEOUT_MS, withAuth),
   upload: <T = any>(path: string, formData: FormData) => {
-    // 上传不设 Content-Type，让浏览器自动带 boundary
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 30_000);
-    return fetch(`${API_BASE}${path}`, {
-      method: 'POST',
-      body: formData,
-      signal: controller.signal,
+    return getToken().then(token => {
+      const headers: Record<string, string> = {};
+      if (token) { headers['Authorization'] = `Bearer ${token}`; }
+      return fetch(`${API_BASE}${path}`, {
+        method: 'POST',
+        body: formData,
+        headers,
+        signal: controller.signal,
+      });
     }).then(async res => {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        throw new ApiError(res.status, data.detail || '上传失败');
+        let detail = data.detail || '上传失败';
+        if (Array.isArray(detail)) {
+          detail = detail.map((e: any) => e.msg || JSON.stringify(e)).join('；');
+        }
+        throw new ApiError(res.status, detail);
       }
       return data as T;
     }).finally(() => clearTimeout(timer));

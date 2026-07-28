@@ -14,7 +14,7 @@ import random
 import smtplib
 import string
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,6 +31,7 @@ from app.services.auth_service import (
     verify_password,
     create_token,
     verify_token,
+    user_to_profile,
     TOKEN_TTL,
 )
 
@@ -53,6 +54,10 @@ class LoginRequest(BaseModel):
 class RegisterRequest(BaseModel):
     email: str
     code: str
+    password: str
+
+class PasswordLoginRequest(BaseModel):
+    email: str
     password: str
 
 class VerifyRequest(BaseModel):
@@ -139,6 +144,29 @@ async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
     }
 
 
+@router.post("/auth/login-password")
+async def login_password(body: PasswordLoginRequest, db: AsyncSession = Depends(get_db)):
+    """密码登录。返回 token，15 天有效。"""
+    email = body.email.strip().lower()
+    password = body.password
+
+    if not email or not password:
+        raise HTTPException(400, "邮箱和密码不能为空")
+
+    user = await get_user_by_email(db, email)
+    if not user or not user.password_hash:
+        raise HTTPException(401, "该邮箱未注册，请先注册")
+    if not verify_password(password, user.password_hash):
+        raise HTTPException(401, "密码错误")
+
+    token_str, expires_at = await create_token(db, email)
+    logger.info("用户密码登录成功: %s", email)
+    return {
+        "ok": True, "token": token_str, "email": email,
+        "expires_in": TOKEN_TTL, "expires_at": expires_at,
+    }
+
+
 @router.post("/auth/register")
 async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
     """验证码注册（带密码）。返回 token，15 天有效。"""
@@ -160,6 +188,7 @@ async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
         user = User(email=email, password_hash=hash_password(password))
         db.add(user)
     await db.commit()
+    await db.refresh(user)
 
     token_str, expires_at = await create_token(db, email)
     logger.info("用户注册成功: %s", email)
@@ -178,8 +207,90 @@ async def verify(body: VerifyRequest, db: AsyncSession = Depends(get_db)):
     return {"ok": True, "email": email}
 
 
+class DeductTimeRequest(BaseModel):
+    seconds: int
+
+
 @router.get("/auth/status")
 async def auth_status():
     """返回邮件服务配置状态。"""
     cfg = get_smtp_config()
     return {"ok": True, "email_enabled": cfg["configured"]}
+
+
+# ══════════════════════════════════════════════════════════════
+# Auth dependency（供其他路由获取当前用户）
+# ══════════════════════════════════════════════════════════════
+
+async def get_current_user(
+    authorization: str = Header(default=""),
+    db: AsyncSession = Depends(get_db),
+) -> str:
+    """从 Authorization: Bearer <token> 头校验用户，返回 email。"""
+    token = authorization.removeprefix("Bearer ").strip() if authorization else ""
+    if not token:
+        raise HTTPException(401, "未提供认证信息")
+    email = await verify_token(db, token)
+    if not email:
+        raise HTTPException(401, "token 无效或已过期，请重新登录")
+    return email
+
+
+# ══════════════════════════════════════════════════════════════
+# 用户接口
+# ══════════════════════════════════════════════════════════════
+
+@router.post("/user/deduct-time")
+async def deduct_time(
+    body: DeductTimeRequest,
+    email: str = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """扣除面试时长。"""
+    if body.seconds <= 0:
+        raise HTTPException(400, "无效的时长")
+    user = await get_user_by_email(db, email)
+    if not user:
+        raise HTTPException(404, "用户不存在")
+    user.remaining_seconds = max(0, user.remaining_seconds - body.seconds)
+    user.interview_count += 1
+    await db.commit()
+    await db.refresh(user)
+    logger.info("用户 %s 扣除 %d 秒，剩余 %d 秒，累计 %d 次", email, body.seconds, user.remaining_seconds, user.interview_count)
+    return {"ok": True, "user": user_to_profile(user)}
+
+
+@router.get("/user/profile")
+async def get_profile(
+    email: str = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """获取用户信息。"""
+    user = await get_user_by_email(db, email)
+    if not user:
+        raise HTTPException(404, "用户不存在")
+    return {"ok": True, "user": user_to_profile(user)}
+
+
+class UpdateProfileRequest(BaseModel):
+    programming_language: str | None = None
+    interview_language: str | None = None
+
+
+@router.put("/user/profile")
+async def update_profile(
+    body: UpdateProfileRequest,
+    email: str = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """更新用户偏好。"""
+    user = await get_user_by_email(db, email)
+    if not user:
+        raise HTTPException(404, "用户不存在")
+    if body.programming_language is not None:
+        user.programming_language = body.programming_language
+    if body.interview_language is not None:
+        user.interview_language = body.interview_language
+    await db.commit()
+    await db.refresh(user)
+    return {"ok": True, "user": user_to_profile(user)}
