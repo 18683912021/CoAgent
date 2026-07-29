@@ -11,10 +11,11 @@ import shutil
 import tempfile
 from io import BytesIO
 from pathlib import Path
+from urllib.parse import quote
 
 import dxpdf
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 from app.routers.auth import get_current_user
@@ -23,7 +24,7 @@ logger = logging.getLogger("tools")
 router = APIRouter()
 
 _MAX_SIZE = 20 * 1024 * 1024
-_WORD_EXTENSIONS = {'.doc', '.docx', '.wps', '.odt', '.rtf'}
+_WORD_EXTENSIONS = {'.docx'}
 
 
 class FileData(BaseModel):
@@ -56,7 +57,7 @@ async def word_to_pdf(
     try:
         pdf_bytes = dxpdf.convert(content)
         name = Path(body.filename).stem + ".pdf"
-        return FileResponse(BytesIO(pdf_bytes), filename=name, media_type="application/pdf")
+        return Response(content=pdf_bytes, media_type="application/pdf", headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}"})
     except Exception as e:
         logger.exception("Word→PDF 失败")
         raise HTTPException(500, f"转换失败：{e}")
@@ -88,9 +89,8 @@ async def pdf_to_word(
     cv.convert(str(out))
     cv.close()
 
-    # 先读到内存再返回，避免 FileResponse 异步流式时临时文件被删
     docx_bytes = out.read_bytes()
     shutil.rmtree(tmp, ignore_errors=True)
 
     name = Path(body.filename).stem + ".docx"
-    return FileResponse(BytesIO(docx_bytes), filename=name, media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+    return Response(content=docx_bytes, media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document", headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}"})

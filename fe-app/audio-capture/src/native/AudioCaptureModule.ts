@@ -137,8 +137,8 @@ export const AudioCapture = {
     return NativeModules.FilePicker?.pickPDF() ?? null;
   },
   /** 选择文档文件（PDF/DOC/DOCX/WPS/ODT/RTF） */
-  async pickDocument(): Promise<{uri: string; name: string; type: string; size: number} | null> {
-    return NativeModules.FilePicker?.pickDocument() ?? null;
+  async pickDocument(mimeTypes: string[]): Promise<{uri: string; name: string; type: string; size: number} | null> {
+    return NativeModules.FilePicker?.pickDocument(mimeTypes) ?? null;
   },
   /** 读取文件为 base64 字符串 */
   async readFileBase64(fileUri: string): Promise<string> {

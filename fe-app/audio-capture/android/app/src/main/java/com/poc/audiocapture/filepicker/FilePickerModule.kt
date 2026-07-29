@@ -90,24 +90,22 @@ class FilePickerModule(reactContext: ReactApplicationContext) :
     }
 
     @ReactMethod
-    fun pickDocument(promise: Promise) {
+    fun pickDocument(mimeTypes: com.facebook.react.bridge.ReadableArray, promise: Promise) {
         val activity = currentActivity
         if (activity == null) {
             promise.reject("NO_ACTIVITY", "无法启动文件选择器")
             return
         }
         pickPromise = promise
+        val types = Array(mimeTypes.size()) { mimeTypes.getString(it) }
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
-            type = "*/*"
-            putExtra(Intent.EXTRA_MIME_TYPES, arrayOf(
-                "application/pdf",
-                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                "application/msword",
-                "application/rtf",
-                "application/vnd.oasis.opendocument.text",
-                "application/vnd.ms-works",
-            ))
+            if (types.size == 1) {
+                type = types[0]
+            } else {
+                type = "*/*"
+                putExtra(Intent.EXTRA_MIME_TYPES, types)
+            }
             putExtra(Intent.EXTRA_ALLOW_MULTIPLE, false)
         }
         activity.startActivityForResult(intent, PICK_DOC)
