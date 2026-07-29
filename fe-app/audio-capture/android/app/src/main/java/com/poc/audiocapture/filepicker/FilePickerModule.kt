@@ -18,12 +18,12 @@ class FilePickerModule(reactContext: ReactApplicationContext) :
 
     private var pickPromise: Promise? = null
     private val PICK_PDF = 9001
+    private val PICK_DOC = 9002
 
     private val activityEventListener = object : BaseActivityEventListener() {
         override fun onActivityResult(
             activity: Activity, requestCode: Int, resultCode: Int, data: Intent?
         ) {
-            if (requestCode != PICK_PDF) return
             val promise = pickPromise ?: return
             pickPromise = null
 
@@ -32,13 +32,23 @@ class FilePickerModule(reactContext: ReactApplicationContext) :
                 return
             }
 
+            if (requestCode != PICK_PDF && requestCode != PICK_DOC) return
+
             val uri = data.data!!
-            // 复制到应用缓存目录，确保后续可读取
             try {
                 val contentResolver = reactApplicationContext.contentResolver
                 val mimeType = contentResolver.getType(uri) ?: "application/octet-stream"
-                val fileName = "resume_${System.currentTimeMillis()}.pdf"
-                val destFile = java.io.File(reactApplicationContext.cacheDir, fileName)
+                // 从 content resolver 获取真实文件名
+                var originalName = "file"
+                contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        val idx = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                        if (idx >= 0) {
+                            originalName = cursor.getString(idx) ?: "file"
+                        }
+                    }
+                }
+                val destFile = java.io.File(reactApplicationContext.cacheDir, originalName.ifBlank { "file" })
 
                 contentResolver.openInputStream(uri)?.use { input ->
                     destFile.outputStream().use { output ->
@@ -48,9 +58,7 @@ class FilePickerModule(reactContext: ReactApplicationContext) :
 
                 val result: WritableMap = Arguments.createMap().apply {
                     putString("uri", "file://${destFile.absolutePath}")
-                    putString("name", data.dataString?.let {
-                        it.substringAfterLast("/").substringBefore("?")
-                    } ?: fileName)
+                    putString("name", originalName)
                     putString("type", mimeType)
                     putInt("size", destFile.length().toInt())
                 }
@@ -79,5 +87,29 @@ class FilePickerModule(reactContext: ReactApplicationContext) :
             putExtra(Intent.EXTRA_ALLOW_MULTIPLE, false)
         }
         activity.startActivityForResult(intent, PICK_PDF)
+    }
+
+    @ReactMethod
+    fun pickDocument(promise: Promise) {
+        val activity = currentActivity
+        if (activity == null) {
+            promise.reject("NO_ACTIVITY", "无法启动文件选择器")
+            return
+        }
+        pickPromise = promise
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+            putExtra(Intent.EXTRA_MIME_TYPES, arrayOf(
+                "application/pdf",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "application/msword",
+                "application/rtf",
+                "application/vnd.oasis.opendocument.text",
+                "application/vnd.ms-works",
+            ))
+            putExtra(Intent.EXTRA_ALLOW_MULTIPLE, false)
+        }
+        activity.startActivityForResult(intent, PICK_DOC)
     }
 }

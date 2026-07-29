@@ -8,7 +8,6 @@
 
 import React, {useCallback, useContext, useEffect, useState} from 'react';
 import {
-  ActivityIndicator,
   Modal,
   ScrollView,
   StyleSheet,
@@ -20,7 +19,7 @@ import {
 import {SafeAreaView} from 'react-native-safe-area-context';
 
 import {AudioCapture} from '../native';
-import {getProgLang, setProgLang, type ProgLang} from '../config';
+import {setProgLang, type ProgLang} from '../config';
 import {useTheme, space, radius, type} from '../theme';
 import {useAppAlert} from '../components/AppAlert';
 import {AuthContext} from '../utils/AuthContext';
@@ -30,10 +29,14 @@ import {ApiError} from '../api/client';
 import type {UserProfile} from '../api/auth';
 import {updateProfile as updateProfileApi} from '../api/auth';
 import {saveProfile} from '../utils/token';
+import InterviewHistoryScreen from './InterviewHistoryScreen';
+import SubscriptionScreen from './SubscriptionScreen';
 
 const PROGRAMMING_LANGUAGES = ['JavaScript', 'Java', 'Python', 'C#', 'C++', 'Go'] as const;
-type ProgrammingLanguage = (typeof PROGRAMMING_LANGUAGES)[number];
-
+const LANG_MAP: Record<string, ProgLang> = {
+  javascript: 'JavaScript', java: 'Java', python: 'Python',
+  'c#': 'C#', csharp: 'C#', 'c++': 'C++', cpp: 'C++', go: 'Go', golang: 'Go',
+};
 // ── Types ──
 interface MenuItem {
   icon: string;
@@ -96,15 +99,37 @@ export default function ProfileScreen({isFocused}: {isFocused?: boolean}): React
   const t = useTheme(dark);
   const {showAlert} = useAppAlert();
   const {logout} = useContext(AuthContext);
-  const [progLang, setProgLangLocal] = useState<ProgLang>(getProgLang());
+  const [progLang, setProgLangLocal] = useState<ProgLang>('JavaScript');
   const [showLangPicker, setShowLangPicker] = useState(false);
   const [profile, setProfile] = useState<UserProfile | null>(null);
 
+  // 打开选择器时同步最新语言选择
+  const openLangPicker = useCallback(async () => {
+    const p = await getProfile();
+    if (p?.programming_language) {
+      const lang = LANG_MAP[p.programming_language] || 'JavaScript';
+      setProgLangLocal(lang);
+      setProgLang(lang);
+    }
+    setShowLangPicker(true);
+  }, []);
+
+  const [showHistory, setShowHistory] = useState(false);
+  const [showSubscription, setShowSubscription] = useState(false);
   const [resumeLabel, setResumeLabel] = useState('未上传');
   const [uploading, setUploading] = useState(false);
 
   useEffect(() => {
-    getProfile().then(p => setProfile(p ?? null));
+    getProfile().then(p => {
+      if (p) {
+        setProfile(p);
+        if (p.programming_language) {
+          const lang = LANG_MAP[p.programming_language] || 'JavaScript';
+          setProgLang(lang);
+          setProgLangLocal(lang);
+        }
+      }
+    });
   }, []);
 
   useEffect(() => {
@@ -112,9 +137,8 @@ export default function ProfileScreen({isFocused}: {isFocused?: boolean}): React
       getProfile().then(p => {
         if (p) {
           setProfile(p);
-          // 同步编程语言到全局 config
           if (p.programming_language) {
-            const lang = p.programming_language.charAt(0).toUpperCase() + p.programming_language.slice(1) as ProgLang;
+            const lang = LANG_MAP[p.programming_language] || 'JavaScript';
             setProgLang(lang);
             setProgLangLocal(lang);
           }
@@ -164,13 +188,13 @@ export default function ProfileScreen({isFocused}: {isFocused?: boolean}): React
     {
       title: '数据',
       items: [
-        {icon: '📋', label: '面试历史', value: `${profile?.interview_count ?? 0} 次`, onPress: () => {}},
+        {icon: '📋', label: '面试历史', value: `${profile?.interview_count ?? 0} 次`, onPress: () => setShowHistory(true)},
       ],
     },
     {
       title: '偏好',
       items: [
-        {icon: '🌐', label: '面试语言', value: progLang, onPress: () => setShowLangPicker(true)},
+        {icon: '🌐', label: '面试语言', value: progLang, onPress: openLangPicker},
         {icon: '✍️', label: '答案风格', value: profile?.answer_style ?? '标准书面', onPress: () => {}},
         {icon: '📄', label: '简历上传', value: uploading ? '上传中…' : resumeLabel, onPress: handleUploadResume},
       ],
@@ -225,7 +249,7 @@ export default function ProfileScreen({isFocused}: {isFocused?: boolean}): React
               <Text style={[styles.timeMetaText, {color: t.textTertiary}]}>
                 有效期至 {profile ? formatExpiry(profile.expires_at) : '----'}
               </Text>
-              <TouchableOpacity activeOpacity={0.6}>
+              <TouchableOpacity activeOpacity={0.6} onPress={() => setShowSubscription(true)}>
                 <Text style={[styles.renewBtn, {color: t.accent}]}>续费 ›</Text>
               </TouchableOpacity>
             </View>
@@ -268,7 +292,7 @@ export default function ProfileScreen({isFocused}: {isFocused?: boolean}): React
                 key={lang}
                 style={[
                   pickerStyles.option,
-                  {backgroundColor: lang === progLang ? t.accentLight : 'transparent'},
+                  lang === progLang && {backgroundColor: t.accentLight, borderColor: t.accent},
                 ]}
                 onPress={() => {
                 setProgLangLocal(lang); setProgLang(lang); setShowLangPicker(false);
@@ -279,18 +303,18 @@ export default function ProfileScreen({isFocused}: {isFocused?: boolean}): React
                 activeOpacity={0.6}>
                 <Text style={[pickerStyles.optionText, {
                   color: lang === progLang ? t.accent : t.textPrimary,
-                  fontWeight: lang === progLang ? '700' : '400',
-                }]}>
-                  {lang}
-                </Text>
+                  fontWeight: lang === progLang ? '700' : '500',
+                }]}>{lang}</Text>
                 {lang === progLang && (
-                  <Text style={[pickerStyles.check, {color: t.accent}]}>✓</Text>
+                  <View style={[pickerStyles.checkDot, {backgroundColor: t.accent}]} />
                 )}
               </TouchableOpacity>
             ))}
           </View>
         </TouchableOpacity>
       </Modal>
+      <InterviewHistoryScreen visible={showHistory} onClose={() => setShowHistory(false)} />
+      <SubscriptionScreen visible={showSubscription} onClose={() => setShowSubscription(false)} />
     </SafeAreaView>
   );
 }
@@ -440,14 +464,15 @@ const pickerStyles = StyleSheet.create({
     paddingHorizontal: space['2xl'],
   },
   card: {
-    width: '100%', borderRadius: radius.lg, paddingVertical: space.lg,
-    paddingHorizontal: space.lg,
+    width: '100%', borderRadius: radius.xl, paddingVertical: 22,
+    paddingHorizontal: 20,
   },
-  title: {...type.heading, marginBottom: space.md, textAlign: 'center'},
+  title: {...type.heading, marginBottom: 18, textAlign: 'center'},
   option: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingVertical: 14, paddingHorizontal: space.md, borderRadius: radius.sm,
+    paddingVertical: 15, paddingHorizontal: 14, borderRadius: radius.md,
+    borderWidth: 1.5, borderColor: 'transparent',
   },
-  optionText: {...type.body},
-  check: {fontSize: 18, fontWeight: '700'},
+  optionText: {...type.body, fontWeight: '500'},
+  checkDot: {width: 10, height: 10, borderRadius: 5},
 });

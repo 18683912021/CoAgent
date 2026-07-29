@@ -561,6 +561,30 @@ class AudioCaptureModule(
     }
   }
 
+  @ReactMethod
+  fun readFileBase64(fileUri: String, promise: Promise) {
+    try {
+      val path = fileUri.removePrefix("file://")
+      val bytes = java.io.File(path).readBytes()
+      promise.resolve(android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP))
+    } catch (e: Exception) {
+      promise.reject("E_READ", e.message, e)
+    }
+  }
+
+  @ReactMethod
+  fun saveFile(fileName: String, base64Data: String, promise: Promise) {
+    try {
+      val bytes = android.util.Base64.decode(base64Data, android.util.Base64.DEFAULT)
+      val downloadsDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
+      val dest = java.io.File(downloadsDir, fileName)
+      dest.writeBytes(bytes)
+      promise.resolve("file://${dest.absolutePath}")
+    } catch (e: Exception) {
+      promise.reject("E_SAVE", e.message, e)
+    }
+  }
+
   private fun formatToMap(format: AudioFormatSpec): WritableMap = Arguments.createMap().apply {
     putInt("sampleRate", format.sampleRate)
     putInt("channelCount", format.channelCount)

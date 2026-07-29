@@ -77,6 +77,8 @@ export const api = {
     request<T>('POST', path, body, DEFAULT_TIMEOUT_MS, withAuth),
   put: <T = any>(path: string, body?: Record<string, unknown>, withAuth = false) =>
     request<T>('PUT', path, body, DEFAULT_TIMEOUT_MS, withAuth),
+  del: <T = any>(path: string, withAuth = false) =>
+    request<T>('DELETE', path, undefined, DEFAULT_TIMEOUT_MS, withAuth),
   upload: <T = any>(path: string, formData: FormData) => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 30_000);

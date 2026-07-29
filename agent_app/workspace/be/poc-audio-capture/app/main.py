@@ -14,8 +14,10 @@ from fastapi.responses import JSONResponse
 
 from app.routers.audio import router as audio_router
 from app.routers.auth import router as auth_router
+from app.routers.interview import router as interview_router
 from app.routers.resume import router as resume_router
 from app.routers.stt import router as stt_router
+from app.routers.tools import router as tools_router
 from app.db import init_db, close_db
 from app.redis import close_redis
 
@@ -74,8 +76,10 @@ async def _unhandled_error(request: Request, exc: Exception):
 
 app.include_router(audio_router, prefix="/api")
 app.include_router(auth_router, prefix="/api")
+app.include_router(interview_router, prefix="/api")
 app.include_router(resume_router, prefix="/api")
 app.include_router(stt_router, prefix="/api")
+app.include_router(tools_router, prefix="/api")
 
 
 @app.get("/health")

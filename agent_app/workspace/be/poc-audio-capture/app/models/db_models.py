@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime, timezone
 import time as _time
-from sqlalchemy import Integer, String, Float, ForeignKey, Index
+from sqlalchemy import Integer, String, Float, Text, ForeignKey, Index
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db import Base
 
@@ -57,3 +57,16 @@ class Token(Base):
     __table_args__ = (
         Index("ix_tokens_expires", "expires_at"),
     )
+
+
+class Interview(Base):
+    __tablename__ = "interviews"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    email: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    started_at: Mapped[float] = mapped_column(Float, nullable=False)
+    ended_at: Mapped[float] = mapped_column(Float, nullable=False)
+    duration_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
+    programming_language: Mapped[str] = mapped_column(String(50), default="javascript")
+    conversation_json: Mapped[str] = mapped_column(Text, nullable=False)  # JSON serialized
+    created_at: Mapped[datetime] = mapped_column(default=_utcnow)

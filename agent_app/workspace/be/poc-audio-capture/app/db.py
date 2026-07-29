@@ -43,7 +43,7 @@ async def get_db() -> AsyncSession:
 async def init_db():
     """启动时创建所有表。"""
     async with engine.begin() as conn:
-        from app.models.db_models import Resume, Token, User  # noqa: F401
+        from app.models.db_models import Interview, Resume, Token, User  # noqa: F401
         await conn.run_sync(Base.metadata.create_all)
 
 

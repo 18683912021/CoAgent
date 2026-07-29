@@ -24,8 +24,10 @@ import {useAppAlert} from './components/AppAlert';
 import {useTheme, space, radius, type} from './theme';
 import {hasResume, getIntro} from './api/resume';
 import {deductTime} from './api/auth';
-import {refreshProfile} from './utils/token';
+import {getProfile, refreshProfile} from './utils/token';
 import {setInterviewActive} from './utils/interviewState';
+import {saveInterview} from './api/interview';
+import {getProgLang} from './config';
 
 // ── Display item for FlatList (bubble or separator) ──
 type DisplayItem =
@@ -125,14 +127,33 @@ export default function InterviewScreen(): React.JSX.Element {
   }, []);
 
   const active = state.captureState === 'capturing';
+
+  // 开始前检查剩余时长
+  const handleStart = useCallback(async () => {
+    const p = await getProfile();
+    if (p && p.remaining_seconds < 10) {
+      showAlert({
+        title: '时长不足',
+        message: '剩余面试时长不足 10 秒，请先续费再开始面试。',
+        confirmText: '去续费',
+        showCancel: true,
+        cancelText: '取消',
+      });
+      return;
+    }
+    controller.start();
+  }, [controller, showAlert]);
+
   // 面试中锁定 Tab 切换
   useEffect(() => { setInterviewActive(active); }, [active]);
   // 面试计时
   const [elapsed, setElapsed] = useState(0);
   const elapsedRef = useRef(0);
+  const startTimeRef = useRef(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   useEffect(() => {
     if (active) {
+      startTimeRef.current = Date.now() / 1000;
       timerRef.current = setInterval(() => setElapsed(e => { const v = e + 1; elapsedRef.current = v; return v; }), 1000);
     } else {
       if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
@@ -141,17 +162,29 @@ export default function InterviewScreen(): React.JSX.Element {
     return () => { if (timerRef.current) { clearInterval(timerRef.current); } };
   }, [active]);
   const fmtElapsed = () => { const m = Math.floor(elapsed / 60); const s = elapsed % 60; return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`; };
-  // 扣除面试时长 → 刷新用户信息
+  // 扣除面试时长 + 保存历史 + 刷新用户信息
   const deductElapsed = useCallback(async () => {
     const seconds = elapsedRef.current;
     if (seconds < 10) { return; }
+    const startedAt = startTimeRef.current;
+    const endedAt = Date.now() / 1000;
+    const convForSave = controller.state.conversation.filter(
+      m => m.text && m.text.trim() && m.status !== 'loading',
+    );
     try {
       await deductTime(seconds);
+      await saveInterview({
+        started_at: startedAt,
+        ended_at: endedAt,
+        duration_seconds: seconds,
+        programming_language: getProgLang().toLowerCase(),
+        conversation: convForSave,
+      });
       await refreshProfile();
     } catch (e) {
       console.log('[deduct] failed:', e);
     }
-  }, []);
+  }, [controller]);
 
   const connecting = state.streamState === 'connecting';
   const streamReady = state.streamState === 'ready';
@@ -283,7 +316,7 @@ export default function InterviewScreen(): React.JSX.Element {
       />
 
       {/* ── Header ── */}
-      <View style={[premiumStyles.header, {backgroundColor: t.bgHeader, borderBottomColor: t.divider}]}>
+      <View style={[premiumStyles.header, {backgroundColor: t.bgHeader}]}>
         <View style={premiumStyles.headerLeft}>
           <View style={[premiumStyles.appIcon, {backgroundColor: t.accentLight}]}>
             <Text style={premiumStyles.appIconText}>🎯</Text>
@@ -312,7 +345,7 @@ export default function InterviewScreen(): React.JSX.Element {
       {isEmpty ? (
         <View style={premiumStyles.emptyWrap}>
           <View style={premiumStyles.emptyHero}>
-            <View style={[premiumStyles.emptyIconWrap, {backgroundColor: t.accentLight}]}>
+            <View style={[premiumStyles.emptyIconWrap, {backgroundColor: t.accentLight, borderColor: t.accentSoft}]}>
               <Text style={premiumStyles.emptyIcon}>🎤</Text>
             </View>
             <Text style={[premiumStyles.emptyTitle, {color: t.textPrimary}]}>准备开始面试</Text>
@@ -398,7 +431,7 @@ export default function InterviewScreen(): React.JSX.Element {
             {backgroundColor: active ? t.danger : t.accent},
             t.shadowMd,
           ]}
-          onPress={active ? handleStop : controller.start}
+          onPress={active ? handleStop : handleStart}
           activeOpacity={0.85}>
           <Text style={premiumStyles.captureIcon}>{active ? '⏹' : '🎙'}</Text>
           <Text style={premiumStyles.captureLabel}>{active ? '结束面试' : '开始面试'}</Text>
@@ -466,85 +499,48 @@ const premiumStyles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: space.lg,
-    paddingVertical: space.md + 2,
-    borderBottomWidth: StyleSheet.hairlineWidth,
+    paddingVertical: 14,
   },
   headerLeft: {flexDirection: 'row', alignItems: 'center', gap: space.md},
   appIcon: {
-    width: 42,
-    height: 42,
-    borderRadius: radius.md,
-    justifyContent: 'center',
-    alignItems: 'center',
+    width: 44, height: 44, borderRadius: radius.md,
+    justifyContent: 'center', alignItems: 'center',
   },
-  appIconText: {fontSize: 21},
-  headerTitle: {fontSize: 16, fontWeight: '800', letterSpacing: -0.2},
-  headerSub: {fontSize: 11, marginTop: 1},
+  appIconText: {fontSize: 22},
+  headerTitle: {fontSize: 17, fontWeight: '800', letterSpacing: -0.3},
+  headerSub: {fontSize: 11, marginTop: 2, fontWeight: '500'},
   statusBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: radius.full,
-    gap: 6,
+    flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: 14, paddingVertical: 8,
+    borderRadius: radius.full, gap: 6,
   },
-  statusDot: {width: 7, height: 7, borderRadius: 3.5},
-  statusText: {fontSize: 12, fontWeight: '700', letterSpacing: 0.3},
+  statusDot: {width: 8, height: 8, borderRadius: 4},
+  statusText: {fontSize: 13, fontWeight: '700', letterSpacing: 0.3},
 
   // ── Empty State ──
-  emptyWrap: {
-    flex: 1,
-    justifyContent: 'center',
-    paddingHorizontal: space['2xl'],
-  },
-  emptyHero: {
-    alignItems: 'center',
-    marginBottom: space['3xl'],
-  },
+  emptyWrap: {flex: 1, justifyContent: 'center', paddingHorizontal: space['2xl']},
+  emptyHero: {alignItems: 'center', marginBottom: space['3xl']},
   emptyIconWrap: {
-    width: 88,
-    height: 88,
-    borderRadius: 44,
-    justifyContent: 'center',
-    alignItems: 'center',
+    width: 96, height: 96, borderRadius: 48,
+    justifyContent: 'center', alignItems: 'center',
     marginBottom: space.xl,
+    borderWidth: 1,
   },
-  emptyIcon: {fontSize: 40},
-  emptyTitle: {
-    ...type.title,
-    marginBottom: space.sm,
-  },
-  emptySub: {
-    ...type.bodySm,
-    textAlign: 'center',
-    lineHeight: 20,
-    maxWidth: 280,
-  },
+  emptyIcon: {fontSize: 44},
+  emptyTitle: {...type.title, marginBottom: space.sm, letterSpacing: 0.5},
+  emptySub: {...type.bodySm, textAlign: 'center', lineHeight: 22, maxWidth: 300},
 
   // ── Feature Cards ──
-  featureCards: {
-    flexDirection: 'row',
-    gap: space.sm,
-  },
+  featureCards: {flexDirection: 'row', gap: 10},
   featureCard: {
-    flex: 1,
-    borderRadius: radius.lg,
+    flex: 1, borderRadius: radius.xl,
     borderWidth: StyleSheet.hairlineWidth,
-    padding: space.md,
-    alignItems: 'center',
-    gap: 4,
+    paddingVertical: space.lg, paddingHorizontal: space.sm,
+    alignItems: 'center', gap: 6,
   },
-  featureIcon: {fontSize: 22},
-  featureTitle: {
-    ...type.caption,
-    fontWeight: '700',
-    marginTop: 2,
-  },
-  featureDesc: {
-    ...type.caption,
-    textAlign: 'center',
-    fontSize: 10,
-  },
+  featureIcon: {fontSize: 24},
+  featureTitle: {...type.caption, fontWeight: '700', marginTop: 4},
+  featureDesc: {...type.caption, textAlign: 'center', fontSize: 10, lineHeight: 14},
 
   // ── Conversation List ──
   listContent: {paddingTop: space.md, paddingBottom: space.xs},
@@ -552,46 +548,33 @@ const premiumStyles = StyleSheet.create({
   // ── Control Bar ──
   controlBar: {
     paddingHorizontal: space.lg,
-    paddingTop: space.md,
-    paddingBottom: Platform.OS === 'android' ? 22 : 28,
-    borderTopWidth: StyleSheet.hairlineWidth,
+    paddingTop: 14,
+    paddingBottom: Platform.OS === 'android' ? 28 : 34,
   },
   streamRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: space.sm,
-    paddingHorizontal: 2,
+    flexDirection: 'row', justifyContent: 'space-between',
+    alignItems: 'center', marginBottom: 10, paddingHorizontal: 2,
   },
-  streamLeft: {flexDirection: 'row', alignItems: 'center', gap: 6},
-  streamText: {...type.caption, fontWeight: '500'},
-  errorHint: {...type.caption, marginBottom: space.sm, flexShrink: 1},
-  levelBarRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    gap: 2,
-    height: 20,
-  },
+  streamLeft: {flexDirection: 'row', alignItems: 'center', gap: 8},
+  streamText: {...type.caption, fontWeight: '600', fontSize: 12},
+  levelBarRow: {flexDirection: 'row', alignItems: 'flex-end', gap: 2, height: 22},
 
   // ── Capture Button ──
   captureBtn: {
-    borderRadius: radius.lg,
-    paddingVertical: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexDirection: 'row',
-    gap: space.sm,
+    borderRadius: radius.xl, paddingVertical: 18,
+    alignItems: 'center', justifyContent: 'center',
+    flexDirection: 'row', gap: space.sm,
   },
-  captureIcon: {fontSize: 18},
-  captureLabel: {fontSize: 16, fontWeight: '800', color: '#FFFFFF', letterSpacing: 0.5},
+  captureIcon: {fontSize: 20},
+  captureLabel: {fontSize: 17, fontWeight: '800', color: '#FFFFFF', letterSpacing: 1},
 
   // ── Header right ──
-  headerRight: {flexDirection: 'row', alignItems: 'center', gap: space.sm},
+  headerRight: {flexDirection: 'row', alignItems: 'center', gap: 10},
   introBtn: {
-    width: 34, height: 34, borderRadius: 17,
+    width: 38, height: 38, borderRadius: radius.md,
     justifyContent: 'center', alignItems: 'center',
   },
-  introBtnIcon: {fontSize: 16},
+  introBtnIcon: {fontSize: 18},
 
   // ── Alert Modal ──
   alertBackdrop: {

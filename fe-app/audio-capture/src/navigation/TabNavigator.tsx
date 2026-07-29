@@ -10,7 +10,7 @@ import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {Animated, Platform, Pressable, StyleSheet, Text, View, useColorScheme} from 'react-native';
 
 import InterviewScreen from '../InterviewScreen';
-import KnowledgeScreen from '../screens/KnowledgeScreen';
+import ToolsScreen from '../screens/ToolsScreen';
 import ProfileScreen from '../screens/ProfileScreen';
 import {useTheme, space, radius, type} from '../theme';
 import {isInterviewActive, onInterviewActiveChange} from '../utils/interviewState';
@@ -24,7 +24,7 @@ interface TabDef {
 
 const TABS: readonly TabDef[] = [
   {key: 'interview',  label: '面试',   icon: '🎯', screen: InterviewScreen},
-  {key: 'knowledge', label: '知识库', icon: '📚', screen: KnowledgeScreen},
+  {key: 'tools', label: '工具箱', icon: '🧰', screen: ToolsScreen},
   {key: 'profile',   label: '我的',   icon: '👤', screen: ProfileScreen},
 ];
 

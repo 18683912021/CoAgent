@@ -132,19 +132,28 @@ export const AudioCapture = {
     requireNative().sendControl(JSON.stringify(message));
   },
 
-  /** 调用原生文件选择器，选择 PDF 文件。返回 { uri, name, type, size } 或 null */
+  /** 选择 PDF 文件 */
   async pickPDF(): Promise<{uri: string; name: string; type: string; size: number} | null> {
     return NativeModules.FilePicker?.pickPDF() ?? null;
   },
+  /** 选择文档文件（PDF/DOC/DOCX/WPS/ODT/RTF） */
+  async pickDocument(): Promise<{uri: string; name: string; type: string; size: number} | null> {
+    return NativeModules.FilePicker?.pickDocument() ?? null;
+  },
+  /** 读取文件为 base64 字符串 */
+  async readFileBase64(fileUri: string): Promise<string> {
+    return requireNative().readFileBase64(fileUri);
+  },
 
+  async saveFile(fileName: string, base64Data: string): Promise<string> {
+    return requireNative().saveFile(fileName, base64Data);
+  },
   storePreference(key: string, value: string): Promise<void> {
     return requireNative().storePreference(key, value);
   },
-
   getPreference(key: string): Promise<string | null> {
     return requireNative().getPreference(key);
   },
-
   removePreference(key: string): Promise<void> {
     return requireNative().removePreference(key);
   },

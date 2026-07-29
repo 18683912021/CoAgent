@@ -149,4 +149,6 @@ export interface AudioCaptureNativeModule {
   storePreference(key: string, value: string): Promise<void>;
   getPreference(key: string): Promise<string | null>;
   removePreference(key: string): Promise<void>;
+  saveFile(fileName: string, base64Data: string): Promise<string>;
+  readFileBase64(fileUri: string): Promise<string>;
 }
