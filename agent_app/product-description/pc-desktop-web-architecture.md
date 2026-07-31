@@ -619,33 +619,122 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
 ---
 
-## 十一、构建和打包
+## 十一、构建和打包 —— 固定版本基线
 
-### 11.1 技术栈
+> 基线日期：2026-07-31  
+> Node.js 基线：`22.23.1 LTS`  
+> 所有版本号均已锁定，不使用 `^` 或 `~` 自动漂移。
 
-| 层级 | 技术 | 说明 |
-|------|------|------|
-| 包管理 | pnpm | monorepo workspace |
-| 构建工具 | Vite | 快速 HMR，Electron + Web 共用 |
-| 桌面端框架 | Electron 32.x | 稳定版，ContentProtection 无回归 |
-| 桌面打包 | electron-builder | Windows NSIS / macOS DMG |
-| 样式 | Tailwind CSS | 映射 theme.ts 设计令牌 |
-| 类型 | TypeScript 5.x | 严格模式 |
-| Node addon 编译 | node-gyp / cmake-js | WASAPI C++ addon |
+### 11.1 结论
 
-### 11.2 Monorepo 配置
+下面这组组合可以支持 Electron 桌面端 + Vite Web 端的 monorepo 正常开发、构建、调试和打包：
+
+| 组件 | 固定版本 | 说明 |
+|------|---------|------|
+| Node.js | `22.23.1 LTS` | 全平台统一基线 |
+| pnpm | `9.15.0` | monorepo workspace 管理 |
+| React | `19.0.0` | 和现有 RN 项目一致 |
+| React DOM | `19.0.0` | 和 React 版本对齐 |
+| TypeScript | `5.6.3` | 严格模式 |
+| Electron | `32.2.8` | ContentProtection 稳定，无 33/35 回归 |
+| electron-builder | `25.1.8` | Windows NSIS + macOS DMG |
+| Vite | `6.0.5` | Electron + Web renderer 共用 |
+| @vitejs/plugin-react | `4.3.4` | React Fast Refresh |
+| Tailwind CSS | `3.4.17` | 映射 theme.ts 设计令牌（v3 稳定，不用 v4） |
+| postcss | `8.4.49` | Tailwind 依赖 |
+| autoprefixer | `10.4.20` | Tailwind 依赖 |
+| React Router DOM | `7.1.1` | SPA 路由（Web + Electron renderer） |
+| framer-motion | `11.15.0` | 动画库（替代 RN Animated） |
+| eventemitter3 | `5.0.1` | 跨平台事件总线 |
+| electron-store | `10.0.0` | 主进程安全持久化存储 |
+| electron-updater | `6.3.9` | 自动更新 |
+| node-abi | `3.71.0` | N-API addon 编译兼容性检测 |
+| node-gyp | `11.0.0` | WASAPI C++ addon 编译 |
+| Vitest | `2.1.8` | 单元测试（Vite 原生集成） |
+| @testing-library/react | `16.1.0` | React 组件测试 |
+| Playwright | `1.49.1` | E2E 测试（Electron + Web） |
+| ESLint | `9.16.0` | 静态检查 |
+| Prettier | `3.4.2` | 代码格式化 |
+
+兼容性依据：
+
+1. Electron 32.x 使用 Chromium 128 和 Node 20，但与系统 Node 22.23.1 的 TypeScript/ESLint 工具链完全兼容。Electron 主进程的运行时 Node 由 Electron 自带（Node 20），开发阶段的 Vite/TS/eslint 使用系统 Node 22。
+2. Electron 32.2.x 的 `setContentProtection(true)` 未出现 33.x 的 hide 后丢失 bug，也未出现 35.x 的黑块回归问题。
+3. React 19.0.0 是现有 RN 项目的版本，共享代码（api/store/utils/theme）无需适配不同 React 大版本。
+4. Tailwind CSS 3.4.x 是 v3 的最后稳定线，v4 在 2025 年发布但 API 变化大且插件生态仍在迁移中。
+5. TypeScript 5.6.3 和 Vite 6.0.5 的组合已在 Electron + Web 场景有大量验证案例。
+
+### 11.2 版本兼容性约束
+
+```
+Node 22.23.1
+  ├── pnpm 9.15.0        ← 使用 packageManager 字段锁定
+  ├── TypeScript 5.6.3   ← 不支持 TS 5.7+ 的新语法（可选升级，暂缓）
+  ├── Vite 6.0.5         ← Electron renderer + Web 共用
+  │     └── @vitejs/plugin-react 4.3.4
+  ├── Electron 32.2.8    ← 自带 Node 20 + Chromium 128，和系统 Node 22 隔离
+  │     ├── electron-builder 25.1.8
+  │     ├── electron-store 10.0.0
+  │     └── electron-updater 6.3.9
+  ├── React 19.0.0
+  │     ├── react-dom 19.0.0
+  │     ├── react-router-dom 7.1.1
+  │     └── framer-motion 11.15.0
+  ├── Tailwind CSS 3.4.17
+  │     ├── postcss 8.4.49
+  │     └── autoprefixer 10.4.20
+  └── Dev
+        ├── Vitest 2.1.8
+        ├── @testing-library/react 16.1.0
+        ├── Playwright 1.49.1
+        ├── ESLint 9.16.0
+        ├── Prettier 3.4.2
+        ├── node-gyp 11.0.0
+        └── node-abi 3.71.0
+```
+
+关键约束：
+- Electron 自带 Node 运行时，**不要在 Electron 主进程中使用系统 Node 22 才有的 API**（如 `fs.glob`、`import.meta.dirname` 等）。主进程代码应在 Electron 内建 Node 20 的能力范围内编写。
+- 不要使用 pnpm 10.x——pnpm 10 默认使用 `link-workspace-packages=false`，会改变 monorepo 的包解析行为。
+- Tailwind 3.4.x 使用 PostCSS 8.x。如果未来升级 Tailwind 4，需要同时迁移 PostCSS 10，暂不纳入基线。
+
+### 11.3 包管理器锁定
 
 ```json
-// pnpm-workspace.yaml
+// 根 package.json
+{
+  "packageManager": "pnpm@9.15.0",
+  "engines": {
+    "node": ">=22.23.1 <23",
+    "pnpm": ">=9.15.0 <10"
+  }
+}
+```
+
+### 11.4 Monorepo 配置
+
+```yaml
+# pnpm-workspace.yaml
 packages:
   - 'shared'
   - 'desktop'
   - 'web'
 ```
 
-### 11.3 共享 tsconfig
+```ini
+# .npmrc（根目录）
+shamefully-hoist=false
+strict-peer-dependencies=true
+auto-install-peers=true
+```
 
-```json
+- `shamefully-hoist=false`：pnpm 默认行为，不提升依赖到根 `node_modules`，避免幽灵依赖。
+- `strict-peer-dependencies=true`：peer 依赖不匹配时构建失败，防止运行时异常。
+- `auto-install-peers=true`：自动安装缺失的 peer 依赖。
+
+### 11.5 共享 tsconfig
+
+```jsonc
 // tsconfig.base.json
 {
   "compilerOptions": {
@@ -655,9 +744,77 @@ packages:
     "strict": true,
     "jsx": "react-jsx",
     "esModuleInterop": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "isolatedModules": true,
+    "noUncheckedIndexedAccess": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": false,      // 事件处理器签名允许省略参数
+    "resolveJsonModule": true,
+    "allowImportingTsExtensions": true,
+    "noEmit": true                    // Vite 处理 emit
   }
 }
+```
+
+### 11.6 Electron 主进程 tsconfig
+
+```jsonc
+// desktop/electron/tsconfig.json
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "noEmit": false,
+    "outDir": "../dist-electron",
+    "types": ["node"]
+  },
+  "include": ["**/*.ts"]
+}
+```
+
+注意：Electron 主进程的 `target` 保持 ES2022（对应 Node 20 内置能力），不使用 ES2023/ES2024 新特性。
+
+### 11.7 Electron Builder 配置
+
+```yaml
+# desktop/electron-builder.yml
+appId: com.coagent.interview-assistant
+productName: AI面试助手
+directories:
+  output: release
+files:
+  - dist-electron/**/*
+  - dist-renderer/**/*
+  - package.json
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: assets/icon.ico
+  signAndEditExecutable: false
+mac:
+  target:
+    - target: dmg
+      arch:
+        - x64
+        - arm64
+  icon: assets/icon.icns
+  category: public.app-category.productivity
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  deleteAppDataOnUninstall: false
+publish:
+  provider: generic
+  url: https://update.coagent.example.com
 ```
 
 ---
@@ -775,3 +932,689 @@ packages:
 ### 16.3 E2E 测试
 - 完整面试流程：登录 → 选择语言 → 开启采集 → 说话 → 收到 ASR 转写 → 收到 AI 回答 → 结束 → 保存历史
 - 文件转换流程：选择文件 → 转换 → 保存本地
+
+---
+
+## 十七、稳定开发环境指南
+
+> 适用项目：Electron 桌面端 + Vite Web 端 monorepo  
+> 适用系统：Windows 10/11 64 位（macOS 参考但路径不同）  
+> 目标：能够通过 pnpm 稳定完成依赖安装、TypeScript 编译、Vite 开发服务器启动、Electron 主进程运行、打包 exe/dmg 及日常前端开发  
+> 基线日期：2026-07-31  
+> Node 基线：`22.23.1 LTS`
+
+### 17.1 系统前提
+
+#### Windows
+
+| 工具 | 版本 | 用途 | 安装方式 |
+|------|------|------|---------|
+| Windows 10 / 11 | 64 位，build 19041+ | 运行环境 | — |
+| Git | 最新版 | 版本管理 | `winget install Git.Git` |
+| Visual Studio Build Tools 2022 | 最新 | C++ addon 编译（WASAPI） | `winget install Microsoft.VisualStudio.2022.BuildTools` |
+| Python 3.11+ | 3.11.x | node-gyp 依赖 | `winget install Python.Python.3.11` |
+| LibreOffice | 25.2（可选） | 本地文件转换 | `winget install TheDocumentFoundation.LibreOffice` |
+| Pandoc | 3.6（可选） | 格式转换 | `winget install Pandoc.Pandoc` |
+
+Visual Studio Build Tools 安装时**必须勾选 "使用 C++ 的桌面开发" 工作负载**，包含 MSVC v143 编译器和 Windows 11 SDK。
+
+```powershell
+# 验证
+git --version
+python --version    # 3.11+
+```
+
+#### macOS
+
+| 工具 | 版本 | 用途 | 安装方式 |
+|------|------|------|---------|
+| Xcode Command Line Tools | 最新稳定 | C++ addon 编译 | `xcode-select --install` |
+| LibreOffice | 25.2（可选） | 本地文件转换 | `brew install --cask libreoffice` |
+| Pandoc | 3.6（可选） | 格式转换 | `brew install pandoc` |
+
+### 17.2 安装 Node.js 22.23.1
+
+#### Windows（nvm-windows）
+
+```powershell
+nvm install 22.23.1
+nvm use 22.23.1
+
+node -v     # → v22.23.1
+npm -v      # → 10.9.x（Node 22 自带）
+where node  # → 确保只有一条路径
+```
+
+如果 `where node` 返回多个安装目录，清理旧 Node 安装或 PATH 冲突。
+
+#### macOS（nvm）
+
+```bash
+nvm install 22.23.1
+nvm use 22.23.1
+nvm alias default 22.23.1
+
+node -v     # → v22.23.1
+```
+
+#### 验证 npm 版本
+
+```powershell
+npm -v
+# 应为 10.9.x（Node 22.23.1 自带）
+# 不要手动升级到 npm 11，npm 11 更改了 lockfile 格式
+```
+
+### 17.3 安装 pnpm 9.15.0
+
+```powershell
+npm install -g pnpm@9.15.0
+
+pnpm -v     # → 9.15.0
+```
+
+**不要**用 `corepack enable` 管理 pnpm 版本。Corepack 在 Node 22 中标记为实验性，且可能自动使用 pnpm 10。固定全局安装 `9.15.0` 并通过 `packageManager` 字段声明。
+
+### 17.4 项目初始化
+
+#### 1. 创建项目目录结构
+
+```powershell
+cd f:\CoAgent
+mkdir desktop\electron              # Electron 主进程
+mkdir desktop\src                   # Electron 渲染进程
+mkdir web\src                       # Web 端
+mkdir shared\src                    # 共享代码
+```
+
+项目必须放在**短路径、纯英文目录**中：
+
+```text
+f:\CoAgent\desktop        ✅
+f:\CoAgent\web            ✅
+f:\CoAgent\shared         ✅
+```
+
+避免：
+- 中文目录名
+- 空格（`C:\Program Files\...`）
+- 过深目录（`C:\Users\...\Documents\Projects\...`）
+- OneDrive 同步目录
+- 网络磁盘（`\\server\share\...`）
+
+#### 2. 根 package.json
+
+```json
+{
+  "name": "coagent-monorepo",
+  "private": true,
+  "packageManager": "pnpm@9.15.0",
+  "engines": {
+    "node": ">=22.23.1 <23",
+    "pnpm": ">=9.15.0 <10"
+  },
+  "scripts": {
+    "dev:web": "pnpm -r --filter @coagent/web dev",
+    "dev:electron": "pnpm -r --filter @coagent/electron dev",
+    "build:shared": "pnpm -r --filter @coagent/shared build",
+    "build:web": "pnpm -r --filter @coagent/web build",
+    "build:electron": "pnpm -r --filter @coagent/electron build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "lint": "pnpm -r lint"
+  }
+}
+```
+
+#### 3. 项目级 .nvmrc
+
+```text
+22.23.1
+```
+
+#### 4. 各子包 package.json
+
+**shared/package.json：**
+
+```json
+{
+  "name": "@coagent/shared",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./api/*": "./src/api/*.ts",
+    "./store/*": "./src/store/*.ts",
+    "./utils/*": "./src/utils/*.ts",
+    "./theme/*": "./src/theme/*.ts",
+    "./types/*": "./src/types/*.ts"
+  },
+  "peerDependencies": {
+    "react": "19.0.0"
+  },
+  "devDependencies": {
+    "typescript": "5.6.3"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  }
+}
+```
+
+**desktop/package.json（关键依赖）：**
+
+```json
+{
+  "name": "@coagent/electron",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist-electron/main/index.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "npm run build:renderer && npm run build:main && electron-builder",
+    "build:renderer": "vite build",
+    "build:main": "tsc -p electron/tsconfig.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "@coagent/shared": "workspace:*",
+    "eventemitter3": "5.0.1",
+    "electron-store": "10.0.0",
+    "electron-updater": "6.3.9",
+    "react": "19.0.0",
+    "react-dom": "19.0.0",
+    "react-router-dom": "7.1.1",
+    "framer-motion": "11.15.0"
+  },
+  "devDependencies": {
+    "electron": "32.2.8",
+    "electron-builder": "25.1.8",
+    "vite": "6.0.5",
+    "@vitejs/plugin-react": "4.3.4",
+    "typescript": "5.6.3",
+    "vitest": "2.1.8",
+    "eslint": "9.16.0",
+    "prettier": "3.4.2",
+    "node-gyp": "11.0.0",
+    "node-abi": "3.71.0"
+  }
+}
+```
+
+**web/package.json（关键依赖）：**
+
+```json
+{
+  "name": "@coagent/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --port 5173",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "@coagent/shared": "workspace:*",
+    "eventemitter3": "5.0.1",
+    "react": "19.0.0",
+    "react-dom": "19.0.0",
+    "react-router-dom": "7.1.1",
+    "framer-motion": "11.15.0"
+  },
+  "devDependencies": {
+    "vite": "6.0.5",
+    "@vitejs/plugin-react": "4.3.4",
+    "typescript": "5.6.3",
+    "tailwindcss": "3.4.17",
+    "postcss": "8.4.49",
+    "autoprefixer": "10.4.20",
+    "vitest": "2.1.8",
+    "@testing-library/react": "16.1.0",
+    "eslint": "9.16.0",
+    "prettier": "3.4.2"
+  }
+}
+```
+
+所有依赖均使用**精确版本号**（不带 `^` 或 `~`），通过 `package.json` 中的 `"pnpm.overrides"` 在根级别防止子依赖漂移。
+
+#### 5. 首次依赖安装
+
+```powershell
+# 在项目根目录执行
+pnpm install
+
+# 验证所有 workspace 包已链接
+pnpm ls -r --depth 0
+```
+
+预期输出包含三个包：
+```text
+@coagent/shared@0.1.0
+@coagent/electron@0.1.0
+@coagent/web@0.1.0
+```
+
+**不要**：
+- 删除 `pnpm-lock.yaml` 后随意重新解析依赖
+- npm、Yarn、pnpm 混用
+- 使用 `pnpm update` 批量更新依赖
+
+### 17.5 Tailwind CSS 配置
+
+```js
+// tailwind.config.js（desktop 和 web 各自一份，内容共享）
+/** @type {import('tailwindcss').Config} */
+export default {
+  content: ['./index.html', './src/**/*.{js,ts,jsx,tsx}'],
+  darkMode: 'class',  // 手动切换，不依赖 prefers-color-scheme
+  theme: {
+    extend: {
+      colors: {
+        // 从 shared/theme/tokens.ts 映射
+        bg: 'var(--color-bg)',
+        'bg-surface': 'var(--color-bg-surface)',
+        accent: 'var(--color-accent)',
+        'accent-light': 'var(--color-accent-light)',
+        'accent-soft': 'var(--color-accent-soft)',
+        'text-primary': 'var(--color-text-primary)',
+        'text-secondary': 'var(--color-text-secondary)',
+        'text-tertiary': 'var(--color-text-tertiary)',
+        divider: 'var(--color-divider)',
+        success: 'var(--color-success)',
+        warning: 'var(--color-warning)',
+      },
+      borderRadius: {
+        sm: '6px',
+        md: '10px',
+        lg: '14px',
+        xl: '18px',
+        full: '9999px',
+      },
+      boxShadow: {
+        sm: '0 1px 2px rgba(0,0,0,0.05)',
+        md: '0 2px 8px rgba(0,0,0,0.08)',
+        lg: '0 4px 16px rgba(0,0,0,0.12)',
+      },
+      fontSize: {
+        caption: ['12px', { lineHeight: '16px' }],
+        'body-sm': ['13px', { lineHeight: '18px' }],
+        body: ['15px', { lineHeight: '22px' }],
+        heading: ['20px', { lineHeight: '28px' }],
+        title: ['22px', { lineHeight: '30px' }],
+      },
+      spacing: {
+        xs: '4px',
+        sm: '8px',
+        md: '12px',
+        lg: '16px',
+        xl: '20px',
+        '2xl': '28px',
+        '3xl': '36px',
+      },
+    },
+  },
+  plugins: [],
+};
+```
+
+```js
+// postcss.config.js
+export default {
+  plugins: {
+    tailwindcss: {},
+    autoprefixer: {},
+  },
+};
+```
+
+### 17.6 Vite 配置
+
+#### Electron 渲染进程
+
+```typescript
+// desktop/vite.config.ts
+import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
+import path from 'path';
+
+export default defineConfig({
+  plugins: [react()],
+  root: '.',
+  base: './',  // Electron 用相对路径加载
+  build: {
+    outDir: 'dist-renderer',
+    emptyOutDir: true,
+  },
+  resolve: {
+    alias: {
+      '@coagent/shared': path.resolve(__dirname, '../shared/src'),
+      '@': path.resolve(__dirname, './src'),
+    },
+  },
+  server: {
+    port: 5173,
+    strictPort: true,
+  },
+});
+```
+
+#### Web
+
+```typescript
+// web/vite.config.ts
+import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
+import path from 'path';
+
+export default defineConfig({
+  plugins: [react()],
+  root: '.',
+  base: '/',
+  build: {
+    outDir: 'dist',
+    emptyOutDir: true,
+  },
+  resolve: {
+    alias: {
+      '@coagent/shared': path.resolve(__dirname, '../shared/src'),
+      '@': path.resolve(__dirname, './src'),
+    },
+  },
+  server: {
+    port: 5173,
+    strictPort: true,
+  },
+  envPrefix: 'COAGENT_',
+});
+```
+
+### 17.7 ESLint + Prettier 配置
+
+ESLint 使用扁平配置格式（ESLint 9.x 默认）：
+
+```javascript
+// eslint.config.js（根目录，所有子包继承）
+import js from '@eslint/js';
+import tseslint from 'typescript-eslint';
+import react from 'eslint-plugin-react';
+import reactHooks from 'eslint-plugin-react-hooks';
+
+export default [
+  js.configs.recommended,
+  ...tseslint.configs.recommended,
+  {
+    files: ['**/*.{ts,tsx}'],
+    plugins: { react, 'react-hooks': reactHooks },
+    rules: {
+      'react/react-in-jsx-scope': 'off',   // React 19 不需要 import React
+      '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
+      '@typescript-eslint/explicit-function-return-type': 'off',
+    },
+  },
+  {
+    ignores: ['**/dist*/**', '**/node_modules/**', '**/*.js', '**/*.cjs'],
+  },
+];
+```
+
+Prettier 配置保持和现有 RN 项目一致：
+
+```javascript
+// .prettierrc.js
+module.exports = {
+  arrowParens: 'avoid',
+  bracketSameLine: true,
+  bracketSpacing: false,
+  singleQuote: true,
+  trailingComma: 'all',
+  tabWidth: 2,
+  printWidth: 100,
+};
+```
+
+### 17.8 首次启动验证
+
+完成项目初始化后，按顺序验证以下步骤全部通过：
+
+#### Step 1：共享包类型检查
+
+```powershell
+cd f:\CoAgent
+pnpm typecheck
+```
+
+预期：所有 workspace 包 TypeScript 编译无错误。
+
+#### Step 2：Web 开发服务器
+
+```powershell
+cd f:\CoAgent
+pnpm dev:web
+```
+
+浏览器访问 `http://localhost:5173`，应能看到空页面（无控制台错误）。
+
+#### Step 3：Electron 开发模式启动
+
+```powershell
+cd f:\CoAgent
+pnpm dev:electron
+```
+
+预期：Electron 主窗口正常显示，DevTools 无错误。
+
+#### Step 4：Electron ContentProtection 验证
+
+1. 启动 Electron App
+2. 打开 OBS Studio 或 Windows 截图工具
+3. 确认 Electron 窗口在截图/录屏中**不可见**（或被覆盖为黑色/无内容）
+
+#### Step 5：Web 端构建
+
+```powershell
+cd f:\CoAgent
+pnpm build:web
+```
+
+预期：`web/dist/` 目录生成，包含 `index.html` + JS/CSS 资源。
+
+#### Step 6：Electron 打包
+
+```powershell
+cd f:\CoAgent
+pnpm build:electron
+```
+
+预期：`desktop/release/` 目录生成 `.exe`（Windows）或 `.dmg`（macOS）。
+
+### 17.9 路由导航快捷键验证
+
+在 Electron 开发模式下验证以下快捷键工作正常：
+
+| 快捷键 | 功能 | 预期行为 |
+|--------|------|---------|
+| `Ctrl + Tab` | 下一个 Tab | 面试 → 工具箱 → 我的 |
+| `Ctrl + Shift + Tab` | 上一个 Tab | 反向切换 |
+| `Ctrl + B` | 切换浮窗显示 | AI 浮窗显示/隐藏 |
+| `Ctrl + Shift + A` | 始终置顶 | 主窗口置顶/取消 |
+| `Ctrl + Shift + P` | ContentProtection | 开关窗口隐身 |
+
+### 17.10 开发工作流
+
+日常开发流程（和 RN 项目截然不同——不需要 Metro、不需要 Gradle、不需要 Android Studio）：
+
+```powershell
+# 终端 A：开发服务
+cd f:\CoAgent
+pnpm dev:electron    # 或 pnpm dev:web
+
+# 终端 B：TypeScript 守护
+cd f:\CoAgent
+pnpm typecheck --watch
+```
+
+日常 JS/TS 开发验证：
+
+1. 修改组件代码。
+2. Vite HMR 自动刷新（Electron renderer 和 Web 端均支持）。
+3. 查看终端 TypeScript 编译结果。
+4. Electron DevTools（`Ctrl+Shift+I`）检查 Console/Network/React Components。
+
+只有在以下情况才进行完整清理：
+
+- 切换 Node 大版本
+- 新增或升级原生依赖（Electron 主进程）
+- 新增 node-gyp 编译的 native addon
+- 修改 pnpm workspace 结构
+- 修改 TypeScript target 或 moduleResolution
+
+清理命令：
+
+```powershell
+# 删除所有构建产物和依赖
+Remove-Item -Recurse -Force node_modules -ErrorAction SilentlyContinue
+Remove-Item -Recurse -Force desktop\node_modules -ErrorAction SilentlyContinue
+Remove-Item -Recurse -Force web\node_modules -ErrorAction SilentlyContinue
+Remove-Item -Recurse -Force shared\node_modules -ErrorAction SilentlyContinue
+Remove-Item -Recurse -Force desktop\dist-renderer -ErrorAction SilentlyContinue
+Remove-Item -Recurse -Force desktop\dist-electron -ErrorAction SilentlyContinue
+Remove-Item -Recurse -Force desktop\release -ErrorAction SilentlyContinue
+Remove-Item -Recurse -Force web\dist -ErrorAction SilentlyContinue
+
+# 清理 pnpm store（仅在明确出现缓存问题时）
+pnpm store prune
+
+# 重新安装
+pnpm install --frozen-lockfile
+```
+
+### 17.11 常见问题定位
+
+#### Node 版本不正确
+
+```powershell
+node -v
+# 不是 22.23.1？→ nvm use 22.23.1
+# nvm 未安装该版本？→ nvm install 22.23.1
+```
+
+#### pnpm 版本不正确
+
+```powershell
+pnpm -v
+# 不是 9.15.0？→ npm install -g pnpm@9.15.0
+# Corepack 干扰？→ corepack disable
+```
+
+#### `MODULE_NOT_FOUND` 找不到 shared 包
+
+```powershell
+pnpm install --frozen-lockfile
+# 确保 pnpm-workspace.yaml 包含 shared 包目录
+# 确保 package.json 中使用 "workspace:*" 协议
+```
+
+#### Electron ContentProtection 效果不正常
+
+检查：
+1. Electron 版本是否为 `32.2.8`（`node_modules/.pnpm/electron@...`）
+2. 主窗口是否调用了 `setContentProtection(true)`
+3. Windows 10 build 是否 ≥ 19041（`winver` 命令查看）
+4. 截图工具是否使用标准截屏 API（OBS/截图工具可验证，硬件采集卡不可验证）
+
+#### TypeScript 报 `Cannot find module '@coagent/shared'`
+
+```powershell
+# 检查 shared 包的 exports 字段
+# 确认 tsconfig 中有 paths 或使用 pnpm workspace 协议解析
+pnpm typecheck
+```
+
+#### Vite 端口被占用
+
+```powershell
+# 查看占用 5173 端口的进程
+netstat -ano | findstr :5173
+
+# 杀掉对应 PID
+taskkill /PID <PID> /F
+```
+
+### 17.12 禁止事项
+
+为了维持稳定环境，不要：
+
+1. 使用 Node 21、Node 23 或其他非 LTS 版本。
+2. 将 pnpm 升级到 10.x（peer 依赖和 workspace 解析行为改变）。
+3. 将 Electron 升级到 33.x（ContentProtection hide 后丢失）或 35.x（黑块回归）。
+4. 将 Tailwind 升级到 v4（API 和 PostCSS 依赖大幅变化）。
+5. 删除 `pnpm-lock.yaml` 后随意重新安装。
+6. 混用 npm、Yarn 和 pnpm。
+7. 在 Electron 主进程中使用 Node 22+ API（Electron 32 内建 Node 20）。
+8. 在项目中硬编码本地代理端口或绝对路径。
+9. 同时升级 React、TypeScript、Vite、Electron——每次只升级一个并全面验证。
+10. 将项目放在中文、空格或过深目录中。
+11. 接受 IDE 的自动依赖升级建议（VS Code 的 Version Lens、Renovate 等）。
+12. 使用 `pnpm update` 批量更新所有依赖。
+
+### 17.13 验收清单
+
+完成环境配置和首次构建后，必须逐项通过：
+
+#### 环境
+
+- [ ] `node -v` 输出 `v22.23.1`
+- [ ] `pnpm -v` 输出 `9.15.0`
+- [ ] `pnpm typecheck` 所有包无错误
+- [ ] `pnpm ls -r --depth 0` 显示三个 workspace 包
+
+#### Web 端
+
+- [ ] `pnpm dev:web` 启动成功
+- [ ] 浏览器访问 `http://localhost:5173` 正常
+- [ ] HMR 修改代码后自动刷新
+- [ ] `pnpm build:web` 生成 `web/dist/` 产物
+
+#### Electron 桌面端
+
+- [ ] `pnpm dev:electron` 启动成功
+- [ ] 主窗口正常显示、无崩溃
+- [ ] DevTools 可以打开（`Ctrl+Shift+I`）
+- [ ] `setContentProtection(true)` 窗口在截屏中不可见
+- [ ] 浮窗 overlay 正常显示和关闭
+- [ ] `pnpm build:electron` 生成 `.exe`（Windows）或 `.dmg`（macOS）
+
+#### 代码规范
+
+- [ ] ESLint 对所有包无错误
+- [ ] Prettier 格式化一致
+- [ ] 无 `console.log` 残留（除 `eslint-disable` 外）
+
+全部通过后，即可认定 Electron + Web 开发、构建和日常前端开发链路已经跑通。
+
+---
+
+## 十八、官方参考
+
+- Node.js 版本生命周期：<https://nodejs.org/en/about/previous-releases>
+- Electron 32.x 发布说明：<https://www.electronjs.org/docs/latest/api/structures>
+- Electron ContentProtection 文档：<https://www.electronjs.org/docs/latest/api/browser-window#winsetcontentprotectionenable>
+- pnpm workspace 文档：<https://pnpm.io/workspaces>
+- Vite 配置文档：<https://vite.dev/config/>
+- Tailwind CSS 3.x 文档：<https://tailwindcss.com/docs/installation>
+- electron-builder 文档：<https://www.electron.build/>
+- TypeScript 5.6 发布说明：<https://devblogs.microsoft.com/typescript/announcing-typescript-5-6/>
+- React 19 升级指南：<https://react.dev/blog/2024/12/05/react-19>
+- ESLint 9.x 扁平配置：<https://eslint.org/docs/latest/use/configure/configuration-files>
