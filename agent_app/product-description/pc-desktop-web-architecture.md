@@ -19,63 +19,75 @@
 
 ```
 f:\CoAgent\
-├── agent_app/                       # 现有 FastAPI 后端（基本不变）
-├── desktop/                         # 🆕 Electron 桌面端
-│   ├── package.json
-│   ├── electron-builder.yml         # 打包配置
-│   ├── electron/                    # 主进程代码
-│   │   ├── main.ts                  # BrowserWindow 生命周期
-│   │   ├── preload.ts               # 安全的 IPC 桥接
-│   │   ├── windows/                 # 窗口管理
-│   │   │   ├── main-window.ts       # 主窗口（配置/工具）
-│   │   │   └── overlay-window.ts    # AI 浮窗（ContentProtection 隐身）
-│   │   ├── audio/                   # 🆕 WASAPI 音频采集
-│   │   │   ├── wasapi-capture.ts    # WASAPI loopback + 麦克风
-│   │   │   ├── pcm-normalizer.ts    # 同 Android 的线性插值归一化
-│   │   │   └── frame-accumulator.ts # 1280 字节帧累积
-│   │   ├── stream/                  # WebSocket 客户端
-│   │   │   ├── ws-client.ts         # 替换 Android AudioStreamClient
-│   │   │   └── wire-protocol.ts     # 同 Android AudioWireProtocol
-│   │   ├── file-convert/            # 本地文件转换
-│   │   │   └── libreoffice.ts       # spawn LibreOffice/Pandoc
-│   │   └── ipc-handlers.ts          # IPC 路由注册
-│   ├── src/                         # 渲染进程（React，和 web/ 共享）
-│   │   ├── main.tsx                 # React 入口
-│   │   ├── App.tsx                  # 路由/布局
-│   │   └── ...
-│   └── vite.config.ts
-├── web/                             # 🆕 Web 端
-│   ├── package.json
-│   ├── src/
-│   │   ├── main.tsx                 # Web 入口
-│   │   └── ...
-│   ├── public/
-│   └── vite.config.ts
-├── shared/                          # 🆕 共享代码
-│   ├── package.json
-│   ├── api/                         # 从 fe-app/src/api/ 迁移
-│   │   ├── client.ts                # fetch 封装（100% 复用）
-│   │   ├── auth.ts                  # 认证 API
-│   │   ├── interview.ts             # 面试 API
-│   │   ├── resume.ts                # 简历 API
-│   │   └── tools.ts                 # 工具 API（新增）
-│   ├── store/                       # 纯 TS 状态管理
-│   │   ├── interview-reducer.ts     # 从 useAudioCaptureController reducer 提取
-│   │   └── types.ts                 # ConversationMessage 等共享类型
-│   ├── utils/
-│   │   ├── token-storage.ts         # 统一 token/profile 存储接口
-│   │   ├── interview-state.ts       # 面试锁定状态（100% 复用）
-│   │   └── auth-context.ts          # Auth React Context（100% 复用）
-│   ├── theme/
-│   │   ├── tokens.ts                # 颜色/间距/字体设计令牌
-│   │   └── use-theme.ts             # 暗色模式 hook
-│   ├── config.ts                    # 从 fe-app/src/config.ts 迁移
-│   └── i18n/                        # 多语言（后续扩展）
-│       ├── zh.json
-│       └── en.json
-├── fe-app/                          # 现有 Android RN 项目（保留，不再主力迭代）
-└── docs/
-    └── architecture.md              # 本文档
+├── agent_app/
+│   ├── main.py / orchestrator.py / ...  # Agent 编排系统
+│   ├── prompts/                         # Agent 提示词
+│   ├── workspace/
+│   │   ├── be/poc-audio-capture/        # 🟢 现有 FastAPI 后端（基本不变）
+│   │   ├── fe/                          # 🆕 FE Agent 产出目录
+│   │   │   ├── desktop/                 # 🆕 Electron 桌面端
+│   │   │   │   ├── package.json
+│   │   │   │   ├── electron-builder.yml
+│   │   │   │   ├── electron/            # 主进程代码
+│   │   │   │   │   ├── main.ts
+│   │   │   │   │   ├── preload.ts
+│   │   │   │   │   ├── windows/         # 窗口管理
+│   │   │   │   │   │   ├── main-window.ts
+│   │   │   │   │   │   └── overlay-window.ts
+│   │   │   │   │   ├── audio/           # WASAPI 音频采集
+│   │   │   │   │   │   ├── wasapi-capture.ts
+│   │   │   │   │   │   ├── pcm-normalizer.ts
+│   │   │   │   │   │   └── frame-accumulator.ts
+│   │   │   │   │   ├── stream/          # WebSocket 客户端
+│   │   │   │   │   │   ├── ws-client.ts
+│   │   │   │   │   │   └── wire-protocol.ts
+│   │   │   │   │   ├── file-convert/    # 本地文件转换
+│   │   │   │   │   │   └── libreoffice.ts
+│   │   │   │   │   └── ipc-handlers.ts
+│   │   │   │   ├── src/                 # 渲染进程（React）
+│   │   │   │   │   ├── main.tsx
+│   │   │   │   │   ├── App.tsx
+│   │   │   │   │   └── ...
+│   │   │   │   └── vite.config.ts
+│   │   │   ├── web/                     # 🆕 Web 端
+│   │   │   │   ├── package.json
+│   │   │   │   ├── src/
+│   │   │   │   │   ├── main.tsx
+│   │   │   │   │   └── ...
+│   │   │   │   ├── public/
+│   │   │   │   └── vite.config.ts
+│   │   │   └── shared/                  # 🆕 共享代码
+│   │   │       ├── package.json
+│   │   │       ├── api/                 # 从 fe-app/src/api/ 迁移
+│   │   │       │   ├── client.ts
+│   │   │       │   ├── auth.ts
+│   │   │       │   ├── interview.ts
+│   │   │       │   ├── resume.ts
+│   │   │       │   └── tools.ts
+│   │   │       ├── store/               # 纯 TS 状态管理
+│   │   │       │   ├── interview-reducer.ts
+│   │   │       │   └── types.ts
+│   │   │       ├── utils/
+│   │   │       │   ├── token-storage.ts
+│   │   │       │   ├── interview-state.ts
+│   │   │       │   └── auth-context.ts
+│   │   │       ├── theme/
+│   │   │       │   ├── tokens.ts
+│   │   │       │   └── use-theme.ts
+│   │   │       ├── config.ts
+│   │   │       └── i18n/
+│   │   │           ├── zh.json
+│   │   │           └── en.json
+│   │   ├── shared/                      # Agent 协作共享目录
+│   │   │   ├── API_CONTRACT.md
+│   │   │   ├── STATUS.md
+│   │   │   ├── COLLABORATION.md
+│   │   │   └── tasks/
+│   │   └── prd/                         # PM Agent 产出
+│   └── product-description/             # 产品方案文档
+│       └── pc-desktop-web-architecture.md
+└── fe-app/                              # 现有 Android RN App（已发布产品）
+    └── audio-capture/
 ```
 
 ---
@@ -84,24 +96,26 @@ f:\CoAgent\
 
 ### 2.1 从现有 RN 代码可 100% 复用的部分
 
+源文件路径以 `fe-app/audio-capture/` 为基准，迁移到 `agent_app/workspace/fe/shared/`：
+
 | 源文件 | 迁移到 | 改动 |
 |--------|--------|------|
-| `fe-app/src/api/client.ts` | `shared/api/client.ts` | ⚪ 零改动 |
-| `fe-app/src/api/auth.ts` | `shared/api/auth.ts` | ⚪ 零改动 |
-| `fe-app/src/api/interview.ts` | `shared/api/interview.ts` | 提取 ConversationMessage 类型到 `shared/store/types.ts` |
-| `fe-app/src/api/resume.ts` | `shared/api/resume.ts` | ⚪ 零改动 |
-| `fe-app/src/utils/interviewState.ts` | `shared/utils/interview-state.ts` | ⚪ 零改动 |
-| `fe-app/src/utils/AuthContext.ts` | `shared/utils/auth-context.ts` | ⚪ 零改动 |
-| `fe-app/src/theme.ts` | `shared/theme/tokens.ts` + `use-theme.ts` | 替换 RN shadow 为 CSS box-shadow |
-| `fe-app/src/config.ts` | `shared/config.ts` | 替换硬编码 IP 为环境变量 |
-| `useAudioCaptureController` 中的 reducer | `shared/store/interview-reducer.ts` | 提取纯函数，去除 RN 依赖 |
+| `fe-app/audio-capture/src/api/client.ts` | `workspace/fe/shared/api/client.ts` | ⚪ 零改动 |
+| `fe-app/audio-capture/src/api/auth.ts` | `workspace/fe/shared/api/auth.ts` | ⚪ 零改动 |
+| `fe-app/audio-capture/src/api/interview.ts` | `workspace/fe/shared/api/interview.ts` | 提取 ConversationMessage 类型到 `workspace/fe/shared/store/types.ts` |
+| `fe-app/audio-capture/src/api/resume.ts` | `workspace/fe/shared/api/resume.ts` | ⚪ 零改动 |
+| `fe-app/audio-capture/src/utils/interviewState.ts` | `workspace/fe/shared/utils/interview-state.ts` | ⚪ 零改动 |
+| `fe-app/audio-capture/src/utils/AuthContext.ts` | `workspace/fe/shared/utils/auth-context.ts` | ⚪ 零改动 |
+| `fe-app/audio-capture/src/theme.ts` | `workspace/fe/shared/theme/tokens.ts` + `use-theme.ts` | 替换 RN shadow 为 CSS box-shadow |
+| `fe-app/audio-capture/src/config.ts` | `workspace/fe/shared/config.ts` | 替换硬编码 IP 为环境变量 |
+| `useAudioCaptureController` 中的 reducer | `workspace/fe/shared/store/interview-reducer.ts` | 提取纯函数，去除 RN 依赖 |
 
 ### 2.2 需要平台适配的部分
 
 ```
-shared/utils/token-storage.ts       # 定义接口
-  ├── desktop/electron/storage.ts   # Electron: localStorage 或 electron-store
-  └── web/src/storage.ts            # Web: localStorage
+workspace/fe/shared/utils/token-storage.ts       # 定义接口
+  ├── workspace/fe/desktop/electron/storage.ts   # Electron: localStorage 或 electron-store
+  └── workspace/fe/web/src/storage.ts            # Web: localStorage
 ```
 
 ### 2.3 需要完全重写的部分（RN 原生能力 → Electron/Web 等价物）
@@ -394,6 +408,102 @@ export async function convertToPdf(inputPath: string, outputDir: string): Promis
 
 如果用户没装 LibreOffice，仍然可以走现有的服务端转换（`/api/tools/word-to-pdf`、`/api/tools/pdf-to-word`）。这是一个优雅降级策略。
 
+### 6.5 打包 LibreOffice Portable 到安装包（推荐）
+
+上面的"检测系统安装 → 未装则回落服务端"方案有一个问题：**用户体验差**。更好的做法是参考 [Docket](https://github.com/Wis7Com/Docket) 项目的策略，把 LibreOffice 便携版作为 Electron App 的资源文件直接打包。
+
+**Windows 便携版来源：**
+
+- [LibreOffice Portable](https://www.libreoffice.org/download/portable-versions/)（官方，约 350MB 解压后）——安装时不需要管理员权限，核心功能完整
+- 或从常规 LibreOffice 安装目录中提取最小所需文件（`program/` + `share/`），精简到约 250MB
+
+**检测优先级（从快到慢）：**
+
+```
+1. 系统已安装 LibreOffice？（检测注册表 / 常见路径）
+   → 用系统的，最快
+
+2. App 自带的便携版？（app.getPath('exe') 同级目录或 resources/）
+   → 用自带的，开箱即用
+
+3. 都没有？
+   → 回退到服务端 API
+```
+
+**electron-builder 配置：**
+
+```yaml
+# electron-builder.yml
+extraResources:
+  # 把 LibreOffice Portable 目录整个打入 resources/
+  - from: 'vendor/libreoffice-portable'
+    to: 'libreoffice'
+    filter:
+      - '**/*'
+```
+
+```typescript
+// electron/file-convert/libreoffice.ts
+import path from 'path';
+import { app } from 'electron';
+
+function getLibreOfficePath(): string {
+  // 1. 优先用系统安装的
+  const systemPaths = [
+    process.platform === 'win32' && 'C:\\Program Files\\LibreOffice\\program\\soffice.exe',
+    process.platform === 'win32' && 'C:\\Program Files (x86)\\LibreOffice\\program\\soffice.exe',
+    process.platform === 'darwin' && '/Applications/LibreOffice.app/Contents/MacOS/soffice',
+    process.platform === 'linux' && '/usr/bin/soffice',
+  ].filter(Boolean) as string[];
+
+  for (const p of systemPaths) {
+    if (fs.existsSync(p)) return p;
+  }
+
+  // 2. 用 App 自带的便携版
+  const portablePath = process.env.NODE_ENV === 'development'
+    ? path.join(__dirname, '..', '..', 'vendor', 'libreoffice-portable', 'program', 'soffice.exe')
+    : path.join(process.resourcesPath, 'libreoffice', 'program', 'soffice.exe');
+
+  if (fs.existsSync(portablePath)) return portablePath;
+
+  // 3. 都没找到，抛错，由上层调用方回退到服务端 API
+  throw new LibreOfficeNotFoundError();
+}
+```
+
+**体积权衡：**
+
+| 策略 | 安装包大小 | 用户体验 |
+|------|:---:|------|
+| 不带 LibreOffice | ~150MB | 需手动安装或联网转换 |
+| 带 LibreOffice Portable 精简 | ~400MB | ✅ 开箱即用 |
+| 带全套 LibreOffice | ~500MB | 开箱即用，但下载慢 |
+
+建议：**默认不带 LibreOffice（减小安装包），首次使用文件转换时引导用户一键下载 Portable 版本**（App 内下载 → 解压到 `userData` 目录）。这样安装包保持 ~150MB，转换能力按需获取。
+
+```typescript
+// 首次使用时的交互流程
+async function ensureLibreOffice(): Promise<string> {
+  try { return getLibreOfficePath(); } catch {}
+  
+  // 弹窗："文件转换需要 LibreOffice，是否现在下载？（约 350MB）"
+  const confirmed = await dialog.showMessageBox({
+    type: 'info',
+    title: '安装 LibreOffice',
+    message: '文件转换功能需要 LibreOffice。',
+    detail: '是否从官网下载？或使用在线转换。',
+    buttons: ['下载 LibreOffice', '使用在线转换', '取消'],
+  });
+
+  if (confirmed.response === 0) {
+    shell.openExternal('https://www.libreoffice.org/download/');
+  }
+  // 如果选择"使用在线转换"→ 回退到服务端 API
+  throw new LibreOfficeNotFoundError();
+}
+```
+
 ---
 
 ## 七、Web 端设计
@@ -543,7 +653,7 @@ export function useTheme() {
 
 ### 9.1 从现有 reducer 提取核心逻辑
 
-Android 端 `useAudioCaptureController.ts` 中有约 200 行的**纯 reducer 函数**，可以完整提取到 `shared/store/interview-reducer.ts`：
+Android 端 `useAudioCaptureController.ts` 中有约 200 行的**纯 reducer 函数**，可以完整提取到 `workspace/fe/shared/store/interview-reducer.ts`：
 
 ```typescript
 // shared/store/interview-reducer.ts
@@ -714,7 +824,7 @@ Node 22.23.1
 ### 11.4 Monorepo 配置
 
 ```yaml
-# pnpm-workspace.yaml
+# agent_app/workspace/fe/pnpm-workspace.yaml
 packages:
   - 'shared'
   - 'desktop'
@@ -793,6 +903,14 @@ files:
   - dist-electron/**/*
   - dist-renderer/**/*
   - package.json
+# ── 可选：把 LibreOffice Portable 打入安装包 ──
+# 如果不带，用户可以首次使用时按需下载
+# extraResources:
+#   - from: 'vendor/libreoffice-portable'
+#     to: 'libreoffice'
+#     filter: ['**/*']
+asar:
+  smartUnpack: true
 win:
   target:
     - target: nsis
@@ -881,10 +999,11 @@ publish:
 - [ ] Interview History 页面
 - [ ] 导航组件（同 RN TabNavigator 的三栏结构）
 
-### Phase 5：文件转换集成（1 天）
-- [ ] LibreOffice 检测 + spawn
-- [ ] IPC 封装
+### Phase 5：文件转换集成（1-2 天）
+- [ ] LibreOffice 检测策略实现（系统安装 → portable → 服务端 API 三级回退）
+- [ ] IPC 封装（`file:convert` / `file:pick` / `file:save`）
 - [ ] UI 集成（替换现有服务端上传逻辑）
+- [ ] LibreOffice Portable 打包策略决策（默认不带 / 按需下载 / 可选带）
 
 ### Phase 6：Web 端独立开发（2-3 天）
 - [ ] Vite web 项目配置
@@ -1020,7 +1139,8 @@ pnpm -v     # → 9.15.0
 #### 1. 创建项目目录结构
 
 ```powershell
-cd f:\CoAgent
+# 在 agent_app/workspace/fe 下创建
+cd f:\CoAgent\agent_app\workspace\fe
 mkdir desktop\electron              # Electron 主进程
 mkdir desktop\src                   # Electron 渲染进程
 mkdir web\src                       # Web 端
@@ -1030,9 +1150,9 @@ mkdir shared\src                    # 共享代码
 项目必须放在**短路径、纯英文目录**中：
 
 ```text
-f:\CoAgent\desktop        ✅
-f:\CoAgent\web            ✅
-f:\CoAgent\shared         ✅
+f:\CoAgent\agent_app\workspace\fe\desktop       ✅
+f:\CoAgent\agent_app\workspace\fe\web           ✅
+f:\CoAgent\agent_app\workspace\fe\shared        ✅
 ```
 
 避免：
