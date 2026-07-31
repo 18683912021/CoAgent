@@ -273,9 +273,7 @@ overlayWindow.setIgnoreMouseEvents(true, { forward: true });
 └──────────────────────────────┘   └──────────────────────────────┘
 ```
 
-### 4.5 双屏辅助方案
-
-如果用户有两个显示器，AI 浮窗可以直接放在副屏上，主屏共享 IDE/代码给面试官，副屏永远不被共享——**和 ContentProtection 形成双重保险**。
+用户可以自由拖拽两个窗口到合适位置——主窗口控制面试流程，浮窗显示 AI 提示。因为浮窗通过 `setContentProtection(true)` 在屏幕共享中对面试官不可见，用户无需刻意隐藏。
 
 ---
 
@@ -347,6 +345,225 @@ class AudioStreamClient {
 ### 5.3 和现有后端的兼容性
 
 后端 WebSocket 代码在 `agent_app/workspace/be/poc-audio-capture/app/routers/audio.py`，已经支持 JSON 控制消息 + 二进制帧混合协议。**唯一的适配点**是将 `client_hello` 中的 `"client"` 字段从 `"rn-android"` 改为 `"pc-windows"` / `"pc-macos"` / `"web"`——这只是为了服务端标识客户端类型。
+
+### 5.4 WebSocket 重连机制
+
+网络断开或后端重启时，WebSocket 会意外关闭。Android 端 `AudioStreamClient.kt` 中有 `socketGeneration` 防陈旧回调 + `retryOnConnectionFailure = true`。PC 端用浏览器原生 `WebSocket` 实现等价机制。
+
+#### 5.4.1 重连状态机
+
+```
+IDLE → CONNECTING → READY ←→ DEGRADED
+  ↑        ↓           ↓
+  └── CLOSED ←─────────┘ (超过最大重试次数)
+  
+DEAD: 最终放弃，通知用户手动重试
+```
+
+#### 5.4.2 实现
+
+```typescript
+// shared/stream/ws-client.ts
+export class AudioStreamClient {
+  private ws: WebSocket | null = null;
+  private url: string;
+  private sessionId: string | null = null;
+  private generation = 0;        // 防陈旧回调，等同 Android socketGeneration
+  private retryCount = 0;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  private connectPromise: Promise<void> | null = null;
+  private emitter = new EventEmitter();
+
+  // ── 重连配置 ──
+  private readonly MAX_RETRY = 10;
+  private readonly INITIAL_DELAY_MS = 500;
+  private readonly MAX_DELAY_MS = 30_000;
+  private readonly CONNECT_TIMEOUT_MS = 10_000;
+
+  constructor(url: string) {
+    this.url = url;
+  }
+
+  async connect(): Promise<void> {
+    this.retryCount = 0;
+    return this._connect();
+  }
+
+  private async _connect(): Promise<void> {
+    this.generation += 1;
+    const gen = this.generation;
+
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        if (gen !== this.generation) return;
+        this.ws?.close();
+        reject(new Error('WebSocket connect timeout'));
+      }, this.CONNECT_TIMEOUT_MS);
+
+      this.ws = new WebSocket(this.url);
+      this.ws.binaryType = 'arraybuffer';
+
+      this.ws.onopen = () => {
+        clearTimeout(timeout);
+        if (gen !== this.generation) return;
+        this.retryCount = 0;
+        this.ws!.send(JSON.stringify({
+          type: 'client_hello',
+          protocol: 'audio.capture.v1',
+          client: 'pc-windows',
+        }));
+        // 如果当前有活跃 session，重发 session_start + track_start
+        this._resyncAfterReconnect();
+        resolve();
+      };
+
+      this.ws.onmessage = (event) => {
+        if (gen !== this.generation) return;
+        if (typeof event.data === 'string') {
+          this._handle(JSON.parse(event.data));
+        }
+      };
+
+      this.ws.onclose = (e) => {
+        clearTimeout(timeout);
+        if (gen !== this.generation) return;
+        if (e.code === 1000) {
+          this.emitter.emit('streamState', 'closed');
+          return; // 正常关闭，不重连
+        }
+        this.emitter.emit('streamState', 'degraded');
+        this._scheduleReconnect();
+      };
+
+      this.ws.onerror = () => {
+        clearTimeout(timeout);
+        if (gen !== this.generation) return;
+        reject(new Error('WebSocket connection failed'));
+      };
+    });
+  }
+
+  private _scheduleReconnect(): void {
+    if (this.retryCount >= this.MAX_RETRY) {
+      this.emitter.emit('streamState', 'dead');
+      this.emitter.emit('error', {
+        code: 'E_WS_MAX_RETRY',
+        stage: 'stream',
+        message: `WebSocket 重连失败，已达最大重试次数 (${this.MAX_RETRY})`,
+        recoverable: false,
+      });
+      return;
+    }
+
+    const delay = Math.min(
+      this.INITIAL_DELAY_MS * Math.pow(2, this.retryCount),
+      this.MAX_DELAY_MS,
+    );
+    this.retryCount += 1;
+
+    this.emitter.emit('streamState', 'reconnecting', {
+      attempt: this.retryCount,
+      maxRetry: this.MAX_RETRY,
+      delayMs: delay,
+    });
+
+    this.retryTimer = setTimeout(() => {
+      this._connect().catch(() => {
+        // _scheduleReconnect 已在 onclose 中触发
+      });
+    }, delay);
+  }
+
+  private _resyncAfterReconnect(): void {
+    if (!this.sessionId || !this.activeTracks.size) return;
+    // 重连后重新同步会话状态，让服务端知道轨道的格式和序列号起点
+    this._send({
+      type: 'session_start',
+      session_id: this.sessionId,
+      source_mode: this.activeTracks.size > 1 ? 'both' : this.activeTracks.has('mic') ? 'mic' : 'system',
+    });
+    for (const [source] of this.activeTracks) {
+      this._send({
+        type: 'track_start',
+        session_id: this.sessionId,
+        source,
+        format: { sample_rate: 16000, bit_depth: 16, channels: 1, encoding: 'pcm_s16le', chunk_duration_ms: 40 },
+      });
+    }
+  }
+
+  private _handle(msg: any): void {
+    switch (msg.type) {
+      case 'ready':
+        this.sessionId = msg.session_id;
+        this.emitter.emit('streamState', 'ready');
+        break;
+      case 'session_ready': break;
+      case 'transcription':
+        this.emitter.emit('transcription', msg);
+        break;
+      case 'llm_start':
+        this.emitter.emit('llmStart', msg);
+        break;
+      case 'llm_chunk':
+        this.emitter.emit('llmChunk', msg);
+        break;
+      case 'llm_done':
+        this.emitter.emit('llmDone', msg);
+        break;
+      case 'chunk_ack': break;
+      case 'error':
+        this.emitter.emit('error', msg);
+        break;
+    }
+  }
+
+  // ── 发送 PCM 帧（采集线程调用） ──
+  sendPcm(frame: ArrayBuffer): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    this.ws.send(frame);
+  }
+
+  // ── 发送 JSON 控制消息 ──
+  private _send(msg: object): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    this.ws.send(JSON.stringify(msg));
+  }
+
+  sendControl(msg: object): void { this._send(msg); }
+
+  disconnect(): void {
+    this.retryCount = this.MAX_RETRY; // 防止重连
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.ws?.close(1000);
+    this.ws = null;
+  }
+}
+```
+
+#### 5.4.3 采集中的连贯处理
+
+重连期间音频帧会暂时丢失，但不会影响后续会话：
+
+```
+重连前 5s 的音频帧 → 丢弃（实时场景下容错）
+重连后新音频帧     → 正常发送（新 sequence 从 0 开始重新编号）
+ASR 结果          → 重连成功后继续正常接收
+LLM 流            → 同上
+```
+
+**不需要**像 Android 端那样做音频帧回补（backfill），因为面试是实时场景——断连几秒钟的音频即使补发也没有意义。backfill 只在采集结束后的 PCM 文件上传场景有意义。
+
+#### 5.4.4 UI 反馈
+
+重连过程中渲染进程应显示：
+
+| 状态 | UI 表现 |
+|------|---------|
+| CONNECTING | 连接中... 加载指示器 |
+| READY | 正常，不显示任何提示 |
+| DEGRADED（重连中） | 顶部 Toast："连接断开，正在重连... (第 3/10 次)" |
+| DEAD（重连失败） | 红色 Toast："连接失败，请检查网络后手动重试 [重试按钮]" |
 
 ---
 
@@ -521,7 +738,7 @@ async function ensureLibreOffice(): Promise<string> {
 |------|:---:|------|
 | 麦克风采集 | ✅ | `getUserMedia({ audio: true })` |
 | 系统音频内录 | ❌ | 纯 Web 无法实现 |
-| 窗口隐身 | ❌ | 纯 Web 无法实现（可通过放在副屏缓解） |
+| 窗口隐身 | ❌ | 纯 Web 无法实现（用户自行调整窗口位置） |
 | 认证/登录 | ✅ | 和桌面端完全一样 |
 | AI 面试对话 | ✅ | 麦克风 → PCM → WebSocket → ASR → LLM |
 | 面试历史 | ✅ | 完全的 CRUD |
