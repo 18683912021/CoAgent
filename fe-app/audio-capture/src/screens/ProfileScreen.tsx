@@ -280,7 +280,7 @@ export default function ProfileScreen({isFocused}: {isFocused?: boolean}): React
       </ScrollView>
 
       {/* ── 编程语言选择弹窗 ── */}
-      <Modal visible={showLangPicker} transparent animationType="fade" statusBarTranslucent>
+      <Modal visible={showLangPicker} transparent animationType="fade" statusBarTranslucent onRequestClose={() => setShowLangPicker(false)}>
         <TouchableOpacity
           style={[pickerStyles.backdrop, {backgroundColor: t.backdrop}]}
           activeOpacity={1}

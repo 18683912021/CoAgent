@@ -33,6 +33,7 @@ function ConvertDetail({visible, onClose, title, tool, acceptType, accent}: {
   const [phase, setPhase] = useState<'idle' | 'converting' | 'done'>('idle');
   const [download, setDownload] = useState<{blob: Blob; name: string} | null>(null);
   const [saveName, setSaveName] = useState('');
+  const [useLLM, setUseLLM] = useState(false);
   const allowed = acceptType === 'pdf' ? ['pdf'] : ['docx'];
 
   const start = useCallback(async () => {
@@ -55,7 +56,8 @@ function ConvertDetail({visible, onClose, title, tool, acceptType, accent}: {
       if (!base64Data) { throw new Error('读取文件失败'); }
 
       const token = await getToken();
-      const res = await fetch(`${API_BASE}/api/tools/${tool === 'word2pdf' ? 'word-to-pdf' : 'pdf-to-word'}`, {
+      const endpoint = tool === 'word2pdf' ? 'word-to-pdf' : (useLLM ? 'pdf-to-word-llm' : 'pdf-to-word');
+      const res = await fetch(`${API_BASE}/api/tools/${endpoint}`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json', ...(token ? {Authorization: `Bearer ${token}`} : {})},
         body: JSON.stringify({filename: result.name, data: base64Data}),
@@ -80,15 +82,19 @@ function ConvertDetail({visible, onClose, title, tool, acceptType, accent}: {
   const handleDownload = useCallback(async () => {
     if (!download || !saveName.trim()) { return; }
     try {
-      const reader = new FileReader();
-      reader.onload = async () => {
-        const b64 = (reader.result as string).split(',')[1]!;
-        await AudioCapture.saveFile(saveName.trim(), b64);
-        showAlert({title: '保存成功', message: `文件已保存到 Downloads/${saveName.trim()}`});
-      };
-      reader.readAsDataURL(download.blob);
-    } catch {
-      showAlert({title: '保存失败', message: '请重试'});
+      const b64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve((reader.result as string).split(',')[1]!);
+        reader.onerror = () => reject(new Error('读取文件失败'));
+        reader.readAsDataURL(download.blob);
+      });
+      console.log('[Tools] saving:', saveName.trim(), b64.length);
+      const path = await AudioCapture.saveFile(saveName.trim(), b64);
+      console.log('[Tools] saved to:', path);
+      showAlert({title: '保存成功', message: '文件已保存到 Downloads 目录'});
+    } catch (err: any) {
+      console.error('[Tools] save failed:', err.message || err);
+      showAlert({title: '保存失败', message: err.message || '请重试'});
     }
   }, [download, saveName, showAlert]);
 
@@ -99,6 +105,15 @@ function ConvertDetail({visible, onClose, title, tool, acceptType, accent}: {
           <View style={[dt.iconW, {backgroundColor: accent + '15'}]}><Text style={dt.icon}>📄</Text></View>
           <Text style={[dt.idleTitle, {color: t.textPrimary}]}>{title}</Text>
           <Text style={[dt.idleDesc, {color: t.textSecondary}]}>点击下方按钮选择文件，自动开始转换</Text>
+          {tool === 'pdf2word' && (
+            <Pressable
+              style={[dt.llmToggle, {backgroundColor: useLLM ? '#10B981' : t.bg, borderColor: useLLM ? '#10B981' : t.divider}]}
+              onPress={() => setUseLLM(!useLLM)}>
+              <Text style={[dt.llmToggleText, {color: useLLM ? '#FFFFFF' : t.textSecondary}]}>
+                {useLLM ? 'AI 增强' : '普通模式'}
+              </Text>
+            </Pressable>
+          )}
           <Pressable style={[dt.pickBtn, {backgroundColor: accent}, t.shadowMd]} onPress={start}>
             <Text style={dt.pickBtnText}>选择文件</Text>
           </Pressable>
@@ -156,6 +171,8 @@ const dt = StyleSheet.create({
   input: {fontSize: 15, textAlign: 'center'},
   redo: {paddingVertical: 8},
   redoText: {fontSize: 14},
+  llmToggle: {paddingHorizontal: 16, paddingVertical: 8, borderRadius: radius.md, borderWidth: 1, marginTop: 8},
+  llmToggleText: {fontSize: 13, fontWeight: '600'},
 });
 
 // ── Main ──

@@ -576,10 +576,29 @@ class AudioCaptureModule(
   fun saveFile(fileName: String, base64Data: String, promise: Promise) {
     try {
       val bytes = android.util.Base64.decode(base64Data, android.util.Base64.DEFAULT)
-      val downloadsDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
-      val dest = java.io.File(downloadsDir, fileName)
-      dest.writeBytes(bytes)
-      promise.resolve("file://${dest.absolutePath}")
+      if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+        val mime = when {
+          fileName.endsWith(".pdf") -> "application/pdf"
+          fileName.endsWith(".docx") -> "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+          else -> "application/octet-stream"
+        }
+        val values = android.content.ContentValues().apply {
+          put(android.provider.MediaStore.Downloads.DISPLAY_NAME, fileName)
+          put(android.provider.MediaStore.Downloads.MIME_TYPE, mime)
+        }
+        val uri = reactApplicationContext.contentResolver.insert(
+          android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values
+        )
+        uri?.let {
+          reactApplicationContext.contentResolver.openOutputStream(it)?.use { out -> out.write(bytes) }
+          promise.resolve(uri.toString())
+        } ?: promise.reject("E_SAVE", "无法创建文件")
+      } else {
+        val downloadsDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
+        val dest = java.io.File(downloadsDir, fileName)
+        dest.writeBytes(bytes)
+        promise.resolve("file://${dest.absolutePath}")
+      }
     } catch (e: Exception) {
       promise.reject("E_SAVE", e.message, e)
     }
