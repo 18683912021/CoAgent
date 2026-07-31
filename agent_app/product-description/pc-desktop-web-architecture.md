@@ -2,9 +2,19 @@
 
 ## Context
 
-当前项目是基于 React Native (Android) + FastAPI 的 AI 面试助手 App。由于 Android 平台对 VoIP 通话音频采集的系统级限制（`USAGE_VOICE_COMMUNICATION` 被框架禁止、App 主动设 `ALLOW_CAPTURE_BY_NONE`、VoIP 私有音频通道隔离），且 Android 不支持窗口隐身——本质上有两个核心能力在移动端无法实现。
+当前项目是基于 React Native (Android) + FastAPI 的 AI 面试助手 App。Android 平台存在三个无法逾越的限制：
 
-本方案将产品从 Android 单平台扩展为 **Electron 桌面端（主力）+ Web 端（辅助）** 的双平台架构，利用 PC 操作系统的 WASAPI Loopback 系统音频采集和 `SetWindowDisplayAffinity` 窗口隐身 API，彻底解决移动端的两个根本限制。
+1. **VoIP 通话音频无法采集**：`USAGE_VOICE_COMMUNICATION` 被 Android 框架层禁止捕获，且微信/会议 App 主动设 `ALLOW_CAPTURE_BY_NONE` + VoIP 私有音频通道隔离
+2. **AI 助手窗口无法隐身**：Android 没有窗口级截屏保护 API，面试共享屏幕时 AI 答案会被面试官看到
+3. **文件转换不可靠**：服务端用 `dxpdf`（频繁报错需要多次重试 + XML 清理回退）+ `pdf2docx`（排版保真度不稳定）+ LLM 增强（速度慢、成本高）三重方案接力，维持 150+ 行复杂容错逻辑，本质上是因为没有本地原生的文档渲染引擎
+
+本方案将产品从 Android 单平台扩展为 **Electron 桌面端（主力）+ Web 端（辅助）** 的双平台架构，利用 PC 操作系统的三项原生能力彻底解决这三个限制：
+
+| 限制 | Android | PC 解决方案 |
+|------|:---:|------|
+| 通话音频采集 | ❌ VoIP 被禁止 | WASAPI Loopback，捕获所有系统混音输出 |
+| AI 窗口隐身 | ❌ 无截屏保护 | `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` |
+| 文件转换 | ⚠️ 三种工具接力兜底 | LibreOffice 本地渲染引擎，一行命令替代 150 行 |
 
 ### 设计目标
 
