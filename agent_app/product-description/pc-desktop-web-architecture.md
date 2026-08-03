@@ -154,13 +154,45 @@ workspace/fe/shared/utils/token-storage.ts       # 定义接口
 - `IMMDeviceEnumerator` → 获取默认渲染设备
 - `IAudioClient::Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK, ...)`
 - `IAudioCaptureClient::GetBuffer()` 循环读取
-
-**实现方式**: Node.js C++ addon（node-addon-api）
-- 可选开源方案：[naudiodon](https://github.com/Streampunk/naudiodon)（已有 WASAPI loopback 支持）
-- 或参考 [naudiodon 源码](https://github.com/Streampunk/naudiodon/blob/main/src/naudiodon.cc) 自写 addon
+- 实现方式：Node.js C++ addon（node-addon-api + VS Build Tools MSVC 编译）
+- 可选开源方案：[naudiodon](https://github.com/Streampunk/naudiodon)
 
 **macOS**: AudioKit / AVAudioEngine
-- 可选开源方案：BlackHole 虚拟声卡 + CoreAudio
+- `AVAudioEngine` 连接默认输出节点 → 安装 tap 获取 PCM
+- 系统音频捕获需要虚拟声卡（见 3.1.1）
+- 实现方式：Node.js Swift addon（node-addon-api + Xcode Clang 编译）
+
+#### 3.1.1 macOS 音频采集：需要虚拟声卡
+
+macOS 没有 WASAPI Loopback 这样的系统级混音回路。捕获系统音频需要虚拟声卡把系统输出重路由：
+
+```
+系统音频输出 → BlackHole 虚拟设备（输出端）
+                    │
+     ┌──────────────┼──────────────┐
+     │              │              │
+  你还能听到       App 采集      无声（被 BlackHole 吸收，
+  （多输出聚合设备） 这个设备的输入  不干扰正常收听）
+```
+
+**[BlackHole](https://github.com/ExistentialAudio/BlackHole)**（开源免费）：
+
+```bash
+brew install blackhole-2ch
+```
+
+安装后系统"声音"设置中出现 `BlackHole 2ch` 设备。
+
+**音频路由设置：**
+
+1. 创建**多输出设备**（Audio MIDI Setup → + → Create Multi-Output Device）
+2. 勾选 "MacBook Speakers" + "BlackHole 2ch"
+3. 系统声音输出选 "Multi-Output Device"
+4. App 内 AudioKit 从 "BlackHole 2ch" 输入采集
+
+这样系统音频同时流向扬声器（你听到）+ BlackHole（App 抓到），两全。
+
+**代码侧：** Electron 主进程用 Swift addon 包装 AVAudioEngine，从 BlackHole 设备采集 PCM，归一化到 16kHz mono，再通过和 Windows 相同的 WebSocket 协议发给后端。AudioWireProtocol 层完全共用。
 
 ### 3.2 音频流水线（对应 Android AudioCaptureEngine）
 
@@ -697,7 +729,9 @@ import { exec } from 'child_process';
 import { pipeline } from 'stream/promises';
 import { createWriteStream } from 'fs';
 
-const LIBREOFFICE_DOWNLOAD_URL = 'https://download.documentfoundation.org/libreoffice/portable/25.2.0/LibreOfficePortable_25.2.0.paf.exe';
+const LIBREOFFICE_DOWNLOAD_URL = process.platform === 'darwin'
+  ? 'https://download.documentfoundation.org/libreoffice/stable/25.2.0/mac/x86_64/LibreOffice_25.2.0_MacOS_x86-64.dmg'
+  : 'https://download.documentfoundation.org/libreoffice/portable/25.2.0/LibreOfficePortable_25.2.0.paf.exe';
 
 async function downloadLibreOffice(
   onProgress: (pct: number) => void,
@@ -1637,9 +1671,12 @@ python --version    # 3.11+
 
 | 工具 | 版本 | 用途 | 安装方式 |
 |------|------|------|---------|
-| Xcode Command Line Tools | 最新稳定 | C++ addon 编译 | `xcode-select --install` |
+| Xcode Command Line Tools | 最新稳定 | C++/Swift addon 编译 | `xcode-select --install` |
+| Homebrew | 最新 | macOS 包管理器 | `/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"` |
 | LibreOffice | 25.2（可选） | 本地文件转换 | `brew install --cask libreoffice` |
 | Pandoc | 3.6（可选） | 格式转换 | `brew install pandoc` |
+
+**注意**：macOS 上不需要 VS Build Tools。Xcode Command Line Tools 自带 Clang 编译器和 macOS SDK，可以直接编译 Node.js C++ addon。系统音频采集在 macOS 上用 **AVAudioEngine**（Swift/C++），不需要 WASAPI，详见第三章。
 
 ### 17.2 安装 Node.js 22.23.1
 
@@ -1659,7 +1696,18 @@ where node  # → 确保只有一条路径
 #### macOS（nvm）
 
 ```bash
+# 安装 nvm（如果没有）
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+# 重启终端或执行 source ~/.zshrc
+
 nvm install 22.23.1
+nvm use 22.23.1
+nvm alias default 22.23.1
+
+node -v     # → v22.23.1
+npm -v      # → 10.9.x（Node 22 自带）
+which node  # → 确保是 nvm 管理的路径
+```
 nvm use 22.23.1
 nvm alias default 22.23.1
 
@@ -1676,11 +1724,19 @@ npm -v
 
 ### 17.3 安装 pnpm 9.15.0
 
+**Windows：**
 ```powershell
 npm install -g pnpm@9.15.0
-
 pnpm -v     # → 9.15.0
 ```
+
+**macOS：**
+```bash
+npm install -g pnpm@9.15.0
+pnpm -v     # → 9.15.0
+```
+
+**两个平台都一样**，`npm install -g` 即可。
 
 **不要**用 `corepack enable` 管理 pnpm 版本。Corepack 在 Node 22 中标记为实验性，且可能自动使用 pnpm 10。固定全局安装 `9.15.0` 并通过 `packageManager` 字段声明。
 
@@ -2237,18 +2293,30 @@ taskkill /PID <PID> /F
 9. 同时升级 React、TypeScript、Vite、Electron——每次只升级一个并全面验证。
 10. 将项目放在中文、空格或过深目录中。
 11. 接受 IDE 的自动依赖升级建议（VS Code 的 Version Lens、Renovate 等）。
-12. 使用 `pnpm update` 批量更新所有依赖。
+12. **macOS**：不要跳过 BlackHole 安装直接测系统音频（macOS 没有 Loopback，不装虚拟声卡会录到静音）。
+13. **macOS**：不要用 App Store 版 Xcode 替代 Command Line Tools（CLT 的 `xcode-select` 路径才是编译器查找的入口）。
 
 ### 17.13 验收清单
 
 完成环境配置和首次构建后，必须逐项通过：
 
-#### 环境
+#### 环境（两个平台通用）
 
 - [ ] `node -v` 输出 `v22.23.1`
 - [ ] `pnpm -v` 输出 `9.15.0`
 - [ ] `pnpm typecheck` 所有包无错误
 - [ ] `pnpm ls -r --depth 0` 显示三个 workspace 包
+
+#### Windows 特检
+
+- [ ] `where cl.exe` 能找到 MSVC 编译器
+- [ ] `python --version` 输出 3.11+
+
+#### macOS 特检
+
+- [ ] `xcode-select -p` 输出 Xcode 路径
+- [ ] `brew --version` 正常
+- [ ] BlackHole 已安装（`brew list blackhole-2ch`）
 
 #### Web 端
 
@@ -2261,8 +2329,8 @@ taskkill /PID <PID> /F
 
 - [ ] `pnpm dev:electron` 启动成功
 - [ ] 主窗口正常显示、无崩溃
-- [ ] DevTools 可以打开（`Ctrl+Shift+I`）
-- [ ] `setContentProtection(true)` 窗口在截屏中不可见
+- [ ] DevTools 可以打开（Win: `Ctrl+Shift+I` / Mac: `Cmd+Opt+I`）
+- [ ] `setContentProtection(true)` 窗口在截屏/屏幕共享中不可见
 - [ ] 浮窗 overlay 正常显示和关闭
 - [ ] `pnpm build:electron` 生成 `.exe`（Windows）或 `.dmg`（macOS）
 
