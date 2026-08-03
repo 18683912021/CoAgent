@@ -577,7 +577,9 @@ LLM 流            → 同上
 
 ---
 
-## 六、文件转换（Electron）
+## 六、文件转换（Electron —— 纯本地，不依赖服务端）
+
+> PC 端文件转换不走服务端 API。利用 LibreOffice 本地渲染引擎，一行命令替代 Android 端服务层 150+ 行的 dxpdf + pdf2docx + LLM 三重接力逻辑。
 
 ### 6.1 方案：spawn LibreOffice
 
@@ -588,7 +590,7 @@ import path from 'path';
 
 export async function convertToPdf(inputPath: string, outputDir: string): Promise<string> {
   return new Promise((resolve, reject) => {
-    const soffice = getLibreOfficePath(); // 检测安装路径
+    const soffice = getLibreOfficePath(); // 按 6.3 的优先级检测
     const proc = spawn(soffice, [
       '--headless',
       '--convert-to', 'pdf:writer_pdf_Export',
@@ -619,63 +621,31 @@ export async function convertToPdf(inputPath: string, outputDir: string): Promis
 | HTML → PDF | Electron 内置 | `BrowserWindow.webContents.printToPDF()` |
 | 其他任意互转 | Pandoc | 30+ 格式 |
 
-### 6.3 LibreOffice 检测策略
+### 6.3 LibreOffice 获取策略：默认不带，按需下载
+
+**决策**：默认安装包约 **150MB**，不捆绑 LibreOffice。首次使用时 App 内引导下载 Portable 版本到 `userData` 目录。
+
+**检测优先级：**
 
 ```
-1. 检测常见安装路径
-   ├── Windows: %PROGRAMFILES%\LibreOffice\program\soffice.exe
-   ├── macOS:   /Applications/LibreOffice.app/Contents/MacOS/soffice
-   └── Linux:   /usr/bin/soffice
+1. 系统已安装 LibreOffice？（注册表 / 常见路径）
+   → ✅ 直接用系统的
 
-2. 如果未安装 → 引导用户下载安装（提供链接）
-3. 作为兜底 → 回退到现有服务端 API（tools.py 的端点）
-```
-
-### 6.4 服务端 API 保留为兜底
-
-如果用户没装 LibreOffice，仍然可以走现有的服务端转换（`/api/tools/word-to-pdf`、`/api/tools/pdf-to-word`）。这是一个优雅降级策略。
-
-### 6.5 打包 LibreOffice Portable 到安装包（推荐）
-
-上面的"检测系统安装 → 未装则回落服务端"方案有一个问题：**用户体验差**。更好的做法是参考 [Docket](https://github.com/Wis7Com/Docket) 项目的策略，把 LibreOffice 便携版作为 Electron App 的资源文件直接打包。
-
-**Windows 便携版来源：**
-
-- [LibreOffice Portable](https://www.libreoffice.org/download/portable-versions/)（官方，约 350MB 解压后）——安装时不需要管理员权限，核心功能完整
-- 或从常规 LibreOffice 安装目录中提取最小所需文件（`program/` + `share/`），精简到约 250MB
-
-**检测优先级（从快到慢）：**
-
-```
-1. 系统已安装 LibreOffice？（检测注册表 / 常见路径）
-   → 用系统的，最快
-
-2. App 自带的便携版？（app.getPath('exe') 同级目录或 resources/）
-   → 用自带的，开箱即用
+2. App 已下载 Portable 版？（userData/libreoffice-portable/）
+   → ✅ 直接用已下载的
 
 3. 都没有？
-   → 回退到服务端 API
-```
-
-**electron-builder 配置：**
-
-```yaml
-# electron-builder.yml
-extraResources:
-  # 把 LibreOffice Portable 目录整个打入 resources/
-  - from: 'vendor/libreoffice-portable'
-    to: 'libreoffice'
-    filter:
-      - '**/*'
+   → ❌ 转换功能不可用（按钮置灰）
 ```
 
 ```typescript
 // electron/file-convert/libreoffice.ts
 import path from 'path';
+import fs from 'fs';
 import { app } from 'electron';
 
-function getLibreOfficePath(): string {
-  // 1. 优先用系统安装的
+function getLibreOfficePath(): string | null {
+  // 1. 先查系统安装
   const systemPaths = [
     process.platform === 'win32' && 'C:\\Program Files\\LibreOffice\\program\\soffice.exe',
     process.platform === 'win32' && 'C:\\Program Files (x86)\\LibreOffice\\program\\soffice.exe',
@@ -687,49 +657,145 @@ function getLibreOfficePath(): string {
     if (fs.existsSync(p)) return p;
   }
 
-  // 2. 用 App 自带的便携版
-  const portablePath = process.env.NODE_ENV === 'development'
-    ? path.join(__dirname, '..', '..', 'vendor', 'libreoffice-portable', 'program', 'soffice.exe')
-    : path.join(process.resourcesPath, 'libreoffice', 'program', 'soffice.exe');
+  // 2. 查 App 按需下载的 Portable 版
+  const portableDir = path.join(app.getPath('userData'), 'libreoffice-portable');
+  const portableExe = process.platform === 'win32'
+    ? path.join(portableDir, 'program', 'soffice.exe')
+    : path.join(portableDir, 'MacOS', 'soffice');
 
-  if (fs.existsSync(portablePath)) return portablePath;
+  if (fs.existsSync(portableExe)) return portableExe;
 
-  // 3. 都没找到，抛错，由上层调用方回退到服务端 API
-  throw new LibreOfficeNotFoundError();
+  // 3. 都没有
+  return null;
 }
 ```
 
-**体积权衡：**
+### 6.4 首次使用：引导下载
 
-| 策略 | 安装包大小 | 用户体验 |
-|------|:---:|------|
-| 不带 LibreOffice | ~150MB | 需手动安装或联网转换 |
-| 带 LibreOffice Portable 精简 | ~400MB | ✅ 开箱即用 |
-| 带全套 LibreOffice | ~500MB | 开箱即用，但下载慢 |
+用户点击转换按钮时，若 LibreOffice 未就绪，弹窗引导：
 
-建议：**默认不带 LibreOffice（减小安装包），首次使用文件转换时引导用户一键下载 Portable 版本**（App 内下载 → 解压到 `userData` 目录）。这样安装包保持 ~150MB，转换能力按需获取。
+```
+┌─────────────────────────────────────────┐
+│  文件转换需要 LibreOffice                │
+│                                         │
+│  此功能需要 LibreOffice 文档引擎（约 350MB）。 │
+│  下载后将保存到本机，之后无需再次下载。       │
+│                                         │
+│  进度：[████████████████░░░] 78%          │
+│                                         │
+│                    [取消]  [后台下载]      │
+└─────────────────────────────────────────┘
+```
 
 ```typescript
-// 首次使用时的交互流程
-async function ensureLibreOffice(): Promise<string> {
-  try { return getLibreOfficePath(); } catch {}
-  
-  // 弹窗："文件转换需要 LibreOffice，是否现在下载？（约 350MB）"
-  const confirmed = await dialog.showMessageBox({
-    type: 'info',
-    title: '安装 LibreOffice',
-    message: '文件转换功能需要 LibreOffice。',
-    detail: '是否从官网下载？或使用在线转换。',
-    buttons: ['下载 LibreOffice', '使用在线转换', '取消'],
+// electron/file-convert/downloader.ts
+import { app } from 'electron';
+import path from 'path';
+import fs from 'fs';
+import https from 'https';
+import { exec } from 'child_process';
+import { pipeline } from 'stream/promises';
+import { createWriteStream } from 'fs';
+
+const LIBREOFFICE_DOWNLOAD_URL = 'https://download.documentfoundation.org/libreoffice/portable/25.2.0/LibreOfficePortable_25.2.0.paf.exe';
+
+async function downloadLibreOffice(
+  onProgress: (pct: number) => void,
+): Promise<string> {
+  const userData = app.getPath('userData');
+  const installerPath = path.join(userData, 'libreoffice-installer.exe');
+  const extractDir = path.join(userData, 'libreoffice-portable');
+
+  // 如果已存在则跳过下载
+  if (fs.existsSync(path.join(extractDir, 'program', 'soffice.exe'))) {
+    return extractDir;
+  }
+
+  // 下载 Portable 安装包
+  const file = createWriteStream(installerPath);
+  const { response } = await new Promise<{ response: IncomingMessage }>(
+    (resolve, reject) => https.get(LIBREOFFICE_DOWNLOAD_URL, resolve).on('error', reject)
+  );
+
+  const totalBytes = parseInt(response.headers['content-length'] ?? '0', 10);
+  let downloadedBytes = 0;
+  response.on('data', (chunk: Buffer) => {
+    downloadedBytes += chunk.length;
+    if (totalBytes) onProgress(Math.round((downloadedBytes / totalBytes) * 100));
   });
 
-  if (confirmed.response === 0) {
-    shell.openExternal('https://www.libreoffice.org/download/');
-  }
-  // 如果选择"使用在线转换"→ 回退到服务端 API
-  throw new LibreOfficeNotFoundError();
+  await pipeline(response, file);
+
+  // 把 Portable 包解压到 userData 目录
+  await extractPortable(installerPath, extractDir);
+
+  // 删掉安装包，只留解压后的文件
+  fs.unlinkSync(installerPath);
+
+  return extractDir;
 }
 ```
+
+### 6.5 未下载时的 UI 状态
+
+当 LibreOffice 不可用时，转换按钮**置灰**，hover 显示 tooltip：
+
+```
+┌──────────────┐
+│ 📄 Word → PDF │  ← 置灰状态
+│  点击下载引擎  │  ← tooltip 文案
+└──────────────┘
+
+↓ 点击后触发 6.4 的下载流程
+
+下载完成后按钮自动变为激活状态：
+┌──────────────┐
+│ 📄 Word → PDF │  ← 正常状态，可点击
+│  选择 .docx   │
+└──────────────┘
+```
+
+前端通过 IPC 向主进程查询 LibreOffice 状态：
+
+```typescript
+// preload.ts
+ipcMain.handle('file:libreoffice-status', () => {
+  return { available: getLibreOfficePath() !== null };
+});
+
+// renderer
+const { available } = await window.electronAPI.fileConvert.getLibreOfficeStatus();
+// button.disabled = !available
+```
+
+### 6.6 卸载时清理
+
+用户卸载 App 时，LibreOffice Portable 必须跟着删掉，不留残留。
+
+NSIS 安装器配置自定义卸载脚本：
+
+```yaml
+# electron-builder.yml
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  deleteAppDataOnUninstall: false   # 不自动删 userData（保护面试历史等数据）
+  include: 'installer/install.nsh'
+```
+
+```nsis
+; installer/install.nsh
+; 卸载时清理 LibreOffice Portable
+
+!macro customUninstall
+  ; 删除 LibreOffice Portable 目录（如果用户按需下载过）
+  RMDir /r "$PROFILE\AppData\Roaming\${APP_FILENAME}\libreoffice-portable"
+  ; 删除残留的安装包（如果存在）
+  Delete "$PROFILE\AppData\Roaming\${APP_FILENAME}\libreoffice-installer.exe"
+!macroend
+```
+
+**只有 LibreOffice Portable 在卸载时删除**。用户的面试历史、设置、简历等数据保存在 `userData` 的其他位置，不受影响。
 
 ---
 
@@ -1432,7 +1498,7 @@ publish:
 - `routers/auth.py` — 完整认证流程
 - `routers/interview.py` — 面试历史 CRUD
 - `routers/resume.py` — 简历上传/解析
-- `routers/tools.py` — 文件转换（作为 Electron 本地转换的兜底）
+- `routers/tools.py` — 文件转换（供 Android 端和 Web 端使用，PC 端不走此路径）
 - `routers/stt.py` — 批量 STT
 - `services/llm_service.py` — DeepSeek LLM 服务
 - `services/stt_streaming.py` — 火山引擎流式 ASR
@@ -1481,11 +1547,13 @@ publish:
 - [ ] 键盘快捷键注册（全局 + 面试页专用）
 - [ ] 响应式适配（< 600px 回退到移动端单栏风格）
 
-### Phase 5：文件转换集成（1-2 天）
-- [ ] LibreOffice 检测策略实现（系统安装 → portable → 服务端 API 三级回退）
-- [ ] IPC 封装（`file:convert` / `file:pick` / `file:save`）
-- [ ] UI 集成（替换现有服务端上传逻辑）
-- [ ] LibreOffice Portable 打包策略决策（默认不带 / 按需下载 / 可选带）
+### Phase 5：文件转换集成（2-3 天）
+- [ ] 主进程 LibreOffice 检测模块（系统安装 → userData Portable 二级）
+- [ ] 按需下载模块（HTTPS 下载 + 进度回调 + 解压到 userData）
+- [ ] 卸载清理脚本（NSIS 自定义 uninstall 宏，删除 libreoffice-portable/）
+- [ ] IPC 封装（`file:libreoffice-status` / `file:convert` / `file:pick` / `file:save`）
+- [ ] 前端转换按钮置灰逻辑 + 下载引导弹窗 + 进度条 UI
+- [ ] 渲染进程文件拖拽区域（drag & drop → IPC 送主进程转换）
 
 ### Phase 6：Web 端独立开发（2-3 天）
 - [ ] Vite web 项目配置
@@ -1509,7 +1577,7 @@ publish:
 
 3. **WASAPI addon 编译**：C++ addon 需要在各平台编译，macOS 需要 Xcode，Windows 需要 VS Build Tools。建议 CI/CD 中实现跨平台构建矩阵。
 
-4. **LibreOffice 依赖**：不是所有用户装了 LibreOffice。优雅降级到服务端 API 是必须的。
+4. **LibreOffice 依赖**：默认不打包（安装包 ~150MB），首次使用时 App 内引导下载 Portable 版。不下载则转换按钮置灰，用户不会遇到"点击后报错"的体验。
 
 5. **Web 端 CORS**：如果 Web 部署在不同域名，需要后端添加 CORS 中间件。
 
@@ -1527,7 +1595,7 @@ publish:
 
 ### 16.2 集成测试
 - WebSocket 握手 → 实时帧发送 → ASR 结果返回 → LLM 结果返回（完整链路）
-- 文件转换：LibreOffice 本地 → 服务端 API 兜底切换
+- 文件转换：LibreOffice 未安装 → 下载引导 → 下载完成 → 转换成功
 - ContentProtection：用 OBS 录屏验证浮窗不可见
 
 ### 16.3 E2E 测试
