@@ -792,57 +792,308 @@ cd web && pnpm build           # → dist/
 
 ---
 
-## 八、共享 UI 组件映射
+## 八、PC 端 UI 重构
 
-### 8.1 React Native → React DOM 映射表
+> 手机端是竖屏 375-428px 宽的单栏堆叠布局，PC 端是横屏 + 多窗口 + 可拖拽缩放。  
+> 不是"把手机界面挪到大屏幕上"——要从信息架构层面重新设计。
+
+### 8.1 布局转变：从竖屏单栏到横屏多栏
+
+现有 RN 端是典型移动端布局：
+
+```
+移动端（375×812）
+┌──────────────┐
+│   Header     │  ← 标题
+├──────────────┤
+│              │
+│  对话列表     │  ← 占据全部宽度
+│  (面试官问题  │
+│   + AI 答案) │
+│              │
+├──────────────┤
+│  电平表+按钮  │  ← 控制区压缩在底部
+├──────────────┤
+│  Tab Bar     │  ← 面试 | 工具箱 | 我的
+└──────────────┘
+```
+
+PC 端有 800-1600px 的可用宽度和独立浮窗，应该改为**多栏 + 多窗口**架构：
+
+```
+PC 端主窗口（800×700，可缩放）
+┌──────────────────────────────────────┐
+│  ← 面板              │  设置栏       │
+│  编程语言选择          │  ├ 编程语言   │
+│  麦克风电平表          │  ├ 答案风格   │
+│  系统音频电平表        │  └ 快捷键提示 │
+│  开始/停止按钮         │              │
+│                      │              │
+├──────────────────────┤              │
+│  对话面板              │              │
+│  ┌──────────────────┐│              │
+│  │ 面试官：闭包原理？ ││  实时转写     │
+│  │ AI：闭包是指...   ││  (只显示原始   │
+│  └──────────────────┘│   ASR 结果)   │
+│                      │              │
+│  ┌──────────────────┐│              │
+│  │ 面试官：原型链？   ││              │
+│  │ AI：原型链是...   ││              │
+│  └──────────────────┘│              │
+└──────────────────────────────────────┘
+
+AI 浮窗（独立窗口，ContentProtection 隐身，300×500）
+┌──────────────────┐
+│ 最新 AI 答案      │
+│                  │
+│ 面试官问什么 →    │
+│ AI 怎么回答 →    │
+│ 关键代码/要点 →   │
+│                  │
+│ (此窗口在面试官   │
+│  屏幕分享中不可见) │
+└──────────────────┘
+```
+
+### 8.2 主窗口布局：三栏结构
+
+```
+┌──────────────────────────────────────────────┐
+│ Toolbar（高度 32px，可隐藏）                    │
+│ [面试] [工具箱] [我的]            [⚙] [−][□][×] │
+├──────────┬───────────────────────┬───────────┤
+│          │                      │           │
+│  控制栏   │    对话面板            │  上下文栏  │
+│  240px   │    flex: 1            │  280px    │
+│          │                      │           │
+│ [开始]   │  ● 面试官（12:03）     │  当前语言   │
+│ [停止]   │  解释一下闭包的原理     │  JavaScript│
+│          │                      │           │
+│ 🎤 ▂▃▅▇  │  用自然流畅的语气回答   │  实时转写   │
+│ 🔊 ▁▂▃▄  │  你的答案是...         │  （原始ASR）│
+│          │                      │           │
+│ 编程语言  │                      │  历史对话   │
+│ JavaScript│                      │  快速跳转   │
+│          │                      │           │
+└──────────┴───────────────────────┴───────────┘
+```
+
+**控制栏**（左，240px）：
+- 采集开关（大按钮，开始/停止）
+- 音频源显示（麦克风/系统音频 ± 电平条）
+- 编程语言下拉
+- 答案风格切换
+- 面试计时器
+
+**对话面板**（中，flex: 1）：
+- 虚拟滚动对话气泡列表
+- 面试官消息（左对齐，浅色背景）
+- AI 答案（右对齐，流式混入动画，framer-motion）
+- 自动滚到底部（新消息到达时）
+- 面试结束时显示"保存历史"按钮
+
+**上下文栏**（右，280px，可折叠）：
+- 当前面试语言/赛道信息
+- 原始 ASR 实时转写文本（面试官原话）
+- 快捷操作（切换浮窗显隐、手动触发 LLM 回答）
+
+### 8.3 各页面 PC 端布局
+
+#### 面试页（InterviewScreen）
+
+核心页面，使用上述三栏布局。关键交互：
+
+- **流式文本**：和移动端的逐字动画逻辑 100% 复用，用 `requestAnimationFrame` 实现
+- **自动滚动**：新消息到达时自动滚底，用户上滑查看历史时暂停自动滚动，出现"回到底部↓"浮动按钮
+- **快捷键**：`Ctrl+Enter` 手动触发 LLM、`Ctrl+B` 切换浮窗
+- **对话气泡**：和移动端相同的四种状态（loading / streaming / done / error），framer-motion 替代 RN Animated
+
+#### 工具箱页（ToolsScreen）
+
+```
+┌──────────────────────────────────────┐
+│  工具箱                              │
+├─────────────────┬───────────────────┤
+│  工具卡片列表     │  转换操作区        │
+│  ┌───────────┐  │                   │
+│  │ 🎲 随机出题 │  │  拖拽文件到此处     │
+│  │ JavaScript│  │  或点击选择文件     │
+│  │ 点击抽题    │  │                   │
+│  ├───────────┤  │  已选: resume.docx │
+│  │ 📄 Word→PDF│  │  ┌──────┐         │
+│  │ 支持 .docx │  │  │ 开始转换│        │
+│  ├───────────┤  │  └──────┘         │
+│  │ 📝 PDF→Word│  │                   │
+│  │ 支持 .pdf  │  │  输出: resume.pdf │
+│  ├───────────┤  │  [保存到本地]      │
+│  │ 📐 简历优化 │  │                   │
+│  │ 🎨 样式优化 │  │                   │
+│  │ ✍️ 内容优化 │  │                   │
+│  └───────────┘  │                   │
+└─────────────────┴───────────────────┘
+```
+
+左栏工具卡片列表（320px），右栏当前工具的操作区（flex: 1）。和移动端竖屏卡片堆叠完全不同。
+
+#### 个人中心页（ProfileScreen）
+
+```
+┌──────────────────────────────────────┐
+│  我的                               │
+├─────────────────────┬───────────────┤
+│                     │               │
+│  👨‍💻 用户名           │  偏好设置     │
+│  ✨ 高级会员          │               │
+│  剩余时长 02:34:17    │  编程语言      │
+│  有效期至 2026-12-31  │  [JavaScript] │
+│  [续费]              │  面试语言 [中文]│
+│                     │  答案风格 [标准]│
+├─────────────────────┤               │
+│  📋 面试历史 (47次)   │               │
+│  📄 简历 (已上传)     │               │
+│  🚪 退出登录          │               │
+│                     │               │
+└─────────────────────┴───────────────┘
+```
+
+两栏布局，左栏（个人信息 + 数据统计），右栏（偏好设置表单）。
+
+#### 面试历史页（InterviewHistoryScreen）
+
+表格布局——移动端的 FlatList 卡片堆叠替换为真正的表格：
+
+```
+┌──────────────────────────────────────┐
+│  面试历史                  [清除全部]  │
+├──────┬──────────┬──────┬─────────────┤
+│ 日期  │ 时长     │ 语言  │ 对话数      │
+├──────┼──────────┼──────┼─────────────┤
+│ 7/28 │ 00:34:17 │ JS   │ 12 条       │
+│ 7/27 │ 00:28:05 │ Python│ 8 条       │
+│ ...  │          │      │             │
+└──────┴──────────┴──────┴─────────────┘
+    点击行 → 展开完整对话详情（右侧面板或新页面）
+```
+
+### 8.4 响应式断点
+
+主窗口和浮窗都是用户可缩放的自由尺寸。组件在不同宽度下自适应：
+
+| 断点 | 宽度 | 主窗口布局 | 变化 |
+|------|------|------|------|
+| XS | < 600px | 单栏（和移动端一致） | 控制栏和上下文栏折叠到 toolbar 下拉 |
+| SM | 600-900px | 双栏（对话 + 控制栏切换） | 上下文栏折叠，控制栏缩为浮层 |
+| MD | 900-1200px | 标准三栏 | 上下文栏 240px |
+| LG | > 1200px | 宽松三栏 | 上下文栏 320px |
+
+```css
+/* 关键容器 */
+.main-layout {
+  display: grid;
+  grid-template-columns: 240px 1fr 280px;
+  height: 100%;
+}
+
+@media (max-width: 900px) {
+  .main-layout {
+    grid-template-columns: 1fr;           /* 回退到单栏 */
+  }
+  .context-panel { display: none; }      /* 隐藏上下文栏 */
+  .control-bar { 
+    position: fixed; bottom: 0; left: 0; right: 0; /* 变成底栏 */ 
+  }
+}
+```
+
+### 8.5 最小窗口尺寸约束
+
+Electron 主进程设置下限：
+
+```typescript
+mainWindow.setMinimumSize(480, 400);   // 低于这个尺寸 UI 会坏
+```
+
+低于 480px 时不强制三栏，所有内容自动切换到移动端风格的单栏堆叠。
+
+### 8.6 键盘快捷键
+
+| 快捷键 | 作用域 | 功能 |
+|--------|--------|------|
+| `Ctrl + Enter` | 面试页 | 手动触发 LLM 回答（重问当前上下文） |
+| `Ctrl + B` | 全局 | 显示/隐藏 AI 浮窗 |
+| `Ctrl + Shift + A` | 全局 | 主窗口始终置顶/取消 |
+| `Ctrl + S` | 面试页 | 保存当前面试记录 |
+| `Ctrl + ,` | 全局 | 打开偏好设置 |
+| `Ctrl + 1/2/3` | 全局 | 切换到面试/工具箱/我的 |
+| `Esc` | 全局 | 关闭弹窗、收起上下文栏 |
+
+### 8.7 React Native → React DOM 组件映射
 
 | RN 组件 | React DOM 等价 | 备注 |
 |---------|---------------|------|
 | `<View>` | `<div>` | 使用 CSS `display: flex` 默认 |
 | `<Text>` | `<p>` / `<span>` | 不带默认样式 |
-| `<TouchableOpacity>` | `<button>` 或 `<div onClick>` | 用 CSS `:active` 实现按压效果 |
-| `<Pressable>` | `<div onClick onKeyDown>` | 需额外处理键盘可访问性 |
-| `<ScrollView>` | `<div style={{overflow:'auto'}}>` | 或用 CSS `overflow-y: auto` |
-| `<FlatList>` | 普通 `.map()` + `<div>` | 长列表可用 `react-window` 虚拟化 |
-| `<TextInput>` | `<input type="text">` | 或用 `<textarea>` |
-| `<Modal>` | 自定义 Portal + 遮罩 | 使用 `ReactDOM.createPortal()` |
-| `<ActivityIndicator>` | CSS spinner | 简单的 `@keyframes spin` 动画 |
-| `<SafeAreaView>` | CSS `env(safe-area-inset-*)` | 移动端 Web 可用 |
-| `<Animated.View>` | CSS `transition` / `@keyframes` | 或用 `framer-motion` |
-| `StyleSheet.create` | CSS Modules 或 Tailwind CSS | 选一个固定的样式方案 |
+| `<TouchableOpacity>` | `<button>` 或 `<div onClick>` | 用 CSS `:active` + `transition` 替代 `activeOpacity` |
+| `<Pressable>` | `<div onClick onKeyDown>` | 增加 `tabIndex` 支持键盘可访问 |
+| `<ScrollView>` | `<div style={{overflow:'auto'}}>` | 用 CSS `scroll-behavior: smooth` |
+| `<FlatList>` | `react-virtuoso` 或 `react-window` | 对话列表上千条消息必须虚拟化 |
+| `<TextInput>` | `<input type="text">` / `<textarea>` | PC 端隐藏焦点轮廓用 `outline: none` |
+| `<Modal>` | `ReactDOM.createPortal()` + 遮罩 | ESC 关闭，点击遮罩关闭 |
+| `<ActivityIndicator>` | CSS `@keyframes spin` | SVG/CSS 旋转动画 |
+| `<SafeAreaView>` | 不需要 | PC 端没有刘海屏和底部指示条 |
+| `<Animated.View>` | `framer-motion` | 流式文本混入用 `motion.div` |
+| `StyleSheet.create` | Tailwind CSS + CSS Modules | 组件样式用 Tailwind 原子类，复杂规则用 CSS Module |
+| `Vibration` | 不需要 | 替换为窗口闪烁或视觉提醒 |
+| `PermissionsAndroid` | 不需要 | Electron 桌面端无运行时权限模型 |
+| `AppState` | `document.visibilitychange` | Web 端用；Electron 用主进程 `win.focus/blur` IPC |
 
-### 8.2 样式方案：Tailwind CSS
-
-推荐使用 Tailwind CSS 替代 RN 的 `StyleSheet.create`，原因：
-- 和现有 `theme.ts` 的设计令牌可以完美映射到 Tailwind 配置
-- 组件样式简洁直观
-- 桌面端和 Web 端共用同一套 Tokens
+### 8.8 样式方案：Tailwind CSS + CSS 变量
 
 ```js
 // tailwind.config.js
 module.exports = {
+  content: ['./src/**/*.{js,ts,jsx,tsx}'],
+  darkMode: 'class',
   theme: {
     extend: {
       colors: {
-        // 从 shared/theme/tokens.ts 导入
         bg: 'var(--color-bg)',
         'bg-surface': 'var(--color-bg-surface)',
         accent: 'var(--color-accent)',
-        // ...
+        'accent-light': 'var(--color-accent-light)',
+        'accent-soft': 'var(--color-accent-soft)',
+        'text-primary': 'var(--color-text-primary)',
+        'text-secondary': 'var(--color-text-secondary)',
+        'text-tertiary': 'var(--color-text-tertiary)',
+        divider: 'var(--color-divider)',
+        success: 'var(--color-success)',
+        warning: 'var(--color-warning)',
       },
       borderRadius: {
-        sm: '6px',
-        md: '10px',
-        lg: '14px',
-        xl: '18px',
-        full: '9999px',
+        sm: '6px', md: '10px', lg: '14px', xl: '18px', full: '9999px',
+      },
+      boxShadow: {
+        sm: '0 1px 2px rgba(0,0,0,0.05)',
+        md: '0 2px 8px rgba(0,0,0,0.08)',
+        lg: '0 4px 16px rgba(0,0,0,0.12)',
+      },
+      fontSize: {
+        caption: ['12px', { lineHeight: '16px' }],
+        'body-sm': ['13px', { lineHeight: '18px' }],
+        body: ['15px', { lineHeight: '22px' }],
+        heading: ['20px', { lineHeight: '28px' }],
+        title: ['22px', { lineHeight: '30px' }],
+      },
+      spacing: {
+        xs: '4px', sm: '8px', md: '12px', lg: '16px', xl: '20px', '2xl': '28px', '3xl': '36px',
       },
     },
   },
+  plugins: [],
 };
 ```
 
-### 8.3 主题系统
+### 8.9 主题系统
 
 ```typescript
 // shared/theme/use-theme.ts
@@ -861,8 +1112,6 @@ export function useTheme() {
   }, []);
 
   const tokens = dark ? darkTokens : lightTokens;
-  
-  // 应用到 CSS 自定义属性
   useEffect(() => {
     const root = document.documentElement;
     Object.entries(tokens.colors).forEach(([key, value]) => {
@@ -1218,13 +1467,19 @@ publish:
 - [ ] 系统托盘图标 + 菜单
 - [ ] IPC 桥接（preload.ts）
 
-### Phase 4：共享 UI 重构（3-5 天）
-- [ ] Auth 页面（登录/注册）
-- [ ] Interview 页面（对话气泡、流式文本、电平表）
-- [ ] Tools 页面（随机出题、文件转换）
-- [ ] Profile 页面（用户信息、偏好、简历）
-- [ ] Interview History 页面
-- [ ] 导航组件（同 RN TabNavigator 的三栏结构）
+### Phase 4：PC 端 UI 重构（4-6 天）
+- [ ] 主窗口三栏布局框架（CSS Grid，响应式断点）
+- [ ] 面试页 InterviewScreen（对话面板 + 控制栏 + 上下文栏）
+- [ ] AI 浮窗（独立窗口，仅 AI 答案，ContentProtection 隐身）
+- [ ] 工具箱页 ToolsScreen（左栏列表 + 右栏操作区）
+- [ ] 个人中心页 ProfileScreen（个人信息 + 偏好设置双栏）
+- [ ] 面试历史页 InterviewHistoryScreen（表格布局 + 详情展开）
+- [ ] 认证页 AuthScreen（居中卡片布局，非移动全屏）
+- [ ] 对话气泡组件 ConversationBubble（流式文本动画，framer-motion）
+- [ ] 弹窗组件 AppAlert（Portal + 遮罩 + ESC 关闭）
+- [ ] 导航组件（Toolbar 或侧边栏，替代底部 Tab Bar）
+- [ ] 键盘快捷键注册（全局 + 面试页专用）
+- [ ] 响应式适配（< 600px 回退到移动端单栏风格）
 
 ### Phase 5：文件转换集成（1-2 天）
 - [ ] LibreOffice 检测策略实现（系统安装 → portable → 服务端 API 三级回退）
