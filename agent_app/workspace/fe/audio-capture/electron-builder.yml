@@ -1,0 +1,34 @@
+# electron-builder.yml
+appId: com.coagent.audio-capture
+productName: AI面试助手
+directories:
+  output: release
+files:
+  - dist-electron/**/*
+  - dist-renderer/**/*
+  - package.json
+asar:
+  smartUnpack: true
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: assets/icon.ico
+  signAndEditExecutable: false
+mac:
+  target:
+    - target: dmg
+      arch:
+        - x64
+        - arm64
+  icon: assets/icon.icns
+  category: public.app-category.productivity
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  deleteAppDataOnUninstall: false
+  include: installer/install.nsh
+publish:
+  provider: generic
+  url: https://update.coagent.example.com
