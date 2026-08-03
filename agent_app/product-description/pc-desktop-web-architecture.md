@@ -18,114 +18,116 @@
 
 ### 设计目标
 
-1. **Electron 桌面端**：聚焦面试场景，实现系统音频内录（WASAPI Loopback）、AI 浮窗隐身（ContentProtection）、本地文件转换（LibreOffice）
-2. **Web 端**：独立于桌面端的辅助查看端，可单独用于面试（走麦克风采集），也可与桌面端协同
-3. **代码复用最大化**：共享 API 层、状态管理（reducer）、主题系统、类型定义；仅 UI 渲染层和平台特定能力（音频采集/窗口管理/文件系统）分层实现
-4. **后端几乎不变**：现有 FastAPI 服务（auth、ASR、LLM、interview、resume、tools）可直接复用，仅需少量适配（WebSocket client_hello 增加 `pc-windows`/`web` 标识）
+1. **Electron 桌面端**（主力）：Electron 主进程 + React 渲染进程。实现系统音频内录（WASAPI Loopback）、AI 浮窗隐身（ContentProtection）、本地文件转换（LibreOffice）
+2. **Web 端**（后续扩展）：独立的纯 Web 项目，只做麦克风采集，不做系统音频和窗口隐身。桌面端优先，Web 端不同项目目录
+3. **后端几乎不变**：现有 FastAPI 服务（auth、ASR、LLM、interview、resume、tools）可直接复用，仅需少量适配（WebSocket client_hello 增加 `pc-windows`/`pc-macos` 标识）
 
 ---
-
 ## 一、项目结构
 
+> 桌面端和 Web 端是两个独立项目，不是 monorepo。各自有自己的 `package.json`。
+> 桌面端：**Electron（主进程）+ React（渲染进程）+ Vite（构建）**。
+
 ```
-f:\CoAgent\
-├── agent_app/
-│   ├── main.py / orchestrator.py / ...  # Agent 编排系统
-│   ├── prompts/                         # Agent 提示词
-│   ├── workspace/
-│   │   ├── be/poc-audio-capture/        # 🟢 现有 FastAPI 后端（基本不变）
-│   │   ├── fe/                          # 🆕 FE Agent 产出目录
-│   │   │   ├── desktop/                 # 🆕 Electron 桌面端
-│   │   │   │   ├── package.json
-│   │   │   │   ├── electron-builder.yml
-│   │   │   │   ├── electron/            # 主进程代码
-│   │   │   │   │   ├── main.ts
-│   │   │   │   │   ├── preload.ts
-│   │   │   │   │   ├── windows/         # 窗口管理
-│   │   │   │   │   │   ├── main-window.ts
-│   │   │   │   │   │   └── overlay-window.ts
-│   │   │   │   │   ├── audio/           # WASAPI 音频采集
-│   │   │   │   │   │   ├── wasapi-capture.ts
-│   │   │   │   │   │   ├── pcm-normalizer.ts
-│   │   │   │   │   │   └── frame-accumulator.ts
-│   │   │   │   │   ├── stream/          # WebSocket 客户端
-│   │   │   │   │   │   ├── ws-client.ts
-│   │   │   │   │   │   └── wire-protocol.ts
-│   │   │   │   │   ├── file-convert/    # 本地文件转换
-│   │   │   │   │   │   └── libreoffice.ts
-│   │   │   │   │   └── ipc-handlers.ts
-│   │   │   │   ├── src/                 # 渲染进程（React）
-│   │   │   │   │   ├── main.tsx
-│   │   │   │   │   ├── App.tsx
-│   │   │   │   │   └── ...
-│   │   │   │   └── vite.config.ts
-│   │   │   ├── web/                     # 🆕 Web 端
-│   │   │   │   ├── package.json
-│   │   │   │   ├── src/
-│   │   │   │   │   ├── main.tsx
-│   │   │   │   │   └── ...
-│   │   │   │   ├── public/
-│   │   │   │   └── vite.config.ts
-│   │   │   └── shared/                  # 🆕 共享代码
-│   │   │       ├── package.json
-│   │   │       ├── api/                 # 从 fe-app/src/api/ 迁移
-│   │   │       │   ├── client.ts
-│   │   │       │   ├── auth.ts
-│   │   │       │   ├── interview.ts
-│   │   │       │   ├── resume.ts
-│   │   │       │   └── tools.ts
-│   │   │       ├── store/               # 纯 TS 状态管理
-│   │   │       │   ├── interview-reducer.ts
-│   │   │       │   └── types.ts
-│   │   │       ├── utils/
-│   │   │       │   ├── token-storage.ts
-│   │   │       │   ├── interview-state.ts
-│   │   │       │   └── auth-context.ts
-│   │   │       ├── theme/
-│   │   │       │   ├── tokens.ts
-│   │   │       │   └── use-theme.ts
-│   │   │       ├── config.ts
-│   │   │       └── i18n/
-│   │   │           ├── zh.json
-│   │   │           └── en.json
-│   │   ├── shared/                      # Agent 协作共享目录
-│   │   │   ├── API_CONTRACT.md
-│   │   │   ├── STATUS.md
-│   │   │   ├── COLLABORATION.md
-│   │   │   └── tasks/
-│   │   └── prd/                         # PM Agent 产出
-│   └── product-description/             # 产品方案文档
-│       └── pc-desktop-web-architecture.md
-└── fe-app/                              # 现有 Android RN App（已发布产品）
-    └── audio-capture/
+agent_app/workspace/fe/interview-assistant/
+├── package.json
+├── vite.config.ts
+├── electron-builder.yml
+├── tsconfig.json
+├── index.html
+├── tailwind.config.js
+├── postcss.config.js
+├── electron/                  # Electron 主进程（Node.js）
+│   ├── main.ts                # BrowserWindow 生命周期 + ContentProtection
+│   ├── preload.ts             # contextBridge IPC
+│   ├── tsconfig.json          # 主进程专用，target: ES2022
+│   ├── windows/               # 窗口管理
+│   │   ├── main-window.ts
+│   │   └── overlay-window.ts
+│   ├── audio/                 # WASAPI 音频采集
+│   │   ├── wasapi-capture.ts
+│   │   ├── pcm-normalizer.ts
+│   │   └── frame-accumulator.ts
+│   ├── stream/                # WebSocket 客户端
+│   │   ├── ws-client.ts
+│   │   └── wire-protocol.ts
+│   ├── file-convert/          # 本地文件转换
+│   │   └── libreoffice.ts
+│   └── ipc-handlers.ts        # IPC 路由注册
+├── src/                       # React 渲染进程
+│   ├── main.tsx               # React 入口
+│   ├── App.tsx                # 根组件（路由 + Auth 门）
+│   ├── config.ts              # API 地址、语言配置
+│   ├── api/                   # HTTP 客户端 + 端点模块
+│   │   ├── client.ts
+│   │   ├── auth.ts
+│   │   ├── interview.ts
+│   │   └── resume.ts
+│   ├── store/                 # 状态管理
+│   │   ├── types.ts           # ConversationMessage 等
+│   │   └── interview-reducer.ts
+│   ├── utils/                 # 工具函数
+│   │   ├── token.ts
+│   │   ├── storage.ts
+│   │   ├── interviewState.ts
+│   │   └── AuthContext.ts
+│   ├── theme/                 # 设计令牌
+│   │   └── tokens.ts
+│   ├── hooks/                 # useAudioCapture 等自定义 Hook
+│   ├── screens/               # 页面组件
+│   │   ├── InterviewScreen.tsx
+│   │   ├── ToolsScreen.tsx
+│   │   ├── ProfileScreen.tsx
+│   │   ├── InterviewHistoryScreen.tsx
+│   │   └── AuthScreen.tsx
+│   ├── components/            # 通用 UI 组件
+│   │   ├── ConversationBubble.tsx
+│   │   ├── AppAlert.tsx
+│   │   ├── SeparatorLine.tsx
+│   │   ├── SecondaryPage.tsx
+│   │   ├── MicLevelBar.tsx
+│   │   └── PulsingDot.tsx
+│   └── platform/              # Electron 平台适配
+│       └── storage.ts         # IPC → 主进程文件系统
+└── public/
 ```
+
+### 关键设计决策
+
+**为什么不用 monorepo？**
+
+桌面端和 Web 端的能力边界不同（桌面端有系统音频 + 隐身窗口，Web 端只有麦克风）。强行共享代码会导致一堆 `if (isElectron)` 分叉，不如各维护各的。从 RN 项目复制过来的 `api/`、`store/`、`utils/` 等纯逻辑代码在各自项目中直接存放，各自根据需求修改。
+
+**为什么是 Electron + React 而不是纯 Electron？**
+
+Electron 的渲染进程就是一个 Chromium 浏览器。React 在里面开发页面和普通 Web 开发完全一样——JSX 组件、状态管理、路由、热更新全都有。主进程（`electron/`）只负责 OS 级能力（窗口管理、音频采集、文件系统），通过 IPC 暴露给渲染进程调用。
 
 ---
-
 ## 二、代码复用策略
 
-### 2.1 从现有 RN 代码可 100% 复用的部分
+### 2.1 从现有 RN 代码复用的部分
 
-源文件路径以 `fe-app/audio-capture/` 为基准，迁移到 `agent_app/workspace/fe/shared/`：
+从 `fe-app/audio-capture/src/` 直接复制到 `interview-assistant/src/`，根据需要适配：
 
-| 源文件 | 迁移到 | 改动 |
+| 源文件 | 目标文件 | 适配工作 |
 |--------|--------|------|
-| `fe-app/audio-capture/src/api/client.ts` | `workspace/fe/shared/api/client.ts` | ⚪ 零改动 |
-| `fe-app/audio-capture/src/api/auth.ts` | `workspace/fe/shared/api/auth.ts` | ⚪ 零改动 |
-| `fe-app/audio-capture/src/api/interview.ts` | `workspace/fe/shared/api/interview.ts` | 提取 ConversationMessage 类型到 `workspace/fe/shared/store/types.ts` |
-| `fe-app/audio-capture/src/api/resume.ts` | `workspace/fe/shared/api/resume.ts` | ⚪ 零改动 |
-| `fe-app/audio-capture/src/utils/interviewState.ts` | `workspace/fe/shared/utils/interview-state.ts` | ⚪ 零改动 |
-| `fe-app/audio-capture/src/utils/AuthContext.ts` | `workspace/fe/shared/utils/auth-context.ts` | ⚪ 零改动 |
-| `fe-app/audio-capture/src/theme.ts` | `workspace/fe/shared/theme/tokens.ts` + `use-theme.ts` | 替换 RN shadow 为 CSS box-shadow |
-| `fe-app/audio-capture/src/config.ts` | `workspace/fe/shared/config.ts` | 替换硬编码 IP 为环境变量 |
-| `useAudioCaptureController` 中的 reducer | `workspace/fe/shared/store/interview-reducer.ts` | 提取纯函数，去除 RN 依赖 |
+| `src/api/client.ts` | `src/api/client.ts` | ⚪ 零改动（fetch 封装纯 JS） |
+| `src/api/auth.ts` | `src/api/auth.ts` | ⚪ 零改动 |
+| `src/api/interview.ts` | `src/api/interview.ts` | 提取 ConversationMessage 类型到本地 `src/store/types.ts` |
+| `src/api/resume.ts` | `src/api/resume.ts` | ⚪ 零改动 |
+| `src/utils/interviewState.ts` | `src/utils/interviewState.ts` | ⚪ 零改动 |
+| `src/utils/AuthContext.ts` | `src/utils/AuthContext.ts` | ⚪ 零改动 |
+| `src/theme.ts` | `src/theme/tokens.ts` | 替换 RN shadow 为 CSS box-shadow |
+| `src/config.ts` | `src/config.ts` | 替换硬编码 IP 为 `import.meta.env.VITE_API_HOST` |
+| `useAudioCaptureController` 的 reducer | `src/store/interview-reducer.ts` | 提取纯函数，去除 RN 依赖 |
 
-### 2.2 需要平台适配的部分
+### 2.2 平台适配
+
+`src/utils/token.ts` 从 Android SharedPreferences 改为 IPC 存储：
 
 ```
-workspace/fe/shared/utils/token-storage.ts       # 定义接口
-  ├── workspace/fe/desktop/electron/storage.ts   # Electron: localStorage 或 electron-store
-  └── workspace/fe/web/src/storage.ts            # Web: localStorage
+src/platform/storage.ts        # Electron: window.electronAPI.storage → 主进程文件系统
+src/utils/token.ts             # 调用 storage，不改 API
 ```
 
 ### 2.3 需要完全重写的部分（RN 原生能力 → Electron/Web 等价物）
@@ -1229,7 +1231,7 @@ export function useTheme() {
 
 ### 9.1 从现有 reducer 提取核心逻辑
 
-Android 端 `useAudioCaptureController.ts` 中有约 200 行的**纯 reducer 函数**，可以完整提取到 `workspace/fe/shared/store/interview-reducer.ts`：
+Android 端 `useAudioCaptureController.ts` 中有约 200 行的**纯 reducer 函数**，提取到本地 `src/store/interview-reducer.ts`：
 
 ```typescript
 // shared/store/interview-reducer.ts
@@ -1313,7 +1315,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
 ### 11.1 结论
 
-下面这组组合可以支持 Electron 桌面端 + Vite Web 端的 monorepo 正常开发、构建、调试和打包：
+下面这组组合可以支持 Electron + React + Vite 正常开发、构建、调试和打包：
 
 | 组件 | 固定版本 | 说明 |
 |------|---------|------|
@@ -1397,28 +1399,20 @@ Node 22.23.1
 }
 ```
 
-### 11.4 Monorepo 配置
-
-```yaml
-# agent_app/workspace/fe/pnpm-workspace.yaml
-packages:
-  - 'shared'
-  - 'desktop'
-  - 'web'
-```
+### 11.4 pnpm 配置
 
 ```ini
-# .npmrc（根目录）
+# .npmrc
 shamefully-hoist=false
 strict-peer-dependencies=true
 auto-install-peers=true
 ```
 
-- `shamefully-hoist=false`：pnpm 默认行为，不提升依赖到根 `node_modules`，避免幽灵依赖。
-- `strict-peer-dependencies=true`：peer 依赖不匹配时构建失败，防止运行时异常。
+- `shamefully-hoist=false`：不提升依赖到根 `node_modules`，避免幽灵依赖。
+- `strict-peer-dependencies=true`：peer 依赖不匹配时构建失败。
 - `auto-install-peers=true`：自动安装缺失的 peer 依赖。
 
-### 11.5 共享 tsconfig
+### 11.5 tsconfig
 
 ```jsonc
 // tsconfig.base.json
@@ -1450,9 +1444,9 @@ auto-install-peers=true
 ### 11.6 Electron 主进程 tsconfig
 
 ```jsonc
-// desktop/electron/tsconfig.json
+// electron/tsconfig.json
 {
-  "extends": "../../tsconfig.base.json",
+  "extends": "../tsconfig.json",
   "compilerOptions": {
     "target": "ES2022",
     "module": "ESNext",
@@ -1547,11 +1541,11 @@ publish:
 
 ## 十四、实施路线图
 
-### Phase 1：项目搭建（1-2 天）
-- [ ] pnpm monorepo 初始化（desktop/、web/、shared/）
-- [ ] Vite + TypeScript 配置
-- [ ] Tailwind CSS 配置，映射 `theme.ts` 令牌
-- [ ] 迁移 shared 层：api/、store/、utils/、config.ts、theme/
+### Phase 1：项目搭建（1 天）
+- [ ] Vite + React + TypeScript 项目初始化
+- [ ] Tailwind CSS + PostCSS 配置
+- [ ] Electron 主进程 scaffold（main.ts, preload.ts, tsconfig）
+- [ ] 从 RN 项目迁移 api/、store/、utils/、config.ts、theme/ 到 src/
 
 ### Phase 2：核心音频采集（3-5 天）
 - [ ] WASAPI Loopback Node addon（或集成 naudiodon）
@@ -1640,10 +1634,10 @@ publish:
 
 ## 十七、稳定开发环境指南
 
-> 适用项目：Electron 桌面端 + Vite Web 端 monorepo  
-> 适用系统：Windows 10/11 64 位（macOS 参考但路径不同）  
-> 目标：能够通过 pnpm 稳定完成依赖安装、TypeScript 编译、Vite 开发服务器启动、Electron 主进程运行、打包 exe/dmg 及日常前端开发  
-> 基线日期：2026-07-31  
+> 适用项目：Electron + React + Vite 桌面端  
+> 适用系统：Windows 10/11 64 位 / macOS  
+> 目标：能够通过 pnpm 稳定完成依赖安装、TypeScript 编译、Vite 开发服务器启动、Electron 主进程运行、打包 exe/dmg  
+> 基线日期：2026-08-03  
 > Node 基线：`22.23.1 LTS`
 
 ### 17.1 系统前提
@@ -1745,20 +1739,16 @@ pnpm -v     # → 9.15.0
 #### 1. 创建项目目录结构
 
 ```powershell
-# 在 agent_app/workspace/fe 下创建
 cd f:\CoAgent\agent_app\workspace\fe
-mkdir desktop\electron              # Electron 主进程
-mkdir desktop\src                   # Electron 渲染进程
-mkdir web\src                       # Web 端
-mkdir shared\src                    # 共享代码
+mkdir interview-assistant\electron              # Electron 主进程
+mkdir interview-assistant\src                   # React 渲染进程
+mkdir interview-assistant\public
 ```
 
 项目必须放在**短路径、纯英文目录**中：
 
 ```text
-f:\CoAgent\agent_app\workspace\fe\desktop       ✅
-f:\CoAgent\agent_app\workspace\fe\web           ✅
-f:\CoAgent\agent_app\workspace\fe\shared        ✅
+f:\CoAgent\agent_app\workspace\fe\interview-assistant       ✅
 ```
 
 避免：
@@ -1768,29 +1758,50 @@ f:\CoAgent\agent_app\workspace\fe\shared        ✅
 - OneDrive 同步目录
 - 网络磁盘（`\\server\share\...`）
 
-#### 2. 根 package.json
+#### 2. package.json
 
 ```json
 {
-  "name": "coagent-monorepo",
+  "name": "interview-assistant",
+  "version": "0.1.0",
   "private": true,
+  "type": "module",
   "packageManager": "pnpm@9.15.0",
   "engines": {
-    "node": ">=22.23.1 <23",
-    "pnpm": ">=9.15.0 <10"
+    "node": ">=22.23.1 <23"
   },
   "scripts": {
-    "dev:web": "pnpm -r --filter @coagent/web dev",
-    "dev:electron": "pnpm -r --filter @coagent/electron dev",
-    "build:shared": "pnpm -r --filter @coagent/shared build",
-    "build:web": "pnpm -r --filter @coagent/web build",
-    "build:electron": "pnpm -r --filter @coagent/electron build",
-    "typecheck": "pnpm -r typecheck",
-    "test": "pnpm -r test",
-    "lint": "pnpm -r lint"
+    "dev": "concurrently \"vite\" \"tsc -p electron/tsconfig.json --watch\" \"electron .\"",
+    "build": "vite build && tsc -p electron/tsconfig.json && electron-builder",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "lint": "eslint src/"
+  },
+  "dependencies": {
+    "eventemitter3": "5.0.1",
+    "react": "19.0.0",
+    "react-dom": "19.0.0",
+    "react-router-dom": "7.1.1",
+    "framer-motion": "11.15.0"
+  },
+  "devDependencies": {
+    "@types/react": "19.0.2",
+    "@types/react-dom": "19.0.2",
+    "@vitejs/plugin-react": "4.3.4",
+    "autoprefixer": "10.4.20",
+    "concurrently": "9.1.2",
+    "electron": "32.2.8",
+    "electron-builder": "25.1.8",
+    "postcss": "8.4.49",
+    "tailwindcss": "3.4.17",
+    "typescript": "5.6.3",
+    "vite": "6.0.5",
+    "vitest": "2.1.8"
   }
 }
 ```
+
+所有依赖均使用**精确版本号**（不带 `^` 或 `~`）。
 
 #### 3. 项目级 .nvmrc
 
@@ -1798,138 +1809,11 @@ f:\CoAgent\agent_app\workspace\fe\shared        ✅
 22.23.1
 ```
 
-#### 4. 各子包 package.json
-
-**shared/package.json：**
-
-```json
-{
-  "name": "@coagent/shared",
-  "version": "0.1.0",
-  "private": true,
-  "type": "module",
-  "main": "./src/index.ts",
-  "types": "./src/index.ts",
-  "exports": {
-    ".": "./src/index.ts",
-    "./api/*": "./src/api/*.ts",
-    "./store/*": "./src/store/*.ts",
-    "./utils/*": "./src/utils/*.ts",
-    "./theme/*": "./src/theme/*.ts",
-    "./types/*": "./src/types/*.ts"
-  },
-  "peerDependencies": {
-    "react": "19.0.0"
-  },
-  "devDependencies": {
-    "typescript": "5.6.3"
-  },
-  "scripts": {
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run"
-  }
-}
-```
-
-**desktop/package.json（关键依赖）：**
-
-```json
-{
-  "name": "@coagent/electron",
-  "version": "0.1.0",
-  "private": true,
-  "type": "module",
-  "main": "dist-electron/main/index.js",
-  "scripts": {
-    "dev": "vite",
-    "build": "npm run build:renderer && npm run build:main && electron-builder",
-    "build:renderer": "vite build",
-    "build:main": "tsc -p electron/tsconfig.json",
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run",
-    "lint": "eslint ."
-  },
-  "dependencies": {
-    "@coagent/shared": "workspace:*",
-    "eventemitter3": "5.0.1",
-    "electron-store": "10.0.0",
-    "electron-updater": "6.3.9",
-    "react": "19.0.0",
-    "react-dom": "19.0.0",
-    "react-router-dom": "7.1.1",
-    "framer-motion": "11.15.0"
-  },
-  "devDependencies": {
-    "electron": "32.2.8",
-    "electron-builder": "25.1.8",
-    "vite": "6.0.5",
-    "@vitejs/plugin-react": "4.3.4",
-    "typescript": "5.6.3",
-    "vitest": "2.1.8",
-    "eslint": "9.16.0",
-    "prettier": "3.4.2",
-    "node-gyp": "11.0.0",
-    "node-abi": "3.71.0"
-  }
-}
-```
-
-**web/package.json（关键依赖）：**
-
-```json
-{
-  "name": "@coagent/web",
-  "version": "0.1.0",
-  "private": true,
-  "type": "module",
-  "scripts": {
-    "dev": "vite --port 5173",
-    "build": "tsc && vite build",
-    "preview": "vite preview",
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run",
-    "lint": "eslint ."
-  },
-  "dependencies": {
-    "@coagent/shared": "workspace:*",
-    "eventemitter3": "5.0.1",
-    "react": "19.0.0",
-    "react-dom": "19.0.0",
-    "react-router-dom": "7.1.1",
-    "framer-motion": "11.15.0"
-  },
-  "devDependencies": {
-    "vite": "6.0.5",
-    "@vitejs/plugin-react": "4.3.4",
-    "typescript": "5.6.3",
-    "tailwindcss": "3.4.17",
-    "postcss": "8.4.49",
-    "autoprefixer": "10.4.20",
-    "vitest": "2.1.8",
-    "@testing-library/react": "16.1.0",
-    "eslint": "9.16.0",
-    "prettier": "3.4.2"
-  }
-}
-```
-
-所有依赖均使用**精确版本号**（不带 `^` 或 `~`），通过 `package.json` 中的 `"pnpm.overrides"` 在根级别防止子依赖漂移。
-
-#### 5. 首次依赖安装
+#### 4. 首次依赖安装
 
 ```powershell
-# 在项目根目录执行
+cd f:\CoAgent\agent_app\workspace\fe\interview-assistant
 pnpm install
-
-# 验证所有 workspace 包已链接
-pnpm ls -r --depth 0
-```
-
-预期输出包含三个包：
-```text
-@coagent/shared@0.1.0
-@coagent/electron@0.1.0
-@coagent/web@0.1.0
 ```
 
 **不要**：
@@ -2007,10 +1891,8 @@ export default {
 
 ### 17.6 Vite 配置
 
-#### Electron 渲染进程
-
 ```typescript
-// desktop/vite.config.ts
+// vite.config.ts
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
@@ -2025,7 +1907,6 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      '@coagent/shared': path.resolve(__dirname, '../shared/src'),
       '@': path.resolve(__dirname, './src'),
     },
   },
@@ -2033,36 +1914,6 @@ export default defineConfig({
     port: 5173,
     strictPort: true,
   },
-});
-```
-
-#### Web
-
-```typescript
-// web/vite.config.ts
-import { defineConfig } from 'vite';
-import react from '@vitejs/plugin-react';
-import path from 'path';
-
-export default defineConfig({
-  plugins: [react()],
-  root: '.',
-  base: '/',
-  build: {
-    outDir: 'dist',
-    emptyOutDir: true,
-  },
-  resolve: {
-    alias: {
-      '@coagent/shared': path.resolve(__dirname, '../shared/src'),
-      '@': path.resolve(__dirname, './src'),
-    },
-  },
-  server: {
-    port: 5173,
-    strictPort: true,
-  },
-  envPrefix: 'COAGENT_',
 });
 ```
 
@@ -2114,56 +1965,46 @@ module.exports = {
 
 完成项目初始化后，按顺序验证以下步骤全部通过：
 
-#### Step 1：共享包类型检查
+#### Step 1：TypeScript 类型检查
 
 ```powershell
-cd f:\CoAgent
+cd f:\CoAgent\agent_app\workspace\fe\interview-assistant
 pnpm typecheck
 ```
 
-预期：所有 workspace 包 TypeScript 编译无错误。
+预期：无错误。
 
-#### Step 2：Web 开发服务器
+#### Step 2：Vite 开发服务器（单独验证 React）
 
 ```powershell
-cd f:\CoAgent
-pnpm dev:web
+cd f:\CoAgent\agent_app\workspace\fe\interview-assistant
+pnpm vite
 ```
 
-浏览器访问 `http://localhost:5173`，应能看到空页面（无控制台错误）。
+浏览器访问 `http://localhost:5173`，应能看到页面。
 
-#### Step 3：Electron 开发模式启动
+#### Step 3：Electron 开发模式
 
 ```powershell
-cd f:\CoAgent
-pnpm dev:electron
+cd f:\CoAgent\agent_app\workspace\fe\interview-assistant
+pnpm dev
 ```
 
 预期：Electron 主窗口正常显示，DevTools 无错误。
 
-#### Step 4：Electron ContentProtection 验证
+#### Step 4：ContentProtection 验证
 
 1. 启动 Electron App
 2. 打开 OBS Studio 或 Windows 截图工具
-3. 确认 Electron 窗口在截图/录屏中**不可见**（或被覆盖为黑色/无内容）
+3. 确认 Electron 窗口在截图/录屏中**不可见**
 
-#### Step 5：Web 端构建
-
-```powershell
-cd f:\CoAgent
-pnpm build:web
-```
-
-预期：`web/dist/` 目录生成，包含 `index.html` + JS/CSS 资源。
-
-#### Step 6：Electron 打包
+#### Step 5：Electron 打包
 
 ```powershell
-cd f:\CoAgent
-pnpm build:electron
+pnpm build
 ```
 
-预期：`desktop/release/` 目录生成 `.exe`（Windows）或 `.dmg`（macOS）。
+预期：`release/` 目录生成 `.exe`（Windows）或 `.dmg`（macOS）。
 
 ### 17.9 路由导航快捷键验证
 
@@ -2179,51 +2020,25 @@ pnpm build:electron
 
 ### 17.10 开发工作流
 
-日常开发流程（和 RN 项目截然不同——不需要 Metro、不需要 Gradle、不需要 Android Studio）：
+日常开发流程：
 
 ```powershell
-# 终端 A：开发服务
-cd f:\CoAgent
-pnpm dev:electron    # 或 pnpm dev:web
-
-# 终端 B：TypeScript 守护
-cd f:\CoAgent
-pnpm typecheck --watch
+cd f:\CoAgent\agent_app\workspace\fe\interview-assistant
+pnpm dev          # 启动 Vite + tsc watch + Electron
 ```
 
-日常 JS/TS 开发验证：
-
-1. 修改组件代码。
-2. Vite HMR 自动刷新（Electron renderer 和 Web 端均支持）。
-3. 查看终端 TypeScript 编译结果。
-4. Electron DevTools（`Ctrl+Shift+I`）检查 Console/Network/React Components。
+1. 修改 React 代码 → Vite HMR 自动刷新
+2. 修改 Electron 主进程代码 → 手动重启（或配 nodemon）
+3. DevTools（`Ctrl+Shift+I`）检查 Console/Network
 
 只有在以下情况才进行完整清理：
 
 - 切换 Node 大版本
-- 新增或升级原生依赖（Electron 主进程）
 - 新增 node-gyp 编译的 native addon
-- 修改 pnpm workspace 结构
-- 修改 TypeScript target 或 moduleResolution
-
-清理命令：
 
 ```powershell
-# 删除所有构建产物和依赖
-Remove-Item -Recurse -Force node_modules -ErrorAction SilentlyContinue
-Remove-Item -Recurse -Force desktop\node_modules -ErrorAction SilentlyContinue
-Remove-Item -Recurse -Force web\node_modules -ErrorAction SilentlyContinue
-Remove-Item -Recurse -Force shared\node_modules -ErrorAction SilentlyContinue
-Remove-Item -Recurse -Force desktop\dist-renderer -ErrorAction SilentlyContinue
-Remove-Item -Recurse -Force desktop\dist-electron -ErrorAction SilentlyContinue
-Remove-Item -Recurse -Force desktop\release -ErrorAction SilentlyContinue
-Remove-Item -Recurse -Force web\dist -ErrorAction SilentlyContinue
-
-# 清理 pnpm store（仅在明确出现缓存问题时）
-pnpm store prune
-
-# 重新安装
-pnpm install --frozen-lockfile
+Remove-Item -Recurse -Force node_modules, dist-renderer, dist-electron, release -ErrorAction SilentlyContinue
+pnpm install
 ```
 
 ### 17.11 常见问题定位
@@ -2244,14 +2059,6 @@ pnpm -v
 # Corepack 干扰？→ corepack disable
 ```
 
-#### `MODULE_NOT_FOUND` 找不到 shared 包
-
-```powershell
-pnpm install --frozen-lockfile
-# 确保 pnpm-workspace.yaml 包含 shared 包目录
-# 确保 package.json 中使用 "workspace:*" 协议
-```
-
 #### Electron ContentProtection 效果不正常
 
 检查：
@@ -2259,14 +2066,6 @@ pnpm install --frozen-lockfile
 2. 主窗口是否调用了 `setContentProtection(true)`
 3. Windows 10 build 是否 ≥ 19041（`winver` 命令查看）
 4. 截图工具是否使用标准截屏 API（OBS/截图工具可验证，硬件采集卡不可验证）
-
-#### TypeScript 报 `Cannot find module '@coagent/shared'`
-
-```powershell
-# 检查 shared 包的 exports 字段
-# 确认 tsconfig 中有 paths 或使用 pnpm workspace 协议解析
-pnpm typecheck
-```
 
 #### Vite 端口被占用
 
@@ -2304,8 +2103,8 @@ taskkill /PID <PID> /F
 
 - [ ] `node -v` 输出 `v22.23.1`
 - [ ] `pnpm -v` 输出 `9.15.0`
-- [ ] `pnpm typecheck` 所有包无错误
-- [ ] `pnpm ls -r --depth 0` 显示三个 workspace 包
+- [ ] `pnpm typecheck` 无错误
+- [ ] `pnpm install` 所有依赖安装成功
 
 #### Windows 特检
 
@@ -2318,21 +2117,14 @@ taskkill /PID <PID> /F
 - [ ] `brew --version` 正常
 - [ ] BlackHole 已安装（`brew list blackhole-2ch`）
 
-#### Web 端
-
-- [ ] `pnpm dev:web` 启动成功
-- [ ] 浏览器访问 `http://localhost:5173` 正常
-- [ ] HMR 修改代码后自动刷新
-- [ ] `pnpm build:web` 生成 `web/dist/` 产物
-
 #### Electron 桌面端
 
-- [ ] `pnpm dev:electron` 启动成功
+- [ ] `pnpm dev` 启动成功
 - [ ] 主窗口正常显示、无崩溃
 - [ ] DevTools 可以打开（Win: `Ctrl+Shift+I` / Mac: `Cmd+Opt+I`）
 - [ ] `setContentProtection(true)` 窗口在截屏/屏幕共享中不可见
 - [ ] 浮窗 overlay 正常显示和关闭
-- [ ] `pnpm build:electron` 生成 `.exe`（Windows）或 `.dmg`（macOS）
+- [ ] `pnpm build` 生成 `.exe`（Windows）或 `.dmg`（macOS）
 
 #### 代码规范
 
