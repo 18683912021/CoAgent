@@ -18,7 +18,7 @@
 
 ### 设计目标
 
-1. **Electron 桌面端**（主力）：Electron 主进程 + React 渲染进程。实现系统音频内录（WASAPI Loopback）、AI 浮窗隐身（ContentProtection）、本地文件转换（LibreOffice）
+1. **Electron 桌面端**（主力）：Electron 主进程 + React 渲染进程。实现系统音频内录（WASAPI Loopback）、应用窗口隐身（ContentProtection，整个 App 在屏幕共享中不可见）、本地文件转换（LibreOffice）
 2. **Web 端**（后续扩展）：独立的纯 Web 项目，只做麦克风采集，不做系统音频和窗口隐身。桌面端优先，Web 端不同项目目录
 3. **后端几乎不变**：现有 FastAPI 服务（auth、ASR、LLM、interview、resume、tools）可直接复用，仅需少量适配（WebSocket client_hello 增加 `pc-windows`/`pc-macos` 标识）
 
@@ -305,19 +305,24 @@ overlayWindow.setIgnoreMouseEvents(true, { forward: true });
 ### 4.4 多窗口架构
 
 ```
-┌── 主窗口（可见）──────────────┐   ┌── AI 浮窗（隐身）──────────────┐
-│                              │   │                              │
-│  面试控制面板                  │   │  面试官问题（ASR 转写）          │
-│  ├── 编程语言选择              │   │  AI 实时答案（流式输出）         │
-│  ├── 答案风格                  │   │  关键提示                     │
-│  ├── 麦克风/系统音频电平表      │   │                              │
-│  ├── 开始/停止采集             │   │  此窗口在屏幕共享中             │
-│  └── 转写历史                  │   │  完全不可见                   │
-│                              │   │                              │
-└──────────────────────────────┘   └──────────────────────────────┘
+面试官的屏幕（共享画面）                你的屏幕（实际看到）
+┌──────────────────────┐    ┌──────────────────────────────┐
+│                      │    │  ┌──────────────────────┐    │
+│   你的 IDE / 代码     │    │  │   AI 面试助手（主窗口）  │    │
+│                      │    │  │   ✓ 完全可见可操作     │    │
+│   （正常共享）         │    │  └──────────────────────┘    │
+│                      │    │                              │
+│                      │    │  ┌──────────────────────┐    │
+│                      │    │  │   AI 浮窗（答案提示）    │    │
+│                      │    │  │   ✓ 完全可见          │    │
+│                      │    │  └──────────────────────┘    │
+│                      │    │                              │
+│                      │    │   你的 IDE / 代码             │
+└──────────────────────┘    └──────────────────────────────┘
+  AI 助手：✅ 不可见            AI 助手：✅ 正常工作
 ```
 
-用户可以自由拖拽两个窗口到合适位置——主窗口控制面试流程，浮窗显示 AI 提示。因为浮窗通过 `setContentProtection(true)` 在屏幕共享中对面试官不可见，用户无需刻意隐藏。
+**整个应用**（主窗口 + 浮窗）都调用 `setContentProtection(true)`，在屏幕共享、截屏、录屏中对面试官完全不可见。用户在自己的屏幕上正常看到所有窗口，无需刻意隐藏。
 
 ---
 
@@ -944,7 +949,7 @@ PC 端主窗口（800×700，可缩放）
 │  └──────────────────┘│              │
 └──────────────────────────────────────┘
 
-AI 浮窗（独立窗口，ContentProtection 隐身，300×500）
+AI 浮窗（独立窗口，约 300×500。整个应用已通过 ContentProtection 隐藏，面试官看不到）
 ┌──────────────────┐
 │ 最新 AI 答案      │
 │                  │
@@ -1324,7 +1329,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 | React | `19.0.0` | 和现有 RN 项目一致 |
 | React DOM | `19.0.0` | 和 React 版本对齐 |
 | TypeScript | `5.6.3` | 严格模式 |
-| Electron | `32.2.8` | ContentProtection 稳定，无 33/35 回归 |
+| Electron | `32.3.2` | ContentProtection 稳定，32.x 最后正常版本 |
 | electron-builder | `25.1.8` | Windows NSIS + macOS DMG |
 | Vite | `6.0.5` | Electron + Web renderer 共用 |
 | @vitejs/plugin-react | `4.3.4` | React Fast Refresh |
@@ -1360,7 +1365,7 @@ Node 22.23.1
   ├── TypeScript 5.6.3   ← 不支持 TS 5.7+ 的新语法（可选升级，暂缓）
   ├── Vite 6.0.5         ← Electron renderer + Web 共用
   │     └── @vitejs/plugin-react 4.3.4
-  ├── Electron 32.2.8    ← 自带 Node 20 + Chromium 128，和系统 Node 22 隔离
+  ├── Electron 32.3.2    ← 自带 Node 20 + Chromium 128，和系统 Node 22 隔离
   │     ├── electron-builder 25.1.8
   │     ├── electron-store 10.0.0
   │     └── electron-updater 6.3.9
@@ -1556,15 +1561,15 @@ publish:
 - [ ] 主进程音频管理
 
 ### Phase 3：Electron 窗口管理（1-2 天）
-- [ ] 主窗口（面试控制面板）
-- [ ] AI 浮窗（ContentProtection 隐身）
+- [ ] 主窗口（面试控制面板，ContentProtection 隐身）
+- [ ] AI 浮窗（独立答案窗口，ContentProtection 隐身）
 - [ ] 系统托盘图标 + 菜单
 - [ ] IPC 桥接（preload.ts）
 
 ### Phase 4：PC 端 UI 重构（4-6 天）
 - [ ] 主窗口三栏布局框架（CSS Grid，响应式断点）
 - [ ] 面试页 InterviewScreen（对话面板 + 控制栏 + 上下文栏）
-- [ ] AI 浮窗（独立窗口，仅 AI 答案，ContentProtection 隐身）
+- [ ] AI 浮窗（独立窗口，仅 AI 答案，整个应用已隐身）
 - [ ] 工具箱页 ToolsScreen（左栏列表 + 右栏操作区）
 - [ ] 个人中心页 ProfileScreen（个人信息 + 偏好设置双栏）
 - [ ] 面试历史页 InterviewHistoryScreen（表格布局 + 详情展开）
@@ -1790,7 +1795,7 @@ f:\CoAgent\agent_app\workspace\fe\interview-assistant       ✅
     "@vitejs/plugin-react": "4.3.4",
     "autoprefixer": "10.4.20",
     "concurrently": "9.1.2",
-    "electron": "32.2.8",
+    "electron": "32.3.2",
     "electron-builder": "25.1.8",
     "postcss": "8.4.49",
     "tailwindcss": "3.4.17",
@@ -2062,7 +2067,7 @@ pnpm -v
 #### Electron ContentProtection 效果不正常
 
 检查：
-1. Electron 版本是否为 `32.2.8`（`node_modules/.pnpm/electron@...`）
+1. Electron 版本是否为 `32.3.2`
 2. 主窗口是否调用了 `setContentProtection(true)`
 3. Windows 10 build 是否 ≥ 19041（`winver` 命令查看）
 4. 截图工具是否使用标准截屏 API（OBS/截图工具可验证，硬件采集卡不可验证）
