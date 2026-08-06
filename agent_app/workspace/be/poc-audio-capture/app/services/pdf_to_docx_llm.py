@@ -19,53 +19,39 @@ from docx.shared import Cm, Pt, RGBColor
 
 logger = logging.getLogger("pdf2docx_llm")
 
-_STYLE_PROMPT = """你是文档排版专家。分析 PDF 提取的文字行和视觉元素，输出完整样式 JSON。
+_STYLE_PROMPT = """分析 PDF 页面布局，只输出结构信息。不要输出任何字体、颜色、字号、样式——这些由程序精确处理。
 
-文字行：[id=N pg=P x=X y=Y w=W sz=S B/b] "text..."
-视觉元素：
-  H-line(y, x0-x1, color, thick)           → 水平线（分隔线、下划线）
-  Rect(x0,y0,x1,y1, fill=色, thick)        → 矩形色块（标题背景、装饰条）
-  Image(x0,y0,x1,y1, thick=高度)           → 图片（照片、logo、图标）
+文字行格式：[id=N x=X y=Y w=W sz=S font=F] "text..."
 
-输出 JSON（不要 markdown）：
+输出 JSON（不要 markdown），只包含结构：
 {
-  "title": "标题文字",
-  "design": {"body_font":"SimSun","heading_font":"SimHei","body_size":10.5,"body_color":"#333333"},
+  "title": "仅输出标题文字（可选）",
   "blocks": [
-    {"type":"photo","y":100,"w":80,"h":100,"align":"center","border":true},
-    {"ids":[1],"type":"heading","level":1,"size":22,"bold":true,"color":"#1A3A6B","align":"center"},
-    {"type":"separator","color":"#1A3A6B","thickness":3},
-    {"ids":[2,3],"type":"info_bar","size":9.5,"color":"#666666","align":"center"},
-    {"ids":[5],"type":"heading","level":2,"size":14,"bold":true,"color":"#FFFFFF","align":"left","bar_color":"#2B579A"},
-    {"ids":[6,7,8],"type":"paragraph","size":10.5,"color":"#333333","align":"left","first_line_indent":true},
-    {"ids":[12,13,14],"type":"list","ordered":false,"size":10.5,"color":"#333333"}
+    {"ids":[1],"type":"heading","level":1},
+    {"ids":[2,3],"type":"paragraph"},
+    {"ids":[4,5,6],"type":"list","ordered":false},
+    {"ids":[7,8],"type":"table","headers":["列1","列2"],"rows":[["a","b"],["c","d"]]},
+    {"type":"separator"}
   ]
 }
 
-视觉元素处理规则：
-1. 图片(Image)：照片/头像→ type:"photo"；logo→ type:"logo"；图标→ type:"icon"
-   描述其位置(y坐标)和尺寸(w/h)，DOCX 中作为居中的嵌入式图片
-2. 横线(H-line)：分隔线→ type:"separator"；标题下划线装饰→ type:"separator"
-3. 矩形色块(Rect)：紧靠在标题上方/下方的→ 标题的 bar_color
-   独立的装饰色块→ type:"decoration_bar"，描述其颜色和位置
-
-文字块处理规则：
-- 标题识别：字号明显大于正文 + 粗体/颜色不同 → heading。level 按字号分 1/2/3
-- 段落合并：y 连续、字号相同、x 一致 → 同一 paragraph
-- 信息栏：像 "电话:xxx | 邮箱:xxx | 地址:xxx" 这种并列短行 → type:"info_bar"
-- bar_color：标题有深色背景时必填（16 进制色值，#RRGGBB）
-- 颜色保留实际值；黑色系(#000/#333)统一为 #333333；白色文字保留 #FFFFFF
-- 中文字体 SimSun/SimHei，英文 Arial
-- 间距由程序精确计算，你不要填 space_before/after
-- 严禁 text 字段，只输出 ids
-- 只输出 JSON"""
+规则：
+- 文字块：合并同一段落的 ids。相邻、x对齐、字号相近的id合并为 paragraph
+- 标题：字号明显大于正文（>14pt）或粗体独立成行 → heading
+- 表格：x/y 坐标形成行列网格 → table。用 raw_ids 标出每个单元格的 span id
+- 列表：有编号前缀(1./2./或•) 且缩进一致 → list
+- 横线 (H-line)：→ type:"separator"
+- 色块/图片：→ type:"decoration" 或 "image"。只输出位置不猜内容
+- 只输出 JSON，不要其他文字
+- ids 按阅读顺序排列
+- 不要输出任何字体名、颜色值、字号值"""
 
 
 @dataclass
 class RawLine:
     id: int; text: str
     x: float; y: float; y2: float; w: float
-    size: float; bold: bool; color: str
+    size: float; bold: bool; color: str; font: str
 
 
 @dataclass
@@ -114,12 +100,14 @@ class PDFToDOCXLLMConverter:
                     text = "".join(s.get("text","") for s in spans)
                     if not text.strip(): continue
                     s0 = spans[0]; bbox = line["bbox"]
+                    raw_font = s0.get("font", "SimSun")
                     lid += 1
                     lines.append(RawLine(id=lid, text=text, x=bbox[0], y=bbox[1],
                                          y2=bbox[3], w=bbox[2]-bbox[0],
-                                         size=s0.get("size",10),
-                                         bold=bool(s0.get("flags",0)&8),
-                                         color=f"#{s0.get('color',0):06X}"))
+                                         size=round(s0.get("size", 10), 1),
+                                         bold=bool(s0.get("flags", 0) & 8),
+                                         color=_span_color(s0),
+                                         font=_clean_font(raw_font)))
 
             # 视觉元素：全部推给 DeepSeek 判断
             try:
@@ -172,43 +160,65 @@ class PDFToDOCXLLMConverter:
     # ── DeepSeek ──────────────────────────────────────────
 
     async def _analyze(self, lines: list[RawLine], visuals: list[VisualElem]) -> dict:
-        pg_count = len(self._pdf_doc)
-        pg_w = int(self._pdf_doc[0].rect.width) if pg_count > 0 else 595
+        """布局分析：先走纯规则，速度快且准确。"""
+        if not lines:
+            return {"blocks": []}
 
-        parts = [f"文档{pg_count}页，宽{pg_w}pt。\n"]
+        # 排序：先 Y 再 X
+        sorted_lines = sorted(lines, key=lambda l: (l.y, l.x))
+        blocks = []
 
-        # 视觉元素
-        if visuals:
-            parts.append("视觉元素：")
-            for v in visuals:
-                if v.type == "hline":
-                    parts.append(f"  H-line(y={v.y:.0f}, {v.bbox[0]:.0f}-{v.bbox[2]:.0f}, color={v.color}, thick={v.thickness:.0f})")
+        # ── 计算正文平均字号 ──
+        sizes = [l.size for l in sorted_lines]
+        avg_size = sum(sizes) / len(sizes) if sizes else 10
+
+        # ── 段落合并：相近 Y、相同 X 起点 → 同段 ──
+        i = 0
+        while i < len(sorted_lines):
+            cur = sorted_lines[i]
+            merged = [cur.id]
+
+            j = i + 1
+            while j < len(sorted_lines):
+                nxt = sorted_lines[j]
+                # 同行或极近行（<2pt）→ 同段落
+                if nxt.y - cur.y2 < max(cur.size * 0.5, 2):
+                    merged.append(nxt.id)
+                    cur = nxt
+                    j += 1
                 else:
-                    parts.append(f"  V-rect({v.bbox[0]:.0f},{v.bbox[1]:.0f},{v.bbox[2]:.0f},{v.bbox[3]:.0f}, fill={v.color})")
+                    break
 
-        # 文字行
-        parts.append("文字行：")
-        chars = 0
-        for l in lines:
-            desc = f'[id={l.id} x={l.x:.0f} y={l.y:.0f} w={l.w:.0f} sz={l.size:.1f} {"B" if l.bold else "b"}] "{l.text[:80]}"'
-            if chars + len(desc) > 40000: break
-            parts.append(desc)
-            chars += len(desc)
+            # 判断类型
+            first = sorted_lines[i]
+            btype = "paragraph"
+            level = 0
+            is_list = False
+            is_ordered = False
 
-        user_msg = "\n".join(parts)
-        logger.info("DeepSeek 分析: %d lines + %d visuals, %d chars", len(lines), len(visuals), chars)
+            # 标题：字号 > 平均 1.3 倍 且粗体 / 字号 > 平均 1.5 倍
+            if first.size >= avg_size * 1.5 or (first.size >= avg_size * 1.3 and first.bold):
+                btype = "heading"
+                level = 1 if first.size >= avg_size * 1.8 else 2
+            # 列表：有编号前缀(1./一、)或 bullet(• - ·) 且左边缩进
+            elif _looks_like_list_item(first.text):
+                btype = "list"
+                is_ordered = bool(re.match(r'^\s*\d+[\.\)、]', first.text))
 
-        async with httpx.AsyncClient(timeout=httpx.Timeout(180.0)) as client:
-            resp = await client.post(self._api_url, json={
-                "model": "deepseek-chat",
-                "messages": [{"role":"system","content":_STYLE_PROMPT},{"role":"user","content":user_msg}],
-                "stream": False, "max_tokens": 8000, "temperature": 0.1,
-            }, headers={"Authorization":f"Bearer {self._api_key}","Content-Type":"application/json"})
-            if resp.status_code != 200:
-                raise RuntimeError(f"DeepSeek API {resp.status_code}")
-            content = resp.json()["choices"][0]["message"]["content"]
-            logger.info("DeepSeek 回复: %.500s", content)
-        return _parse_json(content)
+            blocks.append({
+                "ids": merged,
+                "type": btype,
+                **({"level": level} if btype == "heading" else {}),
+                **({"ordered": is_ordered} if btype == "list" else {}),
+            })
+            i = j
+
+        # ── 表格检测：X 坐标形成列对齐的连续行 ──
+        blocks = _detect_tables(blocks, sorted_lines)
+
+        title = sorted_lines[0].text if sorted_lines and sorted_lines[0].size >= avg_size * 1.8 else ""
+        logger.info("规则分析完成: %d lines → %d blocks", len(lines), len(blocks))
+        return {"title": title, "blocks": blocks}
 
     # ── DOCX 重建 ─────────────────────────────────────────
 
@@ -217,191 +227,118 @@ class PDFToDOCXLLMConverter:
         doc.sections[0].page_width = Cm(21.0)
         doc.sections[0].page_height = Cm(29.7)
 
-        design = spec.get("design", {})
-        body_font = design.get("body_font", "SimSun")
-        h_font = design.get("heading_font", "SimHei")
-        body_sz = design.get("body_size", 10.5)
-        body_clr = design.get("body_color", "#333333")
-
         line_db = {l.id: l for l in lines}
-        # 按 y 排序的 visuals 查找表
-        visuals_sorted = sorted(visuals, key=lambda v: v.y)
-        used_visuals: set[int] = set()
-
-        def _text(ids: list[int]) -> str:
-            parts = []
-            for lid in ids:
-                ln = line_db.get(lid)
-                if ln: parts.append(ln.text)
-            return "".join(parts)
-
-        def _add_run(para, text, font, size, bold, color):
-            r = para.add_run(text)
-            r.font.name = font; r.font.size = Pt(size)
-            r.bold = bold
-            try:
-                r.font.color.rgb = RGBColor(int(color[1:3],16), int(color[3:5],16), int(color[5:7],16))
-            except: pass
-            return r
-
-        def _spacing(para, before, after):
-            pf = para.paragraph_format
-            pf.space_before = Pt(before); pf.space_after = Pt(after)
-
-        def _add_separator(color="#CCCCCC", thick=1):
-            p = doc.add_paragraph()
-            _spacing(p, 4, 4)
-            pPr = p._p.get_or_add_pPr()
-            pBdr = OxmlElement('w:pBdr')
-            bot = OxmlElement('w:bottom')
-            for attr, val in [('w:val','single'),('w:sz',str(thick*4)),('w:space','1'),('w:color',color.lstrip('#'))]:
-                bot.set(qn(attr), val)
-            pBdr.append(bot); pPr.append(pBdr)
-
-        def _add_bar(para, color):
-            """段落背景色块"""
-            pPr = para._p.get_or_add_pPr()
-            shd = OxmlElement('w:shd')
-            shd.set(qn('w:val'), 'clear')
-            shd.set(qn('w:fill'), color.lstrip('#'))
-            pPr.append(shd)
-
-        def _align(para, a):
-            m = {"left":0,"center":1,"right":2,"justify":3}
-            para.alignment = m.get(a, 0)
-
-        # === 渲染 ===
-        title = spec.get("title")
-        if title:
-            p = doc.add_paragraph(); _align(p, "center"); _spacing(p, 0, 16)
-            _add_run(p, title, h_font, 22, True, "#000000")
-
         blocks = spec.get("blocks", [])
 
-        # 完整性检查：找出未被任何 block 覆盖的行
-        covered_ids: set[int] = set()
+        # ── 确保所有 span 都被覆盖 ──
+        covered: set[int] = set()
         for b in blocks:
             for lid in b.get("ids", []):
-                covered_ids.add(lid)
-        orphan_ids = sorted(set(line_db.keys()) - covered_ids)
-
-        # 将孤儿行插入到 blocks 的正确位置（按 y 坐标）
+                covered.add(lid)
+        orphan_ids = sorted(set(line_db.keys()) - covered)
         for oid in orphan_ids:
             ln = line_db[oid]
-            # 在 blocks 中找到插入位置
             insert_at = len(blocks)
             for bi, b in enumerate(blocks):
                 bids = b.get("ids", [])
                 if bids:
                     bl = line_db.get(bids[0])
-                    if bl and ln.y < bl.y:
-                        insert_at = bi; break
-            blocks.insert(insert_at, {"ids": [oid], "type": "paragraph",
-                           "size": ln.size, "bold": ln.bold, "color": ln.color, "align": "left"})
+                    if bl and ln.y < bl.y: insert_at = bi; break
+            blocks.insert(insert_at, {"ids": [oid], "type": "paragraph"})
 
-        # 全量重排 blocks（按第一个 id 的 y 坐标）
-        def _block_y(b):
+        # ── 按第一个 id 的 y 排序 ──
+        def _y(b):
             ids = b.get("ids", [])
-            if ids:
-                ll = line_db.get(ids[0])
-                return ll.y if ll else 9999
-            return b.get("_sort_y", 9999)
-        # 标记视觉 blocks 的 sort_y
-        for b in blocks:
-            if not b.get("ids") and b.get("type") in ("separator","photo","logo","icon","decoration_bar"):
-                b["_sort_y"] = b.get("y", 0)
-        blocks.sort(key=_block_y)
+            if ids: return (line_db.get(ids[0]) or lines[0]).y
+            return b.get("y", 0)
+        blocks.sort(key=_y)
 
-        # 渲染每个 block
-        last_bottom: float = 0.0  # 追踪上一个渲染元素底部
-        for bi, block in enumerate(blocks):
+        # ── 渲染 ──
+        for block in blocks:
             btype = block.get("type", "paragraph")
             ids = block.get("ids", [])
 
-            # 精确间距：基于上一个元素底部 vs 当前第一行顶部
-            if ids:
-                fl = line_db.get(ids[0])
-                space_before = max(0, (fl.y if fl else 0) - last_bottom) if last_bottom > 0 else 6
-            elif btype in ("separator","photo","logo","icon","decoration_bar"):
-                space_before = max(0, block.get("y", last_bottom) - last_bottom) if last_bottom > 0 else 6
-            else:
-                space_before = 6
-
-            # ── 视觉类型（无文字）──
-            if btype in ("separator",):
-                _add_separator(block.get("color","#CCCCCC"), block.get("thickness",1))
+            if btype == "separator":
+                self._add_sep(doc)
                 continue
 
-            if btype in ("photo", "logo", "icon"):
-                self._add_image_block(doc, block, visuals_sorted, used_visuals, page_w=595)
+            if btype == "image" or btype == "photo":
+                continue  # 图片暂跳过
+
+            if btype == "table":
+                self._add_table(doc, block, line_db)
                 continue
 
-            if btype in ("decoration_bar",):
-                p = doc.add_paragraph()
-                bar_c = block.get("color", "#2B579A")
-                _add_bar(p, bar_c)
-                _spacing(p, 0, 0)
+            if not ids:
                 continue
 
-            if btype == "info_bar":
-                text = _text(ids)
-                p = doc.add_paragraph(); _align(p, block.get("align","center"))
-                _spacing(p, space_before, 4)
-                _add_run(p, text, body_font, block.get("size",9.5), False, block.get("color","#666666"))
-                continue
+            # ── 文字块：逐 span 按 PyMuPDF 精确样式写入 ──
+            p = doc.add_paragraph()
+            is_heading = btype == "heading"
+            is_list = btype == "list"
+            ordered = block.get("ordered", False)
+            list_idx = 0
 
-            # ── 文字类型 ──
-            if btype == "heading":
-                text = _text(ids)
-                p = doc.add_paragraph(); _align(p, block.get("align","left"))
-                _spacing(p, space_before, 4)
-                bar_c = block.get("bar_color")
-                if bar_c:
-                    _add_bar(p, bar_c)
-                    txt_c = _contrast_color(bar_c)
-                else:
-                    txt_c = block.get("color", body_clr)
-                lvl = block.get("level", 2)
-                sz_map = {1: 18, 2: 15, 3: 13}
-                _add_run(p, text, h_font, sz_map.get(lvl, 15), True, txt_c)
-                continue
+            for lid in ids:
+                ln = line_db.get(lid)
+                if not ln: continue
 
-            if btype == "paragraph":
-                text = _text(ids)
-                p = doc.add_paragraph(); _align(p, block.get("align","left"))
-                _spacing(p, space_before, 2)
-                if block.get("first_line_indent"):
-                    p.paragraph_format.first_line_indent = Cm(0.74)
-                _add_run(p, text, body_font, block.get("size",body_sz),
-                         block.get("bold",False), block.get("color",body_clr))
-                continue
-
-            if btype == "list":
-                ordered = block.get("ordered", False)
-                for i, lid in enumerate(ids):
-                    ln = line_db.get(lid)
-                    if not ln: continue
-                    p = doc.add_paragraph()
+                text = ln.text
+                if is_list:
+                    list_idx += 1
+                    prefix = f"{list_idx}. " if ordered else "• "
+                    text = prefix + text
                     p.paragraph_format.left_indent = Cm(1.0)
-                    _spacing(p, 1, 1)
-                    prefix = f"{i+1}. " if ordered else "• "
-                    _add_run(p, prefix + ln.text, body_font, block.get("size",body_sz),
-                             False, block.get("color",body_clr))
-                doc.add_paragraph()
-                continue
 
-            # 更新追踪：记录此 block 底部位置
-            if ids:
-                ll = line_db.get(ids[-1])
-                if ll: last_bottom = ll.y2
-            elif btype in ("separator",):
-                last_bottom = block.get("y", last_bottom) + block.get("thickness", 2)
-            elif btype in ("photo","logo","icon"):
-                last_bottom = block.get("y", last_bottom) + block.get("h", 50)
-            elif btype in ("decoration_bar",):
-                last_bottom = block.get("y", last_bottom) + 8
+                r = p.add_run(text)
+                # PyMuPDF 精确样式
+                r.font.name = ln.font
+                r.font.size = Pt(ln.size)
+                r.bold = ln.bold
+                try:
+                    r.font.color.rgb = RGBColor(
+                        int(ln.color[1:3], 16), int(ln.color[3:5], 16), int(ln.color[5:7], 16))
+                except: pass
+                # w:eastAsia 确保中文不丢字体
+                rPr = r._element.get_or_add_rPr()
+                rFonts = rPr.get_or_add_rFonts()
+                rFonts.set(qn('w:eastAsia'), ln.font)
+
+            if is_heading:
+                for run in p.runs:
+                    if run.font.size < Pt(14):
+                        run.font.size = Pt(15)
+                    run.bold = True
 
         buf = io.BytesIO(); doc.save(buf); return buf.getvalue()
+
+    def _add_sep(self, doc):
+        p = doc.add_paragraph()
+        pf = p.paragraph_format; pf.space_before = Pt(4); pf.space_after = Pt(4)
+        pPr = p._p.get_or_add_pPr()
+        pBdr = OxmlElement('w:pBdr')
+        bot = OxmlElement('w:bottom')
+        bot.set(qn('w:val'), 'single'); bot.set(qn('w:sz'), '4')
+        bot.set(qn('w:space'), '1'); bot.set(qn('w:color'), 'CCCCCC')
+        pBdr.append(bot); pPr.append(pBdr)
+
+    def _add_table(self, doc, block: dict, line_db: dict):
+        headers = block.get("headers", [])
+        rows = block.get("rows", [])
+        all_rows = ([headers] if headers else []) + rows
+        if not all_rows: return
+        table = doc.add_table(rows=len(all_rows), cols=len(all_rows[0]))
+        table.style = 'Table Grid'
+        for ri, row in enumerate(all_rows):
+            for ci, cell_text in enumerate(row):
+                cell = table.cell(ri, ci)
+                cell.text = str(cell_text) if cell_text else ""
+                for para in cell.paragraphs:
+                    for run in para.runs:
+                        run.font.name = "SimSun"
+                        rPr = run._element.get_or_add_rPr()
+                        rPr.get_or_add_rFonts().set(qn('w:eastAsia'), 'SimSun')
+                        run.font.size = Pt(10)
 
     def _add_image_block(self, doc, block, visuals_sorted, used_visuals, page_w=595):
         """在 DOCX 中嵌入图片。"""
@@ -436,6 +373,69 @@ class PDFToDOCXLLMConverter:
 
 # ── 工具函数 ────────────────────────────────────────────
 
+def _clean_font(raw: str) -> str:
+    """去掉 PDF 内嵌字体前缀 ABCDEE+ → 纯字体名"""
+    return re.sub(r'^[A-Z]{6}\+', '', raw)
+
+def _span_color(span: dict) -> str:
+    """PyMuPDF span color → #RRGGBB，黑色统一为 #333333"""
+    c = span.get("color", 0) or 0
+    if c == 0: return "#333333"
+    r, g, b = (c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF
+    if r < 20 and g < 20 and b < 20: return "#333333"
+    return f"#{r:02X}{g:02X}{b:02X}"
+
+def _looks_like_list_item(text: str) -> bool:
+    """判断是否像列表项（编号/符号前缀）"""
+    return bool(re.match(
+        r'^\s*(\d+[\.\)、]|[一二三四五六七八九十]+[、．]|[a-zA-Z][\.\)]|[-•·▪▸►✓✅])\s',
+        text
+    ))
+
+def _detect_tables(blocks: list[dict], lines: list[RawLine]) -> list[dict]:
+    """检测明显表格：X 坐标形成至少 2 列对齐的连续行"""
+    line_db = {l.id: l for l in lines}
+    i = 0
+    result = []
+    while i < len(blocks):
+        block = blocks[i]
+        ids = block["ids"]
+        if len(ids) < 2 or block["type"] != "paragraph":
+            result.append(block); i += 1; continue
+
+        # 检查连续 2+ 个 block 是否有列对齐
+        consecutive = [block]
+        j = i + 1
+        while j < len(blocks) and blocks[j]["type"] == "paragraph":
+            nxt_ids = blocks[j]["ids"]
+            if len(nxt_ids) == len(ids):
+                # 检查 X 坐标是否对齐
+                aligned = True
+                for k in range(len(ids)):
+                    a = line_db.get(ids[k]); b = line_db.get(nxt_ids[k])
+                    if a and b and abs(a.x - b.x) > 5:
+                        aligned = False; break
+                if aligned:
+                    consecutive.append(blocks[j])
+                    j += 1; continue
+            break
+
+        if len(consecutive) >= 2:
+            # 转为表格
+            rows = []
+            for cb in consecutive:
+                row = []
+                for lid in cb["ids"]:
+                    ln = line_db.get(lid)
+                    row.append(ln.text.strip() if ln else "")
+                rows.append(row)
+            result.append({"type": "table", "rows": rows})
+            i = j
+        else:
+            result.append(block); i += 1
+
+    return result
+
 def _rgba_to_hex(rgba) -> str:
     """PyMuPDF 颜色 → #RRGGBB"""
     if isinstance(rgba, (list, tuple)) and len(rgba) >= 3:
@@ -456,5 +456,21 @@ def _contrast_color(bg_hex: str) -> str:
 def _parse_json(content: str) -> dict:
     content = content.strip()
     m = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', content, re.DOTALL)
-    if m: content = m.group(1)
-    return json.loads(content)
+    if m: content = m.group(1).strip()
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        # JSON 被截断：尝试修复最后一个不完整的 block/string
+        # 找到最后一个完整的 }
+        last_brace = content.rfind('}')
+        if last_brace > 0:
+            fixed = content[:last_brace + 1] + '\n]}'
+            try:
+                result = json.loads(fixed)
+                logger.warning("JSON 被截断，已修复到 %d chars（原始 %d chars）", len(fixed), len(content))
+                return result
+            except json.JSONDecodeError:
+                pass
+        # 实在修不了，返回最小可用结构
+        logger.error("JSON 无法解析, 长度=%d, 前 500 字符: %r", len(content), content[:500])
+        return {"blocks": []}

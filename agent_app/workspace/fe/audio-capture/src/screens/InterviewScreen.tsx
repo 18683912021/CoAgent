@@ -1,9 +1,10 @@
 /**
- * InterviewScreen —— PC 桌面端面试页
+ * InterviewScreen —— 面试页
  *
- * 三栏可拖拽布局：左控制面板 | 中对话区 | 右上下文面板
+ * 布局：左控制面板 250px | 中对话流 | 右实时面板 270px（可折叠）
  */
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
+import { Play, Square, Mic, Volume2, FileText, ChevronDown, PanelRightClose, PanelRightOpen, Lock } from 'lucide-react';
 import { useAudioCapture } from '../hooks/useAudioCapture';
 import { saveInterview } from '../api/interview';
 import { hasResume, getIntro } from '../api/resume';
@@ -12,47 +13,51 @@ import ConversationBubble from '../components/ConversationBubble';
 import MicLevelBar from '../components/MicLevelBar';
 import PulsingDot from '../components/PulsingDot';
 
-const LANGUAGES: ProgLang[] = ['JavaScript', 'Python', 'Java', 'C++', 'C#', 'Go'];
+const LANGS: ProgLang[] = ['JavaScript', 'Python', 'Java', 'C++', 'C#', 'Go'];
 
-function fmtTimer(s: number) {
-  return `${String(Math.floor(s / 3600)).padStart(2, '0')}:${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
-}
+function fmtTimer(s: number) { return `${String(Math.floor(s/3600)).padStart(2,'0')}:${String(Math.floor((s%3600)/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`; }
 
 export default function InterviewScreen() {
   const { state, start, stop, sendLLMQuery, retryLLM } = useAudioCapture();
   const [timer, setTimer] = useState(0);
   const [style, setStyle] = useState('标准');
   const [saved, setSaved] = useState(false);
+  const [rightCollapsed, setRightCollapsed] = useState(false);
   const [showIntro, setShowIntro] = useState(false);
   const [intro, setIntro] = useState('');
   const [introLoading, setIntroLoading] = useState(false);
+  const [introFontSize, setIntroFontSize] = useState(16);
   const [hasIntro, setHasIntro] = useState(false);
+  const [showSaveConfirm, setShowSaveConfirm] = useState(false);
   const capturing = state.captureState === 'capturing';
 
-  useEffect(() => { hasResume().then(d => setHasIntro(d.has_intro)).catch(() => {}); }, []);
-
-  const handleViewIntro = async () => {
-    if (!hasIntro) return;
-    setShowIntro(true);
-    if (intro) return;
-    setIntroLoading(true);
-    try {
-      const data = await getIntro();
-      setIntro(data.ok && data.intro ? data.intro : '');
-    } catch { setIntro(''); }
-    finally { setIntroLoading(false); }
-  };
-
+  useEffect(() => { hasResume().then(d => setHasIntro(d.has_intro)).catch(()=>{}); }, []);
   useEffect(() => {
     if (!capturing) { setTimer(0); setSaved(false); return; }
     const id = setInterval(() => setTimer(t => t + 1), 1000);
     return () => clearInterval(id);
   }, [capturing]);
 
-  const handleToggle = () => { if (capturing) { stop(); if (state.conversation.length > 0) handleSave(); } else start(); };
+  // Esc 关闭面板
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { setShowIntro(false); setShowSaveConfirm(false); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
-  const handleSave = useCallback(async () => {
-    if (saved || state.conversation.length === 0) return;
+  const handleToggle = () => {
+    if (capturing) {
+      stop();
+      if (state.conversation.length > 0) setShowSaveConfirm(true);
+    } else {
+      start();
+    }
+  };
+
+  const handleSave = async () => {
+    if (saved) return;
     await saveInterview({
       started_at: Math.floor((Date.now() - timer * 1000) / 1000),
       ended_at: Math.floor(Date.now() / 1000),
@@ -61,200 +66,249 @@ export default function InterviewScreen() {
       conversation: state.conversation.filter(m => m.status === 'done' || m.status === 'streaming'),
     });
     setSaved(true);
-  }, [saved, state.conversation, timer]);
+    setShowSaveConfirm(false);
+  };
+
+  const loadIntro = async () => {
+    if (!hasIntro) return;
+    setShowIntro(true);
+    if (intro || introLoading) return;
+    setIntroLoading(true);
+    try { const d = await getIntro(); setIntro(d.ok && d.intro ? d.intro : ''); } catch { setIntro(''); }
+    finally { setIntroLoading(false); }
+  };
 
   const intMsgs = state.conversation.filter(m => m.role === 'interviewer');
 
   return (
     <div className="flex-1 flex overflow-hidden">
-      {/* ══════ 左 · 控制面板 260px ══════ */}
-      <aside className="w-[260px] shrink-0 bg-bg-surface border-r border-divider flex flex-col select-none">
-        {/* 采集按钮 */}
-        <div className="p-lg pb-md">
-          <button
-            onClick={handleToggle}
-            className={`w-full h-12 rounded-xl font-extrabold text-body tracking-wide shadow-sm transition-all active:scale-[0.98] ${
-              capturing ? 'bg-danger text-white hover:bg-red-600' : 'bg-accent text-white hover:opacity-90'
-            }`}
+      {/* ═══ 左 · 控制面板 250px ═══ */}
+      <aside className="w-[250px] shrink-0 bg-zinc-50 dark:bg-[#0F0F11] border-r border-zinc-200 dark:border-zinc-800 flex flex-col">
+        <div className="p-4 pb-3">
+          <button onClick={handleToggle}
+            className={`w-full h-11 rounded-xl text-[13px] font-bold flex items-center justify-center gap-2 transition-all duration-150 active:scale-[0.98]
+              ${capturing
+                ? 'bg-red-500 hover:bg-red-600 text-white shadow-sm shadow-red-500/20 hover:shadow-md'
+                : 'bg-zinc-900 dark:bg-white text-white dark:text-zinc-900 hover:bg-zinc-800 dark:hover:bg-zinc-100 shadow-sm hover:shadow-md'
+              }`}
+            title={capturing ? '结束面试' : '开始面试 (Ctrl+Enter)'}
           >
-            {capturing ? '⏹ 停止采集' : '▶ 开始采集'}
+            {capturing ? <><Square className="w-3.5 h-3.5" fill="currentColor"/>结束面试</> : <><Play className="w-3.5 h-3.5" fill="currentColor"/>开始面试</>}
           </button>
         </div>
 
         {/* 计时器 */}
-        <div className={`text-center py-md mx-lg rounded-xl mb-md transition-colors ${capturing ? 'bg-accent-light border border-accent-soft' : 'bg-bg'}`}>
-          <div className="text-caption text-text-tertiary mb-1">面试时长</div>
-          <div className={`text-[28px] tabular-nums font-extrabold tracking-widest ${capturing ? 'text-accent' : 'text-text-tertiary'}`}>
-            {fmtTimer(timer)}
-          </div>
+        <div className={`mx-4 py-3 rounded-xl mb-4 text-center border transition-all duration-300 ${capturing ? 'bg-indigo-50 dark:bg-indigo-500/5 border-indigo-100 dark:border-indigo-500/10 shadow-sm' : 'bg-white dark:bg-[#141416] border-zinc-100 dark:border-zinc-800'}`}>
+          <div className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mb-1">面试时长</div>
+          <div className={`text-[28px] tabular-nums font-extrabold tracking-wider transition-colors duration-300 ${capturing ? 'text-indigo-600 dark:text-indigo-400' : 'text-zinc-300 dark:text-zinc-600'}`}>{fmtTimer(timer)}</div>
         </div>
 
         {/* 音频电平 */}
-        <div className="px-lg flex flex-col gap-sm mb-lg">
-          <LevelRow label="麦克风" level={state.levels.mic} />
-          <LevelRow label="系统音频" level={state.levels.system} />
+        <div className="px-4 flex flex-col gap-2 mb-4">
+          <AudioRow icon={Mic} label="麦克风" lvl={state.levels.mic} />
+          <AudioRow icon={Volume2} label="系统音频" lvl={state.levels.system} />
         </div>
 
         {/* 赛道 */}
-        <div className="px-lg mb-md">
-          <div className="text-caption text-text-tertiary font-semibold mb-sm ml-1">面试赛道</div>
-          <select
-            className="w-full h-10 px-md rounded-lg border border-divider bg-bg text-body-sm outline-none focus:border-accent cursor-pointer"
-            defaultValue={getProgLang()}
-            onChange={e => setProgLang(e.target.value as ProgLang)}
-          >
-            {LANGUAGES.map(l => <option key={l}>{l}</option>)}
-          </select>
+        <div className="px-4 mb-3">
+          <label className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest ml-1 mb-1.5 block">面试赛道</label>
+          {capturing ? (
+            <div className="flex items-center gap-2 h-10 px-3 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-800/30 text-[13px] font-medium text-zinc-600 dark:text-zinc-400">
+              <Lock className="w-3.5 h-3.5" strokeWidth={1.5}/>
+              <span>{getProgLang()}</span>
+              <span className="text-[10px] text-zinc-400 ml-auto">已锁定</span>
+            </div>
+          ) : (
+            <div className="relative">
+              <select defaultValue={getProgLang()} onChange={e => setProgLang(e.target.value as ProgLang)}
+                className="w-full h-10 pl-3 pr-8 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-[#141416] text-[13px] font-medium text-zinc-900 dark:text-zinc-100 outline-none focus:border-indigo-400 dark:focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/15 cursor-pointer appearance-none transition-all duration-150">
+                {LANGS.map(l => <option key={l}>{l}</option>)}
+              </select>
+              <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400 pointer-events-none" strokeWidth={1.5}/>
+            </div>
+          )}
         </div>
 
         {/* 答案风格 */}
-        <div className="px-lg mb-lg">
-          <div className="text-caption text-text-tertiary font-semibold mb-sm ml-1">答案风格</div>
-          <div className="flex bg-bg rounded-lg p-0.5">
+        <div className="px-4 mb-3">
+          <label className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest ml-1 mb-1.5 block">答案风格</label>
+          <div className="flex bg-zinc-100 dark:bg-zinc-800 rounded-lg p-0.5">
             {['标准', '简洁', '详细'].map(s => (
               <button key={s} onClick={() => setStyle(s)}
-                className={`flex-1 py-1.5 text-caption rounded-md font-medium transition-colors ${
-                  style === s ? 'bg-accent text-white shadow-sm' : 'text-text-secondary hover:text-text-primary'
-                }`}>
-                {s}
-              </button>
+                className={`flex-1 py-1.5 text-[12px] rounded-md font-medium transition-all duration-150 ${style === s ? 'bg-white dark:bg-[#141416] text-zinc-900 dark:text-white shadow-sm' : 'text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300'}`}>{s}</button>
             ))}
           </div>
         </div>
 
         {/* 自我介绍 */}
-        <div className="px-lg">
-          <button
-            onClick={handleViewIntro}
-            disabled={!hasIntro}
-            className={`w-full h-10 rounded-lg flex items-center justify-center gap-sm text-body-sm font-medium transition-colors ${
-              hasIntro
-                ? 'bg-accent-light text-accent hover:bg-accent-soft'
-                : 'bg-bg text-text-tertiary cursor-not-allowed'
-            }`}
-            title={hasIntro ? '查看自我介绍' : '请先在「我的」页面上传简历'}
-          >
-            <span className="text-base">📝</span>
+        <div className="px-4 mb-3">
+          <button onClick={loadIntro} disabled={!hasIntro}
+            className={`w-full h-10 rounded-xl flex items-center justify-center gap-2 text-[13px] font-medium transition-all duration-150 active:scale-[0.98]
+              ${hasIntro
+                ? 'bg-indigo-50 dark:bg-indigo-500/10 border border-indigo-200 dark:border-indigo-500/20 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-100 dark:hover:bg-indigo-500/20 hover:shadow-sm'
+                : 'bg-zinc-100 dark:bg-zinc-800/50 text-zinc-300 dark:text-zinc-600 cursor-not-allowed border border-transparent'
+              }`}
+            title={hasIntro ? '点击查看自我介绍（可调字号，Esc 关闭）' : '请先在「我的」上传 PDF 简历'}>
+            <FileText className="w-4 h-4" strokeWidth={1.5}/>
             <span>自我介绍</span>
           </button>
         </div>
 
         {/* 连接状态 */}
-        <div className="px-lg mt-auto mb-lg">
-          {capturing && state.streamState === 'ready' && <Status color="success" text="已连接 · 转录中" />}
-          {state.streamState === 'reconnecting' && <Status color="warning" text="重连中…" />}
-          {state.streamState === 'dead' && <Status color="danger" text="连接失败" />}
-          {state.error && <div className="text-caption text-danger mt-sm truncate">{state.error.message}</div>}
+        <div className="px-4 mt-auto pb-4 space-y-1.5">
+          {capturing && state.streamState === 'ready' && <Status color="green" text="已连接 · 转录中"/>}
+          {state.streamState === 'reconnecting' && <Status color="amber" text="重连中…"/>}
+          {state.streamState === 'dead' && <Status color="red" text="连接失败"/>}
+          {state.error && <div className="text-[11px] text-red-500 leading-relaxed break-words">{state.error.message}</div>}
         </div>
       </aside>
 
-      {/* ══════ 中 · 对话区 ══════ */}
-      <main className="flex-1 flex flex-col min-w-0 bg-bg">
-        {/* 空态 */}
-        {state.conversation.length === 0 && (
-          <div className="flex-1 flex flex-col items-center justify-center gap-lg text-center px-lg">
-            <div className="w-20 h-20 rounded-2xl bg-accent-light flex items-center justify-center">
-              <span className="text-4xl">🎯</span>
+      {/* ═══ 中 · 对话流 ═══ */}
+      <main className="flex-1 flex flex-col min-w-0">
+        {state.conversation.length === 0 ? (
+          <div className="flex-1 flex flex-col items-center justify-center gap-5 text-center px-8">
+            <div className="w-16 h-16 rounded-2xl bg-zinc-100 dark:bg-zinc-800 flex items-center justify-center">
+              <Mic className="w-7 h-7 text-zinc-400" strokeWidth={1.5}/>
             </div>
             <div>
-              <div className="text-heading text-text-primary mb-sm">准备开始面试</div>
-              <div className="text-body-sm text-text-secondary max-w-sm leading-relaxed">
-                点击左侧「开始采集」启动，系统自动转写面试官语音。<br />
-                点击转写气泡即可获取 AI 实时回答。
-              </div>
+              <div className="text-base font-bold text-zinc-900 dark:text-white mb-1.5">准备开始面试</div>
+              <div className="text-sm text-zinc-500 max-w-sm leading-relaxed">点击左侧「开始面试」启动，系统自动转写面试官语音。<br/>点击转写气泡即可获取 AI 实时回答。</div>
             </div>
-            <kbd className="px-md py-sm rounded-md bg-bg-surface border border-divider text-caption text-text-tertiary font-mono">
-              Ctrl+Enter 触发回答 · Ctrl+B 切换浮窗
-            </kbd>
+            <div className="flex items-center gap-2">
+              <kbd className="px-2 py-1 rounded-md bg-zinc-100 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-[11px] text-zinc-500 font-mono">Ctrl+Enter</kbd>
+              <span className="text-[11px] text-zinc-400">触发回答</span>
+            </div>
           </div>
-        )}
-
-        {/* 对话列表 */}
-        {state.conversation.length > 0 && (
-          <div className="flex-1 overflow-y-auto px-lg py-lg space-y-sm">
+        ) : (
+          <div className="flex-1 overflow-y-auto px-6 py-4">
             {state.conversation.map(msg => (
-              <ConversationBubble
-                key={msg.id}
-                message={msg}
-                onTriggerLLM={sendLLMQuery}
-                onRetryLLM={retryLLM}
-              />
+              <ConversationBubble key={msg.id} message={msg} onTriggerLLM={sendLLMQuery} onRetryLLM={retryLLM}/>
             ))}
-            <div className="h-4" />
-          </div>
-        )}
-
-        {/* 快捷栏 */}
-        {capturing && (
-          <div className="h-10 shrink-0 bg-bg-surface border-t border-divider flex items-center px-lg gap-md text-caption text-text-tertiary">
-            <span>按 <kbd className="px-1.5 py-0.5 rounded bg-bg border border-divider font-mono text-[11px]">Ctrl+Enter</kbd> 手动触发 AI 回答</span>
-            <span className="ml-auto"><PulsingDot /> 采集中</span>
+            <div className="h-6"/>
           </div>
         )}
       </main>
 
-      {/* ══════ 右 · 上下文 280px ══════ */}
-      <aside className="w-[280px] shrink-0 bg-bg-surface border-l border-divider flex flex-col overflow-hidden">
-        <div className="flex-1 overflow-y-auto p-lg space-y-lg">
-          {/* 实时转写 */}
-          <section>
-            <h3 className="text-caption font-bold text-text-tertiary uppercase tracking-wider mb-md">实时转写</h3>
-            <div className="space-y-sm">
-              {intMsgs.slice(-5).reverse().map(m => (
-                <div key={m.id} className="p-sm rounded-lg bg-bg text-body-sm text-text-primary leading-relaxed border-l-2 border-accent-soft">
-                  {m.text || <span className="text-text-tertiary italic">识别中…</span>}
+      {/* ═══ 右 · 实时面板 270px ═══ */}
+      {!rightCollapsed && (
+        <aside className="w-[270px] shrink-0 bg-zinc-50 dark:bg-[#0F0F11] border-l border-zinc-200 dark:border-zinc-800 flex flex-col overflow-hidden">
+          <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-200 dark:border-zinc-800">
+            <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">实时面板</span>
+            <button onClick={() => setRightCollapsed(true)} className="p-1 rounded-md text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors duration-150" title="折叠面板">
+              <PanelRightClose className="w-4 h-4" strokeWidth={1.5}/>
+            </button>
+          </div>
+          <div className="flex-1 overflow-y-auto p-4 space-y-5">
+            <section>
+              <h3 className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mb-3">实时转写</h3>
+              <div className="space-y-2">
+                {intMsgs.slice(-5).reverse().map(m => (
+                  <div key={m.id} className="p-3 rounded-xl bg-white dark:bg-[#141416] border border-zinc-100 dark:border-zinc-800 text-[13px] text-zinc-700 dark:text-zinc-300 leading-relaxed transition-all duration-150 hover:shadow-sm">
+                    {m.text || <span className="text-zinc-300 italic">识别中…</span>}
+                  </div>
+                ))}
+                {intMsgs.length === 0 && (
+                  <div className="text-[13px] text-zinc-400 italic p-3 rounded-xl bg-white dark:bg-[#141416] border border-zinc-100 dark:border-zinc-800">等待语音输入…</div>
+                )}
+              </div>
+            </section>
+            {state.conversation.length > 0 && (
+              <section>
+                <h3 className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mb-3">对话目录</h3>
+                <div className="space-y-0.5">
+                  {state.conversation.map(m => (
+                    <div key={m.id} className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[12px] cursor-pointer hover:bg-white dark:hover:bg-[#141416] transition-colors duration-150 truncate" title={m.text.slice(0,80)}>
+                      <span className="shrink-0 text-[10px]">{m.role==='interviewer'?'🎙':m.role==='ai'?'🤖':'👤'}</span>
+                      <span className={`truncate ${m.status==='streaming'?'text-indigo-500 font-medium':m.status==='error'?'text-red-500':'text-zinc-500'}`}>
+                        {m.text.slice(0,24)||(m.status==='loading'?'思考中…':'')}{m.text.length>24?'…':''}
+                      </span>
+                    </div>
+                  ))}
                 </div>
-              ))}
-              {intMsgs.length === 0 && (
-                <div className="text-body-sm text-text-tertiary italic p-sm bg-bg rounded-lg">
-                  等待语音输入，转写结果将实时显示在这里
+              </section>
+            )}
+          </div>
+        </aside>
+      )}
+
+      {/* 折叠后面板的展开按钮 */}
+      {rightCollapsed && (
+        <button onClick={() => setRightCollapsed(false)}
+          className="absolute right-0 top-1/2 -translate-y-1/2 w-7 h-16 rounded-l-xl bg-zinc-50 dark:bg-[#0F0F11] border border-r-0 border-zinc-200 dark:border-zinc-800 flex items-center justify-center text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300 hover:bg-white dark:hover:bg-[#141416] transition-all duration-150 shadow-sm"
+          title="展开实时面板">
+          <PanelRightOpen className="w-4 h-4" strokeWidth={1.5}/>
+        </button>
+      )}
+
+      {/* ── 自我介绍阅读面板 ── */}
+      {showIntro && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4" onClick={() => setShowIntro(false)}>
+          {/* 半透明遮罩 */}
+          <div className="absolute inset-0 bg-black/20 backdrop-blur-[2px]" />
+          {/* 阅读卡片 */}
+          <div
+            className="relative bg-white dark:bg-[#141416] rounded-2xl shadow-2xl shadow-black/20 border border-zinc-200 dark:border-zinc-800 w-full max-w-2xl max-h-[85vh] flex flex-col animate-[scaleIn_150ms_ease-out]"
+            onClick={e => e.stopPropagation()}
+          >
+            {/* 头部 */}
+            <div className="flex items-center justify-between px-5 py-3 border-b border-zinc-200 dark:border-zinc-800 shrink-0">
+              <div className="flex items-center gap-2.5">
+                <FileText className="w-5 h-5 text-indigo-500" strokeWidth={1.5}/>
+                <span className="text-sm font-bold text-zinc-900 dark:text-white">自我介绍</span>
+                <span className="text-[10px] text-zinc-400 bg-zinc-100 dark:bg-zinc-800 px-2 py-0.5 rounded-full">面试时可朗读</span>
+              </div>
+              <div className="flex items-center gap-1">
+                {/* 字号调节 */}
+                <button onClick={() => setIntroFontSize(s => Math.max(12, s - 2))}
+                  className="w-7 h-7 rounded-lg flex items-center justify-center text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors duration-150"
+                  title="缩小字号">A-</button>
+                <span className="text-[11px] text-zinc-400 tabular-nums w-8 text-center">{introFontSize}px</span>
+                <button onClick={() => setIntroFontSize(s => Math.min(24, s + 2))}
+                  className="w-7 h-7 rounded-lg flex items-center justify-center text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors duration-150"
+                  title="放大字号">A+</button>
+                <div className="w-px h-5 bg-zinc-200 dark:bg-zinc-700 mx-1" />
+                <button onClick={() => setShowIntro(false)}
+                  className="w-7 h-7 rounded-lg flex items-center justify-center text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors duration-150"
+                  title="关闭 (Esc)">
+                  <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+                </button>
+              </div>
+            </div>
+            {/* 内容 */}
+            <div className="flex-1 overflow-y-auto px-6 py-5" style={{ fontSize: `${introFontSize}px`, lineHeight: 1.8 }}>
+              {introLoading ? (
+                <div className="flex items-center gap-3 text-zinc-400">
+                  <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+                  加载中…
+                </div>
+              ) : intro ? (
+                <p className="text-zinc-800 dark:text-zinc-200 whitespace-pre-wrap leading-relaxed">{intro}</p>
+              ) : (
+                <div className="text-center py-8">
+                  <FileText className="w-10 h-10 text-zinc-300 mx-auto mb-3" strokeWidth={1}/>
+                  <p className="text-zinc-500">暂无自我介绍内容</p>
+                  <p className="text-zinc-400 mt-1">请在「我的」页面上传简历</p>
                 </div>
               )}
             </div>
-          </section>
-
-          {/* 对话目录 */}
-          {state.conversation.length > 0 && (
-            <section>
-              <h3 className="text-caption font-bold text-text-tertiary uppercase tracking-wider mb-md">对话目录</h3>
-              <div className="space-y-0.5">
-                {state.conversation.map((m, i) => (
-                  <div key={m.id}
-                    className="flex items-center gap-xs px-sm py-1 rounded text-caption cursor-pointer hover:bg-bg transition-colors truncate"
-                    title={m.text.slice(0, 80)}>
-                    <span className="shrink-0 w-4 text-center text-[10px]">
-                      {m.role === 'interviewer' ? '🎙' : m.role === 'ai' ? '🤖' : '👤'}
-                    </span>
-                    <span className={`truncate ${m.status === 'streaming' ? 'text-accent font-medium' : m.status === 'error' ? 'text-danger' : 'text-text-secondary'}`}>
-                      {m.text.slice(0, 28) || (m.status === 'loading' ? 'AI 思考中…' : '')}{m.text.length > 28 ? '…' : ''}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </section>
-          )}
-        </div>
-      </aside>
-
-      {/* ── 自我介绍弹窗 ── */}
-      {showIntro && (
-        <div className="fixed inset-0 bg-backdrop flex items-center justify-center z-50" onClick={() => setShowIntro(false)}>
-          <div className="bg-bg-surface rounded-2xl p-xl max-w-lg w-full mx-lg shadow-xl max-h-[70vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
-            <div className="flex items-center justify-between mb-lg">
-              <h3 className="text-heading font-bold">📝 自我介绍</h3>
-              <button onClick={() => setShowIntro(false)} className="text-text-tertiary hover:text-text-primary text-lg">✕</button>
+            {/* 底部提示 */}
+            <div className="px-5 py-2 border-t border-zinc-200 dark:border-zinc-800 text-center text-[10px] text-zinc-400 shrink-0">
+              Esc 关闭 · A+ / A- 调节字号 · 面试时可以此内容回答面试官
             </div>
-            {introLoading ? (
-              <p className="text-body-sm text-text-secondary">加载中…</p>
-            ) : intro ? (
-              <p className="text-body text-text-primary leading-relaxed whitespace-pre-wrap">{intro}</p>
-            ) : (
-              <div className="text-center py-xl">
-                <span className="text-4xl block mb-lg">📄</span>
-                <p className="text-body-sm text-text-secondary">尚未上传简历</p>
-                <p className="text-caption text-text-tertiary mt-sm">请在「我的」页面上传 PDF 简历生成自我介绍</p>
-              </div>
-            )}
+          </div>
+        </div>
+      )}
+
+      {/* 保存确认弹窗 */}
+      {showSaveConfirm && (
+        <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50 backdrop-blur-sm" onClick={() => setShowSaveConfirm(false)}>
+          <div className="bg-white dark:bg-[#141416] rounded-2xl p-6 max-w-sm w-full mx-4 shadow-xl shadow-black/10 border border-zinc-200 dark:border-zinc-800 animate-[scaleIn_150ms_ease-out]" onClick={e=>e.stopPropagation()}>
+            <h3 className="text-base font-bold text-zinc-900 dark:text-white mb-2">面试已结束</h3>
+            <p className="text-sm text-zinc-500 mb-5">是否保存本次面试记录？</p>
+            <div className="flex gap-3 justify-end">
+              <button onClick={() => setShowSaveConfirm(false)} className="px-4 py-2 rounded-lg border border-zinc-200 dark:border-zinc-700 text-sm text-zinc-600 dark:text-zinc-400 hover:bg-zinc-50 dark:hover:bg-zinc-800 transition-colors duration-150">不保存</button>
+              <button onClick={handleSave} className="px-4 py-2 rounded-lg bg-indigo-500 text-white text-sm font-semibold hover:bg-indigo-600 transition-colors duration-150 shadow-sm active:scale-[0.98]">保存记录</button>
+            </div>
           </div>
         </div>
       )}
@@ -262,26 +316,20 @@ export default function InterviewScreen() {
   );
 }
 
-// ── 小控件 ──
-function LevelRow({ label, level }: { label: string; level: number }) {
-  const pct = Math.round(level * 100);
+function AudioRow({ icon: Icon, label, lvl }: { icon: any; label: string; lvl: number }) {
+  const pct = Math.round(lvl * 100);
   return (
-    <div className="p-sm bg-bg rounded-lg">
-      <div className="flex justify-between mb-1">
-        <span className="text-caption text-text-tertiary">{label}</span>
-        <span className="text-caption text-text-tertiary tabular-nums">{pct}%</span>
+    <div className="p-2.5 rounded-xl bg-white dark:bg-[#141416] border border-zinc-100 dark:border-zinc-800 transition-shadow duration-150 hover:shadow-sm">
+      <div className="flex justify-between mb-1.5">
+        <div className="flex items-center gap-1.5 text-[11px] text-zinc-400"><Icon className="w-3.5 h-3.5" strokeWidth={1.5}/><span>{label}</span></div>
+        <span className="text-[11px] text-zinc-400 tabular-nums">{pct}%</span>
       </div>
-      <MicLevelBar level={pct} />
+      <MicLevelBar level={pct}/>
     </div>
   );
 }
 
 function Status({ color, text }: { color: string; text: string }) {
-  return (
-    <div className={`flex items-center gap-xs text-body-sm font-medium ${
-      color === 'success' ? 'text-success' : color === 'warning' ? 'text-warning' : 'text-danger'
-    }`}>
-      <PulsingDot /> {text}
-    </div>
-  );
+  const c = color==='green'?'text-emerald-500':color==='amber'?'text-amber-500':'text-red-500';
+  return <div className={`flex items-center gap-1.5 text-[12px] font-medium ${c}`}><PulsingDot/>{text}</div>;
 }

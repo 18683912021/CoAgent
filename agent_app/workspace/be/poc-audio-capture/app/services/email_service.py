@@ -65,12 +65,10 @@ _EMAIL_HTML = """<!DOCTYPE html>
           你正在登录 <strong style="color:#374151;">AI 面试助手</strong>。请使用以下验证码完成身份验证：
         </p>
 
-        <!-- 验证码数字块 -->
-        <table cellpadding="0" cellspacing="0" style="margin:0 auto 28px;">
-          <tr>
-            {code_boxes}
-          </tr>
-        </table>
+        <!-- 验证码 -->
+        <p style="margin:0 0 28px;text-align:center;font-family:'SF Mono','SFMono-Regular',Menlo,Consolas,monospace;font-size:36px;font-weight:800;color:#4338CA;letter-spacing:10px;">
+          {code}
+        </p>
 
         <!-- 提示 -->
         <table width="100%" cellpadding="0" cellspacing="0" style="background:#FFFBEB;border:1px solid #FDE68A;border-radius:10px;">

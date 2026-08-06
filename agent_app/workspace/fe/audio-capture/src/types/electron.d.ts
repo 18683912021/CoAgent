@@ -12,6 +12,8 @@ interface ElectronAPI {
   };
   fileConvert: {
     getLibreOfficeStatus(): Promise<{ available: boolean }>;
+    downloadLibreOffice(): Promise<{ success: boolean; path?: string; error?: string }>;
+    onDownloadProgress(cb: (data: { progress: number; stage: string; error?: string }) => void): () => void;
     convert(inputPath: string, format: string): Promise<string>;
     pickFile(extensions?: string[]): Promise<string | null>;
     saveFile(data: Uint8Array, defaultName: string): Promise<string | null>;

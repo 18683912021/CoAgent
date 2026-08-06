@@ -1,10 +1,12 @@
 /**
- * 根组件 —— Toolbar + 路由 + Auth 门
+ * App 根组件 —— 全局布局：Toolbar | 页面内容 | 状态栏
  *
- * PC 端：顶部固定 Toolbar 导航栏（不是底部 Tab Bar），页面内容区撑满剩余高度。
+ * 设计参考：Linear（侧边栏 / 快捷键）、VS Code（状态栏）
+ * 图标库：Lucide（ISC 协议，商用免费）
  */
 import { useState, useEffect, useCallback } from 'react';
 import { HashRouter, Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
+import { MessageSquare, Mic, Wrench, User, Shield, ShieldOff } from 'lucide-react';
 import { AuthContext } from './utils/AuthContext';
 import { useDarkMode } from './theme/tokens';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
@@ -22,22 +24,18 @@ export default function App() {
   useDarkMode();
 
   useEffect(() => {
-    verifyToken().then(email => {
-      setIsLoggedIn(!!email);
-      setChecking(false);
-    });
+    verifyToken().then(email => { setIsLoggedIn(!!email); setChecking(false); });
   }, []);
 
-  const logout = useCallback(() => {
-    clearToken();
-    clearProfile();
-    setIsLoggedIn(false);
-  }, []);
+  const logout = useCallback(() => { clearToken(); clearProfile(); setIsLoggedIn(false); }, []);
 
   if (checking) {
     return (
-      <div className="h-full flex items-center justify-center bg-bg">
-        <span className="text-text-secondary text-body">加载中…</span>
+      <div className="h-full flex items-center justify-center bg-white dark:bg-[#0A0A0B]">
+        <div className="flex items-center gap-3">
+          <svg className="animate-spin w-4 h-4 text-zinc-400" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+          <span className="text-sm text-zinc-400">加载中...</span>
+        </div>
       </div>
     );
   }
@@ -52,30 +50,49 @@ export default function App() {
   );
 }
 
-/** ── 登录后的布局：Toolbar 导航 + 页面区 ── */
+/* ═══════════════════════════════════════════
+   登录后的完整 App 壳
+   ═══════════════════════════════════════════ */
 function AuthenticatedApp() {
   const location = useLocation();
-  const currentTab = location.pathname.replace('/', '') || 'interview';
+  const activeKey = location.pathname.replace('/', '') || 'interview';
+
+  const tabs = [
+    { key: 'interview', label: '面试', icon: Mic },
+    { key: 'tools',     label: '工具箱', icon: Wrench },
+    { key: 'profile',   label: '我的',   icon: User },
+  ];
 
   return (
-    <div className="h-full flex flex-col bg-bg">
-      <Toolbar currentTab={currentTab} />
+    <div className="h-full flex flex-col bg-white dark:bg-[#0A0A0B] select-none">
+      {/* ── Toolbar ── */}
+      <Toolbar tabs={tabs} activeKey={activeKey} />
+
+      {/* ── 页面内容 ── */}
       <div className="flex-1 flex overflow-hidden">
         <Routes>
-          <Route path="/" element={<Navigate to="/interview" />} />
+          <Route path="/"        element={<Navigate to="/interview" />} />
           <Route path="/interview" element={<InterviewScreen />} />
-          <Route path="/tools" element={<ToolsScreen />} />
-          <Route path="/profile" element={<ProfileScreen />} />
-          <Route path="/history" element={<InterviewHistoryScreen />} />
-          <Route path="/overlay" element={<OverlayScreen />} />
+          <Route path="/tools"     element={<ToolsScreen />} />
+          <Route path="/profile"   element={<ProfileScreen />} />
+          <Route path="/history"   element={<InterviewHistoryScreen />} />
+          <Route path="/overlay"   element={<OverlayScreen />} />
         </Routes>
       </div>
+
+      {/* ── 状态栏 ── */}
+      <StatusBar />
     </div>
   );
 }
 
-/** ── Toolbar 导航栏 ── */
-function Toolbar({ currentTab }: { currentTab: string }) {
+/* ═══════════════════════════════════════════
+   Toolbar
+   ═══════════════════════════════════════════ */
+function Toolbar({ tabs, activeKey }: {
+  tabs: { key: string; label: string; icon: any }[];
+  activeKey: string;
+}) {
   const navigate = useNavigate();
   const [stealth, setStealth] = useState(false);
 
@@ -83,76 +100,105 @@ function Toolbar({ currentTab }: { currentTab: string }) {
     (window as any).electronAPI?.window?.getContentProtection().then((on: boolean) => setStealth(on));
   }, []);
 
-  const toggleStealth = () => {
+  const toggle = () => {
     (window as any).electronAPI?.window?.toggleContentProtection().then((on: boolean) => setStealth(on));
   };
 
-  const tabs = [
-    { key: 'interview', label: '面试', icon: '🎯' },
-    { key: 'tools', label: '工具箱', icon: '🧰' },
-    { key: 'profile', label: '我的', icon: '👤' },
-  ];
-
   return (
-    <header className="h-10 shrink-0 bg-bg-surface border-b border-divider flex items-center px-lg gap-0 select-none app-region-drag">
-      <span className="text-body-sm font-bold text-accent mr-4xl app-region-no-drag">AI 面试助手</span>
-      {tabs.map(tab => {
-        const active = tab.key === currentTab;
-        return (
-          <button
-            key={tab.key}
-            onClick={() => navigate(`/${tab.key}`)}
-            className={`app-region-no-drag h-full px-lg flex items-center gap-sm text-body-sm border-b-2 transition-colors ${
-              active
-                ? 'border-accent text-accent font-semibold'
-                : 'border-transparent text-text-secondary hover:text-text-primary'
-            }`}
-          >
-            <span>{tab.icon}</span>
-            <span>{tab.label}</span>
-          </button>
-        );
-      })}
+    <header className="h-11 shrink-0 bg-white dark:bg-[#0A0A0B] border-b border-zinc-200 dark:border-zinc-800 flex items-center px-4">
+      {/* Logo */}
+      <div className="flex items-center gap-2.5 mr-6">
+        <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center shadow-sm shadow-indigo-500/20">
+          <MessageSquare className="w-3.5 h-3.5 text-white" strokeWidth={2.5} />
+        </div>
+        <span className="text-sm font-bold text-zinc-900 dark:text-white tracking-tight">AI 面试助手</span>
+      </div>
 
-      {/* 右侧操作区 */}
-      <div className="ml-auto flex items-center gap-sm app-region-no-drag">
-        {/* 隐身模式开关 */}
+      {/* Nav Tabs */}
+      <nav className="flex items-center h-full">
+        {tabs.map(t => {
+          const Icon = t.icon;
+          const active = t.key === activeKey;
+          return (
+            <button
+              key={t.key}
+              onClick={() => navigate(`/${t.key}`)}
+              className={`h-full px-4 flex items-center gap-2 text-[13px] font-medium border-b-[2px] transition-colors ${
+                active
+                  ? 'border-zinc-900 dark:border-white text-zinc-900 dark:text-white'
+                  : 'border-transparent text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300'
+              }`}
+            >
+              <Icon className="w-4 h-4" strokeWidth={active ? 2 : 1.5} />
+              <span>{t.label}</span>
+            </button>
+          );
+        })}
+      </nav>
+
+      {/* 右侧：隐身开关 */}
+      <div className="ml-auto flex items-center">
         <button
-          onClick={toggleStealth}
-          title={stealth ? '隐身中：屏幕共享/截屏不可见' : '点击开启隐身：屏幕共享/截屏中隐藏窗口'}
-          className={`h-7 px-md rounded-full text-caption font-bold flex items-center gap-xs transition-all ${
+          onClick={toggle}
+          className={`flex items-center gap-2 h-8 px-3 rounded-full text-[12px] font-semibold transition-all duration-200 active:scale-95 ${
             stealth
-              ? 'bg-accent text-white shadow-sm'
-              : 'bg-bg text-text-tertiary border border-divider hover:border-accent hover:text-accent'
+              ? 'bg-indigo-500 text-white shadow-sm shadow-indigo-500/25 hover:bg-indigo-600'
+              : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-500 hover:bg-zinc-200 dark:hover:bg-zinc-700'
           }`}
+          title={stealth ? '隐身模式已开启：屏幕共享中不可见' : '点击开启隐身模式：屏幕共享中隐藏窗口'}
         >
-          <span className="text-xs">{stealth ? '🛡️' : '🔓'}</span>
-          <span>{stealth ? '隐身中' : '隐身'}</span>
+          {/* 圆点指示器 */}
+          <span className={`relative flex h-4 w-4 items-center justify-center`}>
+            <span className={`absolute w-2.5 h-2.5 rounded-full transition-all duration-200 ${
+              stealth ? 'bg-white scale-100' : 'bg-zinc-400 dark:bg-zinc-500 scale-75'
+            }`} />
+            <span className={`absolute w-4 h-4 rounded-full border-2 transition-all duration-200 ${
+              stealth ? 'border-white/30 scale-100' : 'border-transparent scale-0'
+            }`} />
+          </span>
+          {stealth ? (
+            <span className="flex items-center gap-1">
+              隐身中
+              <Shield className="w-3 h-3" strokeWidth={2.5} />
+            </span>
+          ) : (
+            <span className="flex items-center gap-1">
+              隐身
+              <ShieldOff className="w-3 h-3" strokeWidth={1.5} />
+            </span>
+          )}
         </button>
       </div>
     </header>
   );
 }
 
-/** ── 全局键盘快捷键 ── */
+/* ═══════════════════════════════════════════
+   状态栏
+   ═══════════════════════════════════════════ */
+function StatusBar() {
+  return (
+    <footer className="h-7 shrink-0 bg-zinc-50 dark:bg-[#0F0F11] border-t border-zinc-200 dark:border-zinc-800 flex items-center px-4 gap-4 text-[11px] text-zinc-400 select-none">
+      <span><kbd className="px-1.5 py-0.5 rounded bg-white dark:bg-[#141416] border border-zinc-200 dark:border-zinc-700 font-mono text-[10px] text-zinc-500">Ctrl+1/2/3</kbd> 切换页面</span>
+      <span><kbd className="px-1.5 py-0.5 rounded bg-white dark:bg-[#141416] border border-zinc-200 dark:border-zinc-700 font-mono text-[10px] text-zinc-500">Ctrl+B</kbd> 浮窗</span>
+      <span><kbd className="px-1.5 py-0.5 rounded bg-white dark:bg-[#141416] border border-zinc-200 dark:border-zinc-700 font-mono text-[10px] text-zinc-500">Ctrl+Shift+P</kbd> 隐身</span>
+    </footer>
+  );
+}
+
+/* ═══════════════════════════════════════════
+   快捷键
+   ═══════════════════════════════════════════ */
 function KeyboardShortcutHandler(): null {
   const navigate = useNavigate();
-
   useKeyboardShortcuts({
     'Ctrl+1': () => navigate('/interview'),
     'Ctrl+2': () => navigate('/tools'),
     'Ctrl+3': () => navigate('/profile'),
     'Ctrl+,': () => navigate('/profile'),
-    'Ctrl+B': () => {
-      (window as any).electronAPI?.window?.toggleOverlay();
-    },
-    'Ctrl+Shift+P': () => {
-      (window as any).electronAPI?.window?.toggleContentProtection?.();
-    },
-    'Ctrl+Shift+A': () => {
-      (window as any).electronAPI?.window?.setAlwaysOnTop?.(true);
-    },
+    'Ctrl+B': () => { (window as any).electronAPI?.window?.toggleOverlay(); },
+    'Ctrl+Shift+P': () => { (window as any).electronAPI?.window?.toggleContentProtection?.(); },
+    'Ctrl+Shift+A': () => { (window as any).electronAPI?.window?.setAlwaysOnTop?.(true); },
   });
-
   return null;
 }

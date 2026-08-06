@@ -2,7 +2,7 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
 
-const API_HOST = process.env.VITE_API_HOST || '192.168.7.149';
+const API_HOST = process.env.VITE_API_HOST || '47.108.205.102';
 
 export default defineConfig({
   plugins: [react()],

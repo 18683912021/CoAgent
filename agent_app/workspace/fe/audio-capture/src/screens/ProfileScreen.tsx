@@ -1,10 +1,9 @@
 /**
- * ProfileScreen —— PC 桌面端个人中心
- *
- * 左菜单 + 右内容面板。包含：个人信息、时长、续费、自我介绍、简历上传、语言选择器。
+ * ProfileScreen —— 个人中心
  */
-import { useContext, useEffect, useState, useCallback } from 'react';
+import { useContext, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { Clock, Calendar, BarChart3, Globe, Edit3, FileUp, FileText, LogOut } from 'lucide-react';
 import { AuthContext } from '../utils/AuthContext';
 import { getProfile, saveProfile } from '../utils/token';
 import { hasResume, uploadResume, getIntro } from '../api/resume';
@@ -12,223 +11,128 @@ import { updateProfile as updateProfileApi } from '../api/auth';
 import type { UserProfile } from '../api/auth';
 import { setProgLang, type ProgLang } from '../config';
 import SubscriptionScreen from './SubscriptionScreen';
+import Avatar from '../components/Avatar';
 
-const PROGRAMMING_LANGUAGES: ProgLang[] = ['JavaScript', 'Java', 'Python', 'C#', 'C++', 'Go'];
-const LANG_MAP: Record<string, ProgLang> = {
-  javascript: 'JavaScript', java: 'Java', python: 'Python',
-  'c#': 'C#', csharp: 'C#', 'c++': 'C++', cpp: 'C++', go: 'Go', golang: 'Go',
-};
+const LANGS: ProgLang[] = ['JavaScript', 'Java', 'Python', 'C#', 'C++', 'Go'];
+const LANG_MAP: Record<string, ProgLang> = { javascript:'JavaScript',java:'Java',python:'Python','c#':'C#',csharp:'C#','c++':'C++',cpp:'C++',go:'Go',golang:'Go' };
 
-function fmtTime(s: number) {
-  return `${String(Math.floor(s / 3600)).padStart(2, '0')}:${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
-}
-function fmtDate(ts: number) {
-  const d = new Date(ts * 1000);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
+function fmtTime(s: number) { return `${String(Math.floor(s/3600)).padStart(2,'0')}:${String(Math.floor((s%3600)/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`; }
+function fmtDate(ts: number) { const d=new Date(ts*1000); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
 
 export default function ProfileScreen() {
   const { logout } = useContext(AuthContext);
   const navigate = useNavigate();
-  const [profile, setProfile] = useState<UserProfile | null>(null);
-  const [resumeLabel, setResumeLabel] = useState('未上传');
+  const [p, setP] = useState<UserProfile|null>(null);
+  const [label, setLabel] = useState('未上传');
   const [uploading, setUploading] = useState(false);
   const [lang, setLang] = useState<ProgLang>('JavaScript');
-  const [showLangPicker, setShowLangPicker] = useState(false);
-  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
-  const [showSubscription, setShowSubscription] = useState(false);
+  const [showLang, setShowLang] = useState(false);
+  const [showLogout, setShowLogout] = useState(false);
+  const [showSub, setShowSub] = useState(false);
   const [intro, setIntro] = useState('');
-  const [introLoading, setIntroLoading] = useState(false);
 
   useEffect(() => {
-    getProfile().then(p => {
-      if (p) { setProfile(p); const l = LANG_MAP[p.programming_language] || 'JavaScript'; setLang(l); setProgLang(l); }
-    });
-    hasResume().then(d => { if (d.has_intro) setResumeLabel('已上传'); }).catch(() => {});
+    getProfile().then(p => { if(p){setP(p);const l=LANG_MAP[p.programming_language]||'JavaScript';setLang(l);setProgLang(l);} });
+    hasResume().then(d => { if(d.has_intro) setLabel('已上传'); }).catch(()=>{});
   }, []);
 
-  const handleLangChange = useCallback(async (l: ProgLang) => {
-    setLang(l); setProgLang(l); setShowLangPicker(false);
-    try { const d = await updateProfileApi({ programming_language: l.toLowerCase() }); if (d.user) { setProfile(d.user); await saveProfile(d.user); } } catch { /* ignore */ }
+  const handleLang = async (l: ProgLang) => { setLang(l); setProgLang(l); setShowLang(false); try{const d=await updateProfileApi({programming_language:l.toLowerCase()});if(d.user){setP(d.user);await saveProfile(d.user);}}catch{} };
+  const handleUpload = async () => {
+    const api = (window as any).electronAPI; if(!api?.fileConvert) return;
+    try{const fp=await api.fileConvert.pickFile(['pdf']);if(!fp)return;setUploading(true);setLabel('上传中…');const r=await fetch(`file://${fp}`);const b=await r.blob();const fd=new FormData();fd.append('file',b,fp.split(/[/\\]/).pop()||'resume.pdf');await uploadResume(fd);setLabel('已上传');}catch{setLabel('失败');}finally{setUploading(false);}
+  };
+  const loadIntro = async () => { setIntro(''); try{const d=await getIntro();setIntro(d.ok&&d.intro?d.intro:'');}catch{setIntro('');} };
+
+  // Esc close modals
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if(e.key==='Escape'){setShowLang(false);setShowLogout(false);setShowSub(false);} };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  const handleUpload = useCallback(async () => {
-    const api = (window as any).electronAPI;
-    if (!api?.fileConvert) return;
-    try {
-      const fp = await api.fileConvert.pickFile(['pdf']);
-      if (!fp) return;
-      setUploading(true); setResumeLabel('上传中…');
-      const r = await fetch(`file://${fp}`);
-      const blob = await r.blob();
-      const fd = new FormData();
-      fd.append('file', blob, fp.split(/[/\\]/).pop() || 'resume.pdf');
-      await uploadResume(fd);
-      setResumeLabel('已上传');
-    } catch { setResumeLabel('失败'); }
-    finally { setUploading(false); }
-  }, []);
-
-  const handleViewIntro = useCallback(async () => {
-    setIntroLoading(true);
-    try {
-      const data = await getIntro();
-      setIntro(data.ok && data.intro ? data.intro : '');
-    } catch { setIntro(''); }
-    finally { setIntroLoading(false); }
-  }, []);
-
-  const menuItems = [
-    { icon: '📋', label: '面试历史', desc: `${profile?.interview_count ?? 0} 次`, action: () => navigate('/history') },
-    { icon: '🌐', label: '面试赛道', desc: lang, action: () => setShowLangPicker(true) },
-    { icon: '✍️', label: '答案风格', desc: profile?.answer_style ?? '标准书面', action: () => {} },
-    { icon: '📄', label: '简历上传', desc: uploading ? '上传中…' : resumeLabel, action: handleUpload },
-    { icon: '📝', label: '自我介绍', desc: resumeLabel === '已上传' ? '查看' : '需先上传简历', action: () => resumeLabel === '已上传' && handleViewIntro() },
+  const menu = [
+    { icon: BarChart3, label: '面试历史', desc: `${p?.interview_count??0} 次`, action: () => navigate('/history') },
+    { icon: Globe,     label: '面试赛道', desc: lang, action: () => setShowLang(true) },
+    { icon: Edit3,     label: '答案风格', desc: p?.answer_style??'标准书面', action: ()=>{} },
+    { icon: FileUp,    label: '简历上传', desc: uploading?'上传中…':label, action: handleUpload },
+    { icon: FileText,  label: '自我介绍', desc: label==='已上传'?'点击查看':'需先上传', action: ()=>{if(label==='已上传'){loadIntro();}} },
   ];
 
   return (
     <div className="flex-1 flex overflow-hidden">
-      {/* ══════ 左 · 菜单 240px ══════ */}
-      <nav className="w-60 shrink-0 bg-bg-surface border-r border-divider flex flex-col py-lg">
-        <div className="px-lg mb-lg">
-          <div className="flex items-center gap-md">
-            <div className="w-11 h-11 rounded-xl bg-accent-light border-2 border-accent flex items-center justify-center text-xl shrink-0">
-              {profile?.avatar || '👨‍💻'}
-            </div>
+      {/* 左菜单 */}
+      <nav className="w-[230px] shrink-0 bg-zinc-50 dark:bg-[#0F0F11] border-r border-zinc-200 dark:border-zinc-800 flex flex-col py-5">
+        <div className="px-4 mb-5">
+          <div className="flex items-center gap-3">
+            <Avatar name={p?.name} size={40} />
             <div className="min-w-0">
-              <div className="text-body-sm font-bold truncate">{profile?.name || '未登录'}</div>
-              <span className="text-caption px-1.5 py-0.5 rounded-full bg-accent text-white font-bold">
-                {profile?.membership || '会员'}
-              </span>
+              <div className="text-sm font-semibold text-zinc-900 dark:text-white truncate">{p?.name||'--'}</div>
+              <span className="inline-block mt-0.5 text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-100 dark:bg-indigo-500/20 text-indigo-700 dark:text-indigo-300">{p?.membership||'会员'}</span>
             </div>
           </div>
         </div>
-
-        <div className="space-y-0.5 px-md">
-          {menuItems.map(item => (
-            <button key={item.label} onClick={item.action}
-              className="w-full flex items-center gap-md px-md py-2.5 rounded-lg hover:bg-bg text-left transition-colors group">
-              <span className="w-8 h-8 rounded-lg bg-bg group-hover:bg-bg-surface flex items-center justify-center text-base shrink-0">{item.icon}</span>
-              <div className="min-w-0 flex-1">
-                <div className="text-body-sm font-medium text-text-primary">{item.label}</div>
-                <div className="text-caption text-text-tertiary truncate">{item.desc}</div>
-              </div>
-              <span className="text-text-tertiary opacity-0 group-hover:opacity-100 transition-opacity">›</span>
+        <div className="space-y-0.5 px-3 flex-1">
+          {menu.map(item => { const I=item.icon; return (
+            <button key={item.label} onClick={item.action} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-white dark:hover:bg-[#141416] text-left transition-all duration-150 group active:scale-[0.99]">
+              <I className="w-4 h-4 text-zinc-400 group-hover:text-zinc-600 dark:group-hover:text-zinc-300 shrink-0" strokeWidth={1.5}/>
+              <div className="min-w-0 flex-1"><div className="text-[13px] font-medium text-zinc-700 dark:text-zinc-300">{item.label}</div><div className="text-[11px] text-zinc-400 truncate">{item.desc}</div></div>
             </button>
-          ))}
+          );})}
         </div>
-
-        <div className="mt-auto px-md">
-          <button onClick={() => setShowLogoutConfirm(true)}
-            className="w-full flex items-center gap-md px-md py-2.5 rounded-lg hover:bg-danger-light text-left transition-colors group">
-            <span className="w-8 h-8 rounded-lg bg-danger-light flex items-center justify-center text-base shrink-0">🚪</span>
-            <span className="text-body-sm font-medium text-danger">退出登录</span>
+        <div className="px-3">
+          <button onClick={()=>setShowLogout(true)} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-red-50 dark:hover:bg-red-500/5 text-left transition-all duration-150 group active:scale-[0.99]">
+            <LogOut className="w-4 h-4 text-zinc-400 group-hover:text-red-500 shrink-0 transition-colors duration-150" strokeWidth={1.5}/><span className="text-[13px] font-medium text-zinc-500 group-hover:text-red-500 transition-colors duration-150">退出登录</span>
           </button>
         </div>
       </nav>
 
-      {/* ══════ 右 · 内容区 ══════ */}
+      {/* 右内容 */}
       <main className="flex-1 overflow-y-auto">
-        <div className="max-w-xl mx-auto p-2xl space-y-2xl">
-          {/* 时长卡片 */}
-          <div className="bg-bg-surface rounded-2xl p-xl shadow-sm border border-divider">
-            <div className="text-caption text-text-tertiary font-semibold mb-sm">剩余时长</div>
-            <div className="text-4xl font-extrabold tabular-nums text-accent tracking-wider">
-              {profile ? fmtTime(profile.remaining_seconds) : '--:--:--'}
-            </div>
-            <div className="flex items-center justify-between mt-lg pt-lg border-t border-divider">
-              <span className="text-body-sm text-text-secondary">有效期至 {profile ? fmtDate(profile.expires_at) : '----'}</span>
-              <button onClick={() => setShowSubscription(true)}
-                className="px-lg py-sm rounded-lg bg-accent text-white text-body-sm font-bold hover:opacity-90 shadow-sm">续费 ›</button>
+        <div className="max-w-xl mx-auto p-8 space-y-6">
+          <div className="bg-white dark:bg-[#141416] rounded-2xl p-6 shadow-sm border border-zinc-200 dark:border-zinc-800 hover:shadow-md transition-shadow duration-300">
+            <div className="flex items-center gap-2 mb-3"><Clock className="w-4 h-4 text-zinc-400" strokeWidth={1.5}/><span className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">剩余时长</span></div>
+            <div className="text-[38px] font-extrabold tabular-nums text-zinc-900 dark:text-white tracking-tight">{p?fmtTime(p.remaining_seconds):'--:--:--'}</div>
+            <div className="flex items-center justify-between mt-5 pt-4 border-t border-zinc-100 dark:border-zinc-800">
+              <div className="flex items-center gap-1.5 text-[13px] text-zinc-500"><Calendar className="w-3.5 h-3.5" strokeWidth={1.5}/><span>有效期至 {p?fmtDate(p.expires_at):'----'}</span></div>
+              <button onClick={()=>setShowSub(true)} className="px-4 py-1.5 rounded-lg bg-zinc-900 dark:bg-white text-white dark:text-zinc-900 text-[13px] font-semibold hover:bg-zinc-800 dark:hover:bg-zinc-100 shadow-sm transition-all duration-150 active:scale-[0.98] hover:shadow-md">续费</button>
             </div>
           </div>
 
-          {/* 统计 */}
-          <div className="grid grid-cols-3 gap-lg">
-            <StatCard icon="🎯" value={`${profile?.interview_count ?? 0}`} label="面试次数" />
-            <StatCard icon="📄" value={resumeLabel === '已上传' ? '✓' : '—'} label="简历" />
-            <StatCard icon="🌐" value={lang} label="赛道" />
+          <div className="grid grid-cols-3 gap-4">
+            <Stat icon={BarChart3} val={`${p?.interview_count??0}`} label="面试次数"/>
+            <Stat icon={FileUp} val={label==='已上传'?'✓':'—'} label="简历"/>
+            <Stat icon={Globe} val={lang} label="赛道"/>
           </div>
 
-          {/* 自我介绍预览 */}
           {intro && (
-            <div className="bg-bg-surface rounded-2xl p-xl shadow-sm border border-divider">
-              <h3 className="text-body font-bold text-text-primary mb-lg">📝 自我介绍</h3>
-              <p className="text-body-sm text-text-primary leading-relaxed whitespace-pre-wrap">{intro}</p>
+            <div className="bg-white dark:bg-[#141416] rounded-2xl p-6 shadow-sm border border-zinc-200 dark:border-zinc-800 hover:shadow-md transition-shadow duration-300">
+              <div className="flex items-center gap-2 mb-4"><FileText className="w-4 h-4 text-zinc-400" strokeWidth={1.5}/><h3 className="text-sm font-bold text-zinc-900 dark:text-white">自我介绍</h3></div>
+              <p className="text-sm text-zinc-600 dark:text-zinc-400 leading-relaxed whitespace-pre-wrap">{intro}</p>
             </div>
           )}
         </div>
       </main>
 
-      {/* 续费弹窗 */}
-      {showSubscription && <SubscriptionScreen onClose={() => setShowSubscription(false)} />}
-
-      {/* 自我介绍弹窗 */}
-      {introLoading || (intro && (
-        <div className="fixed inset-0 bg-backdrop flex items-center justify-center z-50" onClick={() => setIntro('')}>
-          <div className="bg-bg-surface rounded-2xl p-xl max-w-lg w-full mx-lg shadow-xl max-h-[70vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
-            <div className="flex items-center justify-between mb-lg">
-              <h3 className="text-heading font-bold">📝 自我介绍</h3>
-              <button onClick={() => setIntro('')} className="text-text-tertiary hover:text-text-primary text-lg">✕</button>
-            </div>
-            {introLoading ? (
-              <p className="text-body-sm text-text-secondary">加载中…</p>
-            ) : intro ? (
-              <p className="text-body text-text-primary leading-relaxed whitespace-pre-wrap">{intro}</p>
-            ) : (
-              <div className="text-center py-xl">
-                <span className="text-4xl block mb-lg">📄</span>
-                <p className="text-body-sm text-text-secondary">尚未上传简历</p>
-                <p className="text-caption text-text-tertiary mt-sm">请在「简历上传」中上传 PDF 简历生成自我介绍</p>
-              </div>
-            )}
-          </div>
-        </div>
-      ))}
-
-      {/* 语言选择器弹窗 */}
-      {showLangPicker && (
-        <div className="fixed inset-0 bg-backdrop flex items-center justify-center z-50" onClick={() => setShowLangPicker(false)}>
-          <div className="bg-bg-surface rounded-2xl p-xl w-80 shadow-xl" onClick={e => e.stopPropagation()}>
-            <h3 className="text-heading text-center mb-lg">选择面试赛道</h3>
-            <div className="space-y-sm">
-              {PROGRAMMING_LANGUAGES.map(l => (
-                <button key={l} onClick={() => handleLangChange(l)}
-                  className={`w-full flex items-center justify-between p-md rounded-xl border-2 transition-colors ${
-                    l === lang ? 'border-accent bg-accent-light text-accent font-bold' : 'border-transparent hover:bg-bg'
-                  }`}>
-                  <span>{l}</span>
-                  {l === lang && <span className="w-2.5 h-2.5 rounded-full bg-accent" />}
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* 退出确认 */}
-      {showLogoutConfirm && (
-        <div className="fixed inset-0 bg-backdrop flex items-center justify-center z-50" onClick={() => setShowLogoutConfirm(false)}>
-          <div className="bg-bg-surface rounded-2xl p-xl w-80 shadow-xl" onClick={e => e.stopPropagation()}>
-            <h3 className="text-heading mb-md">退出登录</h3>
-            <p className="text-body text-text-secondary mb-lg">确定要退出当前账号吗？</p>
-            <div className="flex gap-md justify-end">
-              <button onClick={() => setShowLogoutConfirm(false)} className="px-xl py-sm rounded-lg border border-divider text-body-sm hover:bg-bg">取消</button>
-              <button onClick={logout} className="px-xl py-sm rounded-lg bg-danger text-white text-body-sm font-bold hover:bg-red-600">退出</button>
-            </div>
-          </div>
-        </div>
-      )}
+      {showSub && <SubscriptionScreen onClose={()=>setShowSub(false)}/>}
+      {showLang && <Modal title="选择面试赛道" onClose={()=>setShowLang(false)}><div className="space-y-1">{LANGS.map(l=><button key={l} onClick={()=>handleLang(l)} className={`w-full flex items-center justify-between px-4 py-2.5 rounded-xl text-sm transition-all duration-150 active:scale-[0.99] ${l===lang?'bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 font-semibold':'hover:bg-zinc-50 dark:hover:bg-zinc-800 text-zinc-600 dark:text-zinc-400'}`}>{l}{l===lang&&<span className="w-2 h-2 rounded-full bg-indigo-500"/>}</button>)}</div></Modal>}
+      {showLogout && <Modal title="退出登录" onClose={()=>setShowLogout(false)}><p className="text-sm text-zinc-500 mb-5">确定要退出当前账号吗？</p><div className="flex gap-3 justify-end"><button onClick={()=>setShowLogout(false)} className="px-4 py-2 rounded-lg border border-zinc-200 dark:border-zinc-700 text-sm text-zinc-600 dark:text-zinc-400 hover:bg-zinc-50 dark:hover:bg-zinc-800 transition-all duration-150">取消</button><button onClick={logout} className="px-4 py-2 rounded-lg bg-red-500 text-white text-sm font-semibold hover:bg-red-600 transition-all duration-150 shadow-sm active:scale-[0.98]">退出</button></div></Modal>}
     </div>
   );
 }
 
-function StatCard({ icon, value, label }: { icon: string; value: string; label: string }) {
-  return (
-    <div className="bg-bg-surface rounded-xl p-lg border border-divider text-center shadow-sm">
-      <div className="text-2xl mb-sm">{icon}</div>
-      <div className="text-heading font-extrabold text-text-primary">{value}</div>
-      <div className="text-caption text-text-tertiary mt-xs">{label}</div>
+function Stat({ icon:Icon, val, label }:{icon:any;val:string;label:string}) {
+  return <div className="bg-white dark:bg-[#141416] rounded-xl p-4 border border-zinc-200 dark:border-zinc-800 text-center shadow-sm hover:-translate-y-0.5 hover:shadow-md transition-all duration-200">
+    <Icon className="w-5 h-5 text-zinc-400 mx-auto mb-2" strokeWidth={1.5}/><div className="text-lg font-extrabold text-zinc-900 dark:text-white">{val}</div><div className="text-[11px] text-zinc-400 mt-1">{label}</div>
+  </div>;
+}
+
+function Modal({title,onClose,children}:{title:string;onClose:()=>void;children:any}) {
+  return <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50 backdrop-blur-sm" onClick={onClose}>
+    <div className="bg-white dark:bg-[#141416] rounded-2xl p-6 max-w-lg w-full mx-4 shadow-xl shadow-black/10 border border-zinc-200 dark:border-zinc-800 animate-[scaleIn_150ms_ease-out]" onClick={e=>e.stopPropagation()}>
+      <div className="flex items-center justify-between mb-5"><h3 className="text-base font-bold text-zinc-900 dark:text-white">{title}</h3>
+        <button onClick={onClose} className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-all duration-150" title="关闭 (Esc)"><svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
+      </div>
+      {children}
     </div>
-  );
+  </div>;
 }

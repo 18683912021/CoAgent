@@ -101,25 +101,8 @@ async def pdf_to_word_llm(body: FileData, _email: str = Depends(get_current_user
     except ImportError:
         raise HTTPException(503, "LLM 转换服务未就绪")
 
-    try:
-        converter = PDFToDOCXLLMConverter(content)
-        docx_bytes = await converter.convert()
-    except Exception as e:
-        logger.warning("LLM 转换失败，回退 pdf2docx: %s", e)
-        # fallback 到 pdf2docx
-        try:
-            from pdf2docx import Converter
-        except ImportError:
-            raise HTTPException(503, "pdf2docx 库未安装")
-        tmp = Path(tempfile.mkdtemp())
-        src = tmp / "input.pdf"
-        src.write_bytes(content)
-        out = tmp / "output.docx"
-        cv = Converter(str(src))
-        cv.convert(str(out))
-        cv.close()
-        docx_bytes = out.read_bytes()
-        shutil.rmtree(tmp, ignore_errors=True)
+    converter = PDFToDOCXLLMConverter(content)
+    docx_bytes = await converter.convert()
 
     name = Path(body.filename).stem + ".docx"
     return Response(content=docx_bytes,

@@ -34,8 +34,22 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 文件转换
   fileConvert: {
     getLibreOfficeStatus: () => ipcRenderer.invoke('file:libreoffice-status'),
+    downloadLibreOffice: (resume?: boolean) => ipcRenderer.invoke('file:download-libreoffice', resume ?? false),
+    pauseDownload: () => ipcRenderer.invoke('file:pause-download'),
+    checkPartialDownload: () => ipcRenderer.invoke('file:check-partial-download'),
+    cleanupDownload: () => ipcRenderer.invoke('file:cleanup-download'),
+    openDownloadPage: () => ipcRenderer.invoke('file:open-download-page'),
+    installFromLocal: (localPath: string) => ipcRenderer.invoke('file:install-local', localPath),
+    onDownloadProgress: (cb: (data: { progress: number; stage: string; error?: string }) => void) => {
+      const listener = (_: unknown, data: any) => cb(data);
+      ipcRenderer.on('file:download-progress', listener);
+      return () => ipcRenderer.removeListener('file:download-progress', listener);
+    },
+    writeTemp: (data: Uint8Array, suffix: string) => ipcRenderer.invoke('file:write-temp', data, suffix),
+    readBase64: (filePath: string) => ipcRenderer.invoke('file:read-base64', filePath),
     convert: (inputPath: string, format: string) => ipcRenderer.invoke('file:convert', inputPath, format),
     pickFile: (extensions?: string[]) => ipcRenderer.invoke('file:pick', extensions),
+    saveOutput: (sourcePath: string) => ipcRenderer.invoke('file:save-output', sourcePath),
     saveFile: (data: Uint8Array, defaultName: string) => ipcRenderer.invoke('file:save', data, defaultName),
   },
 

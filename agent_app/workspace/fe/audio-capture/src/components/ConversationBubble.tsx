@@ -1,9 +1,8 @@
 /**
- * ConversationBubble —— PC 端对话气泡
+ * ConversationBubble —— 对话气泡
  *
- * 四种状态：loading / streaming / done / error
- * 流式文字逐字动画（requestAnimationFrame）、Markdown 轻量渲染、
- * 点击面试官/用户气泡触发 LLM、点击 AI 错误气泡重试。
+ * loading / streaming / done / error 四种状态。
+ * 流式打字动画 + Markdown 渲染 + 点击触发 LLM。
  */
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { motion } from 'framer-motion';
@@ -24,9 +23,8 @@ export default function ConversationBubble({ message, onTriggerLLM, onRetryLLM }
   const { id, role, text, status, timestamp } = message;
   const isAI = role === 'ai';
   const isInterviewer = role === 'interviewer';
-  const clickable = !isAI && onTriggerLLM != null;
+  const clickable = !isAI && onTriggerLLM != null && status === 'done';
 
-  // ── 打字动画 ──
   const [visibleLen, setVisibleLen] = useState(status === 'done' || status === 'error' ? text.length : 0);
   const rafRef = useRef<number | null>(null);
 
@@ -50,16 +48,7 @@ export default function ConversationBubble({ message, onTriggerLLM, onRetryLLM }
 
   const visibleText = text.slice(0, visibleLen);
   const isTyping = isAI && status === 'streaming' && visibleLen < text.length;
-
-  // ── 气泡样式 ──
   const isRight = !isInterviewer;
-  const alignClass = isRight ? 'items-end' : 'items-start';
-  const bubbleClass = isAI
-    ? 'bg-bubble-ai border border-bubble-ai-border'
-    : isInterviewer
-      ? 'bg-bubble-interviewer'
-      : 'bg-bubble-user border border-bubble-user-border';
-  const avatar = isInterviewer ? '🎙️' : isAI ? '🤖' : '👤';
   const roleLabel = isInterviewer ? '面试官' : isAI ? 'AI' : '你';
 
   const handleClick = useCallback(() => {
@@ -68,69 +57,73 @@ export default function ConversationBubble({ message, onTriggerLLM, onRetryLLM }
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: 12 }}
+      initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
-      className={`flex flex-col ${alignClass} mb-lg`}
+      transition={{ duration: 0.2 }}
+      className={`flex flex-col ${isRight ? 'items-end' : 'items-start'} mb-4`}
     >
-      {/* 角色行 */}
-      <div className="flex items-center gap-xs px-1 mb-1">
-        <span className="text-sm">{avatar}</span>
-        <span className="text-caption text-text-tertiary">{roleLabel}</span>
-        <span className="text-caption text-text-tertiary ml-auto">{fmtTime(timestamp)}</span>
+      <div className={`flex items-center gap-2 px-1 mb-1.5 ${isRight ? 'flex-row-reverse' : ''}`}>
+        <span className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider">{roleLabel}</span>
+        <span className="w-1 h-1 rounded-full bg-zinc-300 dark:bg-zinc-600" />
+        <span className="text-[11px] text-zinc-400 tabular-nums">{fmtTime(timestamp)}</span>
       </div>
 
-      {/* 气泡体 */}
       <div
         onClick={handleClick}
-        className={`max-w-[70%] px-lg py-md rounded-lg ${bubbleClass} ${
-          clickable ? 'cursor-pointer hover:shadow-md active:scale-[0.98] transition-all' : ''
-        } ${status === 'error' ? 'border-danger' : ''}`}
+        className={`max-w-[68%] px-4 py-3 rounded-2xl text-sm leading-relaxed transition-shadow
+          ${isAI
+            ? 'bg-white dark:bg-[#141416] border border-zinc-200 dark:border-zinc-800 shadow-sm'
+            : isInterviewer
+              ? 'bg-zinc-100 dark:bg-zinc-800/50 text-zinc-900 dark:text-zinc-100'
+              : 'bg-indigo-50 dark:bg-indigo-500/10 text-zinc-900 dark:text-zinc-100 border border-indigo-100 dark:border-indigo-500/20'
+          }
+          ${isAI ? (isRight ? 'rounded-tr-md' : 'rounded-tl-md') : (isInterviewer ? 'rounded-tl-md' : 'rounded-tr-md')}
+          ${clickable ? 'cursor-pointer hover:shadow-md active:scale-[0.99]' : ''}
+          ${status === 'error' ? 'border-red-200 dark:border-red-800/50' : ''}
+        `}
       >
         {status === 'loading' ? (
           <LoadingDots />
         ) : (
-          <div className="text-body-sm leading-relaxed whitespace-pre-wrap break-words">
+          <div className="whitespace-pre-wrap break-words">
             <RichText text={visibleText} />
-            {isTyping && <span className="inline-block w-0.5 h-4 bg-accent animate-pulse ml-0.5 align-middle" />}
+            {isTyping && <span className="inline-block w-[3px] h-4 bg-indigo-500 animate-pulse ml-0.5 align-middle rounded-sm" />}
           </div>
         )}
 
-        {/* 错误重试 */}
         {status === 'error' && onRetryLLM && (
           <button
             onClick={(e) => { e.stopPropagation(); onRetryLLM(id); }}
-            className="mt-sm text-caption text-danger underline hover:no-underline"
+            className="mt-2 text-xs text-red-500 font-medium hover:underline"
           >
-            点击重试
+            重新生成 →
           </button>
+        )}
+
+        {clickable && (
+          <div className="mt-2 text-[11px] text-zinc-400 font-medium opacity-0 group-hover:opacity-100 transition-opacity">
+            点击获取 AI 回答
+          </div>
         )}
       </div>
     </motion.div>
   );
 }
 
-// ── Loading dots animation ──
 function LoadingDots() {
   const [frame, setFrame] = useState(0);
-  useEffect(() => {
-    const id = setInterval(() => setFrame(f => (f + 1) % 3), 300);
-    return () => clearInterval(id);
-  }, []);
+  useEffect(() => { const id = setInterval(() => setFrame(f => (f + 1) % 3), 300); return () => clearInterval(id); }, []);
   return (
     <div className="flex gap-1.5 py-1">
       {[0, 1, 2].map(i => (
-        <span
-          key={i}
-          className={`inline-block w-2 h-2 rounded-full bg-accent transition-all duration-200 ${
-            frame === i ? 'scale-110 opacity-100' : 'scale-75 opacity-40'
-          }`}
-        />
+        <span key={i} className={`inline-block w-2 h-2 rounded-full bg-zinc-300 dark:bg-zinc-600 transition-all duration-200 ${
+          frame === i ? 'scale-110 opacity-100' : 'scale-75 opacity-40'
+        }`} />
       ))}
     </div>
   );
 }
 
-// ── 轻量 Markdown ──
 function RichText({ text }: { text: string }) {
   const blocks = text.split(/(```[\s\S]*?```)/g);
   return (
@@ -139,7 +132,7 @@ function RichText({ text }: { text: string }) {
         if (block.startsWith('```') && block.endsWith('```')) {
           const code = block.slice(3, -3).replace(/^\n/, '');
           return (
-            <pre key={bi} className="my-sm px-md py-sm bg-bg rounded-sm text-caption font-mono overflow-x-auto whitespace-pre-wrap">
+            <pre key={bi} className="my-2 px-3 py-2 rounded-lg bg-zinc-50 dark:bg-zinc-800/50 text-xs font-mono overflow-x-auto whitespace-pre-wrap text-zinc-700 dark:text-zinc-300 border border-zinc-100 dark:border-zinc-800">
               {code}
             </pre>
           );
@@ -148,12 +141,8 @@ function RichText({ text }: { text: string }) {
         return (
           <span key={bi}>
             {parts.map((part, pi) => {
-              if (part.startsWith('**') && part.endsWith('**')) {
-                return <strong key={pi}>{part.slice(2, -2)}</strong>;
-              }
-              if (part.startsWith('`') && part.endsWith('`')) {
-                return <code key={pi} className="px-1 bg-divider rounded text-caption font-mono text-accent">{part.slice(1, -1)}</code>;
-              }
+              if (part.startsWith('**') && part.endsWith('**')) return <strong key={pi}>{part.slice(2, -2)}</strong>;
+              if (part.startsWith('`') && part.endsWith('`')) return <code key={pi} className="px-1 py-0.5 rounded-md bg-zinc-100 dark:bg-zinc-800 text-xs font-mono text-indigo-600 dark:text-indigo-400">{part.slice(1, -1)}</code>;
               return <span key={pi}>{part}</span>;
             })}
           </span>

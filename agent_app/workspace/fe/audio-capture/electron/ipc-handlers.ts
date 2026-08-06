@@ -3,9 +3,12 @@
  */
 import { ipcMain, dialog, BrowserWindow } from 'electron';
 import { getOverlayWindow, createOverlayWindow, destroyOverlayWindow } from './windows/overlay-window.js';
-import { getLibreOfficePath, convertToPdf } from './file-convert/libreoffice.js';
+import { getLibreOfficePath, convertFile } from './file-convert/libreoffice.js';
+import { downloadLibreOffice, pauseDownload, getPartialDownload, cleanupPartialDownload, installFromLocalFile } from './file-convert/downloader.js';
+import { shell } from 'electron';
 import { audioCapture } from './audio/audio-capture.js';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import net from 'node:net';
 import { app } from 'electron';
@@ -120,12 +123,82 @@ export function registerIpcHandlers(): void {
     return { available: getLibreOfficePath() !== null };
   });
 
-  ipcMain.handle('file:convert', async (_e, inputPath: string, format: string) => {
-    if (format === 'pdf') {
-      const outputDir = path.dirname(inputPath);
-      return convertToPdf(inputPath, outputDir);
+  // LibreOffice 按需下载（支持暂停/续传）
+  ipcMain.handle('file:download-libreoffice', async (event, resume: boolean) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    try {
+      const dir = await downloadLibreOffice(
+        (pct: number, stage: string) => {
+          win?.webContents.send('file:download-progress', { progress: pct, stage });
+        },
+        resume,
+      );
+      return { success: true, path: dir };
+    } catch (err: any) {
+      if (err.message === 'PAUSED') return { success: false, paused: true };
+      win?.webContents.send('file:download-progress', { progress: -1, stage: 'error', error: err.message });
+      return { success: false, error: err.message };
     }
-    throw new Error(`Unsupported format: ${format}`);
+  });
+
+  ipcMain.handle('file:pause-download', () => {
+    pauseDownload();
+    return { ok: true };
+  });
+
+  ipcMain.handle('file:check-partial-download', () => {
+    const partial = getPartialDownload();
+    return partial ? { hasPartial: true, ...partial } : { hasPartial: false };
+  });
+
+  ipcMain.handle('file:cleanup-download', () => {
+    cleanupPartialDownload();
+    return { ok: true };
+  });
+
+  // 打开下载页面（用户手动下载）
+  ipcMain.handle('file:open-download-page', () => {
+    const url = 'https://zh-cn.libreoffice.org/download/portable-versions/';
+    shell.openExternal(url);
+    return { ok: true };
+  });
+
+  // 从本地安装包安装
+  ipcMain.handle('file:install-local', async (event, localPath: string) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    try {
+      const dir = await installFromLocalFile(localPath, (pct: number, stage: string) => {
+        win?.webContents.send('file:download-progress', { progress: pct, stage });
+      });
+      return { success: true, path: dir };
+    } catch (err: any) {
+      win?.webContents.send('file:download-progress', { progress: -1, stage: 'error', error: err.message });
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('file:write-temp', async (_e, data: Uint8Array, suffix: string) => {
+    const tmp = path.join(os.tmpdir(), `pdf2word-${Date.now()}.${suffix}`);
+    fs.writeFileSync(tmp, data);
+    return tmp;
+  });
+
+  ipcMain.handle('file:read-base64', async (_e, filePath: string) => {
+    const data = fs.readFileSync(filePath);
+    return data.toString('base64');
+  });
+
+  ipcMain.handle('file:convert', async (_e, inputPath: string, format: string) => {
+    // 输出到临时目录，避免在用户文件夹留下中间产物
+    const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lo-convert-'));
+    try {
+      if (format === 'docx' && inputPath.toLowerCase().endsWith('.pdf')) {
+        return convertFile(inputPath, outputDir, 'docx', 'writer_pdf_import');
+      }
+      return convertFile(inputPath, outputDir, format);
+    } finally {
+      // 转换完成后，返回临时文件路径；调用方负责保存后清理
+    }
   });
 
   ipcMain.handle('file:pick', async (_e, extensions?: string[]) => {
@@ -137,6 +210,19 @@ export function registerIpcHandlers(): void {
     });
     if (result.canceled || result.filePaths.length === 0) return null;
     return result.filePaths[0];
+  });
+
+  ipcMain.handle('file:save-output', async (_e, sourcePath: string) => {
+    const win = BrowserWindow.getFocusedWindow();
+    if (!win) return null;
+    const defaultName = path.basename(sourcePath);
+    const result = await dialog.showSaveDialog(win, { defaultPath: defaultName });
+    if (result.canceled || !result.filePath) return null;
+    fs.copyFileSync(sourcePath, result.filePath);
+    // 保存后清理临时文件及其所在临时目录
+    try { fs.unlinkSync(sourcePath); } catch {}
+    try { fs.rmdirSync(path.dirname(sourcePath)); } catch {}
+    return result.filePath;
   });
 
   ipcMain.handle('file:save', async (_e, data: Uint8Array, defaultName: string) => {

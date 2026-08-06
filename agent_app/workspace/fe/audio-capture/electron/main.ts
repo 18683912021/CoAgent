@@ -8,10 +8,14 @@ import { createMainWindow } from './windows/main-window.js';
 import { destroyOverlayWindow } from './windows/overlay-window.js';
 import { registerIpcHandlers } from './ipc-handlers.js';
 import { createTray, destroyTray } from './tray.js';
+import { cleanupStaleFiles } from './file-convert/downloader.js';
 
 let mainWindow: BrowserWindow | null = null;
 
 function bootstrap(): void {
+  // 清理上次残留的临时文件
+  cleanupStaleFiles();
+
   registerIpcHandlers();
 
   // 系统托盘
