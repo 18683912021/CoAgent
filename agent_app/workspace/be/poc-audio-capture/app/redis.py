@@ -77,7 +77,7 @@ else:
     async def get_redis():
         global _pool, _client
         if _client is None:
-            _pool = aioredis.ConnectionPool.from_url(REDIS_URL, max_connections=20)
+            _pool = aioredis.ConnectionPool.from_url(REDIS_URL, max_connections=20, decode_responses=True)
             _client = aioredis.Redis.from_pool(_pool)
         return _client
 
