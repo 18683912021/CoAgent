@@ -32,8 +32,15 @@ export default function ProfileScreen() {
   const [intro, setIntro] = useState('');
 
   useEffect(() => {
-    getProfile().then(p => { if(p){setP(p);const l=LANG_MAP[p.programming_language]||'JavaScript';setLang(l);setProgLang(l);} });
-    hasResume().then(d => { if(d.has_intro) setLabel('已上传'); }).catch(()=>{});
+    const refresh = () => {
+      getProfile().then(p => { if(p){setP(p);const l=LANG_MAP[p.programming_language]||'JavaScript';setLang(l);setProgLang(l);} });
+      hasResume().then(d => { if(d.has_intro) setLabel('已上传'); }).catch(()=>{});
+    };
+    refresh();
+    // 页面可见时自动刷新（从其它页面切换回来时更新数据）
+    const onVisible = () => { if (document.visibilityState === 'visible') refresh(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
   }, []);
 
   const handleLang = async (l: ProgLang) => { setLang(l); setProgLang(l); setShowLang(false); try{const d=await updateProfileApi({programming_language:l.toLowerCase()});if(d.user){setP(d.user);await saveProfile(d.user);}}catch{} };
@@ -50,12 +57,16 @@ export default function ProfileScreen() {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  const menu = [
-    { icon: BarChart3, label: '面试历史', desc: `${p?.interview_count??0} 次`, action: () => navigate('/history') },
-    { icon: Globe,     label: '面试赛道', desc: lang, action: () => setShowLang(true) },
-    { icon: Edit3,     label: '答案风格', desc: p?.answer_style??'标准书面', action: ()=>{} },
-    { icon: FileUp,    label: '简历上传', desc: uploading?'上传中…':label, action: handleUpload },
-    { icon: FileText,  label: '自我介绍', desc: label==='已上传'?'点击查看':'需先上传', action: ()=>{if(label==='已上传'){loadIntro();}} },
+  const sections = [
+    { title: '数据', items: [
+      { icon: BarChart3, label: '面试历史', desc: `${p?.interview_count??0} 次`, action: () => navigate('/history') },
+    ]},
+    { title: '偏好', items: [
+      { icon: Globe,     label: '面试赛道', desc: lang, action: () => setShowLang(true) },
+      { icon: Edit3,     label: '答案风格', desc: p?.answer_style??'标准书面', action: ()=>{} },
+      { icon: FileUp,    label: '简历上传', desc: uploading?'上传中…':label, action: handleUpload },
+      { icon: FileText,  label: '自我介绍', desc: label==='已上传'?'点击查看':'需先上传', action: ()=>{if(label==='已上传'){loadIntro();}} },
+    ]},
   ];
 
   return (
@@ -71,13 +82,18 @@ export default function ProfileScreen() {
             </div>
           </div>
         </div>
-        <div className="space-y-0.5 px-3 flex-1">
-          {menu.map(item => { const I=item.icon; return (
-            <button key={item.label} onClick={item.action} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-white dark:hover:bg-[#141416] text-left transition-all duration-150 group active:scale-[0.99]">
-              <I className="w-4 h-4 text-zinc-400 group-hover:text-zinc-600 dark:group-hover:text-zinc-300 shrink-0" strokeWidth={1.5}/>
-              <div className="min-w-0 flex-1"><div className="text-[13px] font-medium text-zinc-700 dark:text-zinc-300">{item.label}</div><div className="text-[11px] text-zinc-400 truncate">{item.desc}</div></div>
-            </button>
-          );})}
+        <div className="space-y-4 px-3 flex-1">
+          {sections.map(sec => (
+            <div key={sec.title}>
+              <div className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mb-1.5 px-3">{sec.title}</div>
+              {sec.items.map(item => { const I=item.icon; return (
+                <button key={item.label} onClick={item.action} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-white dark:hover:bg-[#141416] text-left transition-all duration-150 group active:scale-[0.99]">
+                  <I className="w-4 h-4 text-zinc-400 group-hover:text-zinc-600 dark:group-hover:text-zinc-300 shrink-0" strokeWidth={1.5}/>
+                  <div className="min-w-0 flex-1"><div className="text-[13px] font-medium text-zinc-700 dark:text-zinc-300">{item.label}</div><div className="text-[11px] text-zinc-400 truncate">{item.desc}</div></div>
+                </button>
+              );})}
+            </div>
+          ))}
         </div>
         <div className="px-3">
           <button onClick={()=>setShowLogout(true)} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-red-50 dark:hover:bg-red-500/5 text-left transition-all duration-150 group active:scale-[0.99]">
@@ -110,6 +126,8 @@ export default function ProfileScreen() {
               <p className="text-sm text-zinc-600 dark:text-zinc-400 leading-relaxed whitespace-pre-wrap">{intro}</p>
             </div>
           )}
+
+          <p className="text-center text-[11px] text-zinc-400 mt-8 pb-4">AI面试助手 v1.0.0</p>
         </div>
       </main>
 

@@ -15,8 +15,15 @@ interface Props {
 }
 
 function fmtTime(ts: number): string {
+  const diff = Date.now() - ts;
+  if (diff < 0) return '刚刚';
+  const sec = Math.floor(diff / 1000);
+  if (sec < 5) return '刚刚';
+  if (sec < 60) return `${sec}秒前`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}分钟前`;
   const d = new Date(ts);
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
+  return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
 }
 
 export default function ConversationBubble({ message, onTriggerLLM, onRetryLLM }: Props) {
@@ -50,6 +57,7 @@ export default function ConversationBubble({ message, onTriggerLLM, onRetryLLM }
   const isTyping = isAI && status === 'streaming' && visibleLen < text.length;
   const isRight = !isInterviewer;
   const roleLabel = isInterviewer ? '面试官' : isAI ? 'AI' : '你';
+  const avatar = isInterviewer ? '🎙️' : isAI ? '🤖' : '👤';
 
   const handleClick = useCallback(() => {
     if (clickable && onTriggerLLM) onTriggerLLM(id);
@@ -60,16 +68,26 @@ export default function ConversationBubble({ message, onTriggerLLM, onRetryLLM }
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.2 }}
-      className={`flex flex-col ${isRight ? 'items-end' : 'items-start'} mb-4`}
+      className={`flex items-end gap-2.5 mb-4 ${isRight ? 'flex-row-reverse' : ''}`}
     >
-      <div className={`flex items-center gap-2 px-1 mb-1.5 ${isRight ? 'flex-row-reverse' : ''}`}>
-        <span className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider">{roleLabel}</span>
-        <span className="w-1 h-1 rounded-full bg-zinc-300 dark:bg-zinc-600" />
-        <span className="text-[11px] text-zinc-400 tabular-nums">{fmtTime(timestamp)}</span>
+      {/* Avatar */}
+      <div className={`w-8 h-8 rounded-full shrink-0 flex items-center justify-center text-sm border ${
+        isInterviewer ? 'bg-zinc-100 dark:bg-zinc-800 border-zinc-200 dark:border-zinc-700' :
+        isAI ? 'bg-indigo-50 dark:bg-indigo-500/10 border-indigo-100 dark:border-indigo-500/20' :
+        'bg-emerald-50 dark:bg-emerald-500/10 border-emerald-100 dark:border-emerald-500/20'
+      }`}>
+        {avatar}
       </div>
 
-      <div
-        onClick={handleClick}
+      <div className={`flex flex-col ${isRight ? 'items-end' : 'items-start'} min-w-0`}>
+        <div className={`flex items-center gap-2 px-1 mb-1.5 ${isRight ? 'flex-row-reverse' : ''}`}>
+          <span className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider">{roleLabel}</span>
+          <span className="w-1 h-1 rounded-full bg-zinc-300 dark:bg-zinc-600" />
+          <span className="text-[11px] text-zinc-400">{fmtTime(timestamp)}</span>
+        </div>
+
+        <div
+          onClick={handleClick}
         className={`max-w-[68%] px-4 py-3 rounded-2xl text-sm leading-relaxed transition-shadow
           ${isAI
             ? 'bg-white dark:bg-[#141416] border border-zinc-200 dark:border-zinc-800 shadow-sm'
@@ -105,6 +123,7 @@ export default function ConversationBubble({ message, onTriggerLLM, onRetryLLM }
             点击获取 AI 回答
           </div>
         )}
+        </div>
       </div>
     </motion.div>
   );

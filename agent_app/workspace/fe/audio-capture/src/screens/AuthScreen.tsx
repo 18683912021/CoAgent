@@ -9,6 +9,8 @@ import { useState, useCallback } from 'react';
 import { Mail, Key, ArrowRight, Zap, Mic, MessageSquare, Clock, Shield, Eye, EyeOff, Check } from 'lucide-react';
 import { sendCode, checkEmail, login, loginPassword, register } from '../api/auth';
 import { saveToken, refreshProfile } from '../utils/token';
+import { useToast } from '../components/Toast';
+import AgreementScreen from './AgreementScreen';
 
 type AuthMode = 'login' | 'register';
 type LoginSubMode = 'code' | 'password';
@@ -31,6 +33,8 @@ export default function AuthScreen({ onLogin }: Props) {
   const [agreed, setAgreed] = useState(false);
   const [countdown, setCountdown] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [showAgreement, setShowAgreement] = useState<'service' | 'privacy' | null>(null);
+  const { toast } = useToast();
   const [showPwd, setShowPwd] = useState(false);
   const [emailErr, setEmailErr] = useState('');
   const [emailTouched, setEmailTouched] = useState(false);
@@ -80,7 +84,7 @@ export default function AuthScreen({ onLogin }: Props) {
       else data = await register(email.trim(), code.trim(), password);
       if (data.token) { await saveToken(data.token); await refreshProfile(); }
       onLogin();
-    } catch (_) { /* 静默 */ }
+    } catch (_: any) { toast(_.detail || '登录失败，请重试', 'error'); }
     finally { setLoading(false); }
   }, [isLogin, usePwd, email, code, password, confirmPwd, agreed, emailOk, onLogin]);
 
@@ -328,7 +332,7 @@ export default function AuthScreen({ onLogin }: Props) {
                   {agreed && <Check className="w-3 h-3 text-white" strokeWidth={3} />}
                 </span>
                 <span className="text-xs text-zinc-500 dark:text-zinc-400 leading-relaxed select-none">
-                  已阅读并同意 <span className="text-indigo-600 dark:text-indigo-400 font-medium cursor-pointer hover:underline">服务协议</span> 和 <span className="text-indigo-600 dark:text-indigo-400 font-medium cursor-pointer hover:underline">隐私政策</span>
+                  已阅读并同意 <span className="text-indigo-600 dark:text-indigo-400 font-medium cursor-pointer hover:underline" onClick={(e) => { e.stopPropagation(); setShowAgreement('service'); }}>服务协议</span> 和 <span className="text-indigo-600 dark:text-indigo-400 font-medium cursor-pointer hover:underline" onClick={(e) => { e.stopPropagation(); setShowAgreement('privacy'); }}>隐私政策</span>
                 </span>
               </button>
               {agreedTouched && !agreed && (
@@ -369,6 +373,9 @@ export default function AuthScreen({ onLogin }: Props) {
           </div>
         </div>
       </div>
+
+      {/* 协议弹窗 */}
+      {showAgreement && <AgreementScreen type={showAgreement} onClose={() => setShowAgreement(null)} />}
     </div>
   );
 }

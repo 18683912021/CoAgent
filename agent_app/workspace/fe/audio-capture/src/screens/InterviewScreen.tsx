@@ -3,12 +3,16 @@
  *
  * 布局：左控制面板 250px | 中对话流 | 右实时面板 270px（可折叠）
  */
-import { useState, useEffect } from 'react';
-import { Play, Square, Mic, Volume2, FileText, ChevronDown, PanelRightClose, PanelRightOpen, Lock } from 'lucide-react';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { Play, Square, Mic, Volume2, FileText, ChevronDown, PanelRightClose, PanelRightOpen, Lock, ArrowDown, Zap, Globe } from 'lucide-react';
 import { useAudioCapture } from '../hooks/useAudioCapture';
 import { saveInterview } from '../api/interview';
 import { hasResume, getIntro } from '../api/resume';
 import { getProgLang, setProgLang, type ProgLang } from '../config';
+import { deductTime, getProfile as getProfileApi } from '../api/auth';
+import { refreshProfile } from '../utils/token';
+import { setInterviewActive } from '../utils/interviewState';
+import { useToast } from '../components/Toast';
 import ConversationBubble from '../components/ConversationBubble';
 import MicLevelBar from '../components/MicLevelBar';
 import PulsingDot from '../components/PulsingDot';
@@ -21,52 +25,56 @@ export default function InterviewScreen() {
   const { state, start, stop, sendLLMQuery, retryLLM } = useAudioCapture();
   const [timer, setTimer] = useState(0);
   const [style, setStyle] = useState('标准');
-  const [saved, setSaved] = useState(false);
   const [rightCollapsed, setRightCollapsed] = useState(false);
   const [showIntro, setShowIntro] = useState(false);
   const [intro, setIntro] = useState('');
   const [introLoading, setIntroLoading] = useState(false);
   const [introFontSize, setIntroFontSize] = useState(16);
   const [hasIntro, setHasIntro] = useState(false);
-  const [showSaveConfirm, setShowSaveConfirm] = useState(false);
   const capturing = state.captureState === 'capturing';
+  const { confirm, toast } = useToast();
 
   useEffect(() => { hasResume().then(d => setHasIntro(d.has_intro)).catch(()=>{}); }, []);
   useEffect(() => {
-    if (!capturing) { setTimer(0); setSaved(false); return; }
+    if (!capturing) { setTimer(0); setInterviewActive(false); return; }
+    setInterviewActive(true);
     const id = setInterval(() => setTimer(t => t + 1), 1000);
     return () => clearInterval(id);
   }, [capturing]);
 
-  // Esc 关闭面板
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { setShowIntro(false); setShowSaveConfirm(false); }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  useEffect(() => { const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { setShowIntro(false); } }; window.addEventListener('keydown', onKey); return () => window.removeEventListener('keydown', onKey); }, []);
 
-  const handleToggle = () => {
-    if (capturing) {
-      stop();
-      if (state.conversation.length > 0) setShowSaveConfirm(true);
-    } else {
-      start();
-    }
+  // 结束面试（含确认、自动保存、自动扣费）
+  const handleStop = () => {
+    confirm('结束面试', '确定要结束当前面试吗？', async () => {
+      stop(); setInterviewActive(false);
+      if (state.conversation.length > 0) {
+        try {
+          await saveInterview({
+            started_at: Math.floor((Date.now() - timer * 1000) / 1000),
+            ended_at: Math.floor(Date.now() / 1000),
+            duration_seconds: timer,
+            programming_language: getProgLang().toLowerCase(),
+            conversation: state.conversation.filter(m => m.status === 'done' || m.status === 'streaming'),
+          });
+          await deductTime(timer);
+          await refreshProfile();
+          toast('面试记录已保存', 'success');
+        } catch { toast('保存失败，请重试', 'error'); }
+      }
+    });
   };
 
-  const handleSave = async () => {
-    if (saved) return;
-    await saveInterview({
-      started_at: Math.floor((Date.now() - timer * 1000) / 1000),
-      ended_at: Math.floor(Date.now() / 1000),
-      duration_seconds: timer,
-      programming_language: getProgLang().toLowerCase(),
-      conversation: state.conversation.filter(m => m.status === 'done' || m.status === 'streaming'),
-    });
-    setSaved(true);
-    setShowSaveConfirm(false);
+  // 开始面试（含剩余时长检查）
+  const handleStart = async () => {
+    try {
+      const profile = await getProfileApi();
+      if (profile.ok && profile.user.remaining_seconds < 10) {
+        toast('剩余时长不足，请先续费', 'error');
+        return;
+      }
+    } catch { /* 网络问题不阻止 */ }
+    start();
   };
 
   const loadIntro = async () => {
@@ -85,13 +93,13 @@ export default function InterviewScreen() {
       {/* ═══ 左 · 控制面板 250px ═══ */}
       <aside className="w-[250px] shrink-0 bg-zinc-50 dark:bg-[#0F0F11] border-r border-zinc-200 dark:border-zinc-800 flex flex-col">
         <div className="p-4 pb-3">
-          <button onClick={handleToggle}
+          <button onClick={capturing ? handleStop : handleStart}
             className={`w-full h-11 rounded-xl text-[13px] font-bold flex items-center justify-center gap-2 transition-all duration-150 active:scale-[0.98]
               ${capturing
                 ? 'bg-red-500 hover:bg-red-600 text-white shadow-sm shadow-red-500/20 hover:shadow-md'
                 : 'bg-zinc-900 dark:bg-white text-white dark:text-zinc-900 hover:bg-zinc-800 dark:hover:bg-zinc-100 shadow-sm hover:shadow-md'
               }`}
-            title={capturing ? '结束面试' : '开始面试 (Ctrl+Enter)'}
+            title={capturing ? '结束面试' : '开始面试'}
           >
             {capturing ? <><Square className="w-3.5 h-3.5" fill="currentColor"/>结束面试</> : <><Play className="w-3.5 h-3.5" fill="currentColor"/>开始面试</>}
           </button>
@@ -164,7 +172,7 @@ export default function InterviewScreen() {
       </aside>
 
       {/* ═══ 中 · 对话流 ═══ */}
-      <main className="flex-1 flex flex-col min-w-0">
+      <main className="flex-1 flex flex-col min-w-0 relative">
         {state.conversation.length === 0 ? (
           <div className="flex-1 flex flex-col items-center justify-center gap-5 text-center px-8">
             <div className="w-16 h-16 rounded-2xl bg-zinc-100 dark:bg-zinc-800 flex items-center justify-center">
@@ -174,18 +182,19 @@ export default function InterviewScreen() {
               <div className="text-base font-bold text-zinc-900 dark:text-white mb-1.5">准备开始面试</div>
               <div className="text-sm text-zinc-500 max-w-sm leading-relaxed">点击左侧「开始面试」启动，系统自动转写面试官语音。<br/>点击转写气泡即可获取 AI 实时回答。</div>
             </div>
-            <div className="flex items-center gap-2">
-              <kbd className="px-2 py-1 rounded-md bg-zinc-100 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-[11px] text-zinc-500 font-mono">Ctrl+Enter</kbd>
-              <span className="text-[11px] text-zinc-400">触发回答</span>
+            <div className="grid grid-cols-3 gap-3 mt-4 max-w-md">
+              {[{ icon: Mic, label: '实时转写', desc: '精准捕获面试官提问' }, { icon: Zap, label: 'AI 回答', desc: 'DeepSeek 驱动高质量应答' }, { icon: Globe, label: '多赛道', desc: '6 种编程语言面试' }].map((f, i) => {
+                const Fi = f.icon;
+                return <div key={i} className="p-4 rounded-xl bg-white dark:bg-[#141416] border border-zinc-200 dark:border-zinc-800 text-center">
+                  <Fi className="w-5 h-5 text-zinc-400 mx-auto mb-2" strokeWidth={1.5}/>
+                  <div className="text-xs font-semibold text-zinc-600 dark:text-zinc-400">{f.label}</div>
+                  <div className="text-[11px] text-zinc-400 mt-1">{f.desc}</div>
+                </div>;
+              })}
             </div>
           </div>
         ) : (
-          <div className="flex-1 overflow-y-auto px-6 py-4">
-            {state.conversation.map(msg => (
-              <ConversationBubble key={msg.id} message={msg} onTriggerLLM={sendLLMQuery} onRetryLLM={retryLLM}/>
-            ))}
-            <div className="h-6"/>
-          </div>
+          <ConversationList messages={state.conversation} onTriggerLLM={sendLLMQuery} onRetryLLM={retryLLM} />
         )}
       </main>
 
@@ -299,19 +308,6 @@ export default function InterviewScreen() {
         </div>
       )}
 
-      {/* 保存确认弹窗 */}
-      {showSaveConfirm && (
-        <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50 backdrop-blur-sm" onClick={() => setShowSaveConfirm(false)}>
-          <div className="bg-white dark:bg-[#141416] rounded-2xl p-6 max-w-sm w-full mx-4 shadow-xl shadow-black/10 border border-zinc-200 dark:border-zinc-800 animate-[scaleIn_150ms_ease-out]" onClick={e=>e.stopPropagation()}>
-            <h3 className="text-base font-bold text-zinc-900 dark:text-white mb-2">面试已结束</h3>
-            <p className="text-sm text-zinc-500 mb-5">是否保存本次面试记录？</p>
-            <div className="flex gap-3 justify-end">
-              <button onClick={() => setShowSaveConfirm(false)} className="px-4 py-2 rounded-lg border border-zinc-200 dark:border-zinc-700 text-sm text-zinc-600 dark:text-zinc-400 hover:bg-zinc-50 dark:hover:bg-zinc-800 transition-colors duration-150">不保存</button>
-              <button onClick={handleSave} className="px-4 py-2 rounded-lg bg-indigo-500 text-white text-sm font-semibold hover:bg-indigo-600 transition-colors duration-150 shadow-sm active:scale-[0.98]">保存记录</button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -332,4 +328,58 @@ function AudioRow({ icon: Icon, label, lvl }: { icon: any; label: string; lvl: n
 function Status({ color, text }: { color: string; text: string }) {
   const c = color==='green'?'text-emerald-500':color==='amber'?'text-amber-500':'text-red-500';
   return <div className={`flex items-center gap-1.5 text-[12px] font-medium ${c}`}><PulsingDot/>{text}</div>;
+}
+
+/** 对话列表：自动滚动、FAB 回到底部、时间间隔分隔线 */
+function ConversationList({ messages, onTriggerLLM, onRetryLLM }: {
+  messages: any[]; onTriggerLLM?: (id: string) => void; onRetryLLM?: (id: string) => void;
+}) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [showFab, setShowFab] = useState(false);
+
+  // 新消息自动滚底
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (dist < 200) el.scrollTop = el.scrollHeight;
+    else setShowFab(true);
+  }, [messages]);
+
+  const scrollBottom = useCallback(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
+    setShowFab(false);
+  }, []);
+
+  const handleScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
+    setShowFab(dist > 300);
+  }, []);
+
+  return (
+    <div ref={scrollRef} onScroll={handleScroll} className="flex-1 overflow-y-auto px-6 py-4">
+      {messages.map((msg: any, i: number) => (
+        <div key={msg.id}>
+          {/* 时间间隔分隔线 */}
+          {i > 0 && msg.role === messages[i-1]?.role && msg.timestamp - messages[i-1]?.timestamp > 3000 && (
+            <div className="flex items-center gap-3 my-3">
+              <div className="flex-1 border-t border-zinc-200 dark:border-zinc-700" />
+              <span className="text-[10px] text-zinc-400 shrink-0">···</span>
+              <div className="flex-1 border-t border-zinc-200 dark:border-zinc-700" />
+            </div>
+          )}
+          <ConversationBubble message={msg} onTriggerLLM={onTriggerLLM} onRetryLLM={onRetryLLM} />
+        </div>
+      ))}
+      <div className="h-6" />
+      {showFab && (
+        <button onClick={scrollBottom}
+          className="sticky bottom-4 float-right w-10 h-10 rounded-full bg-white dark:bg-[#141416] border border-zinc-200 dark:border-zinc-800 shadow-lg flex items-center justify-center hover:shadow-xl transition-all z-10">
+          <ArrowDown className="w-4 h-4 text-zinc-500" strokeWidth={2}/>
+        </button>
+      )}
+    </div>
+  );
 }

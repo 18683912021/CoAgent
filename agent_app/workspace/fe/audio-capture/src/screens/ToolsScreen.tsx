@@ -197,7 +197,16 @@ function ConvertPanel({ tool, onClose }: { tool: ToolDef; onClose: () => void })
     const api = (window as any).electronAPI;
     const exts = tool.key === 'word2pdf' ? ['docx', 'doc'] : ['pdf'];
     const p = await api?.fileConvert?.pickFile(exts);
-    if (p) { setFile(p); setOutput(null); setErr(null); }
+    if (!p) return;
+    // 格式校验
+    const ext = p.split('.').pop()?.toLowerCase();
+    if (tool.key === 'word2pdf' && !['docx', 'doc'].includes(ext || '')) {
+      setErr('仅支持 .docx / .doc 格式'); return;
+    }
+    if (tool.key === 'pdf2word' && ext !== 'pdf') {
+      setErr('仅支持 .pdf 格式'); return;
+    }
+    setFile(p); setOutput(null); setErr(null);
   };
 
   const convert = async () => {

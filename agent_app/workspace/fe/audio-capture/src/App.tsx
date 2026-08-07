@@ -11,12 +11,15 @@ import { AuthContext } from './utils/AuthContext';
 import { useDarkMode } from './theme/tokens';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { verifyToken, clearToken, clearProfile } from './utils/token';
+import { isInterviewActive } from './utils/interviewState';
+import { useToast } from './components/Toast';
 import InterviewScreen from './screens/InterviewScreen';
 import ToolsScreen from './screens/ToolsScreen';
 import ProfileScreen from './screens/ProfileScreen';
 import InterviewHistoryScreen from './screens/InterviewHistoryScreen';
 import AuthScreen from './screens/AuthScreen';
 import OverlayScreen from './screens/OverlayScreen';
+import { ToastProvider } from './components/Toast';
 
 export default function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
@@ -42,10 +45,12 @@ export default function App() {
 
   return (
     <AuthContext.Provider value={{ logout }}>
-      <HashRouter>
-        <KeyboardShortcutHandler />
-        {isLoggedIn ? <AuthenticatedApp /> : <AuthScreen onLogin={() => setIsLoggedIn(true)} />}
-      </HashRouter>
+      <ToastProvider>
+        <HashRouter>
+          <KeyboardShortcutHandler />
+          {isLoggedIn ? <AuthenticatedApp /> : <AuthScreen onLogin={() => setIsLoggedIn(true)} />}
+        </HashRouter>
+      </ToastProvider>
     </AuthContext.Provider>
   );
 }
@@ -95,6 +100,7 @@ function Toolbar({ tabs, activeKey }: {
 }) {
   const navigate = useNavigate();
   const [stealth, setStealth] = useState(false);
+  const { toast } = useToast();
 
   useEffect(() => {
     (window as any).electronAPI?.window?.getContentProtection().then((on: boolean) => setStealth(on));
@@ -102,6 +108,14 @@ function Toolbar({ tabs, activeKey }: {
 
   const toggle = () => {
     (window as any).electronAPI?.window?.toggleContentProtection().then((on: boolean) => setStealth(on));
+  };
+
+  const goTab = (key: string) => {
+    if (key !== 'interview' && isInterviewActive()) {
+      toast('面试进行中，请先结束当前面试', 'warning');
+      return;
+    }
+    navigate(`/${key}`);
   };
 
   return (
@@ -122,7 +136,7 @@ function Toolbar({ tabs, activeKey }: {
           return (
             <button
               key={t.key}
-              onClick={() => navigate(`/${t.key}`)}
+              onClick={() => goTab(t.key)}
               className={`h-full px-4 flex items-center gap-2 text-[13px] font-medium border-b-[2px] transition-colors ${
                 active
                   ? 'border-zinc-900 dark:border-white text-zinc-900 dark:text-white'
