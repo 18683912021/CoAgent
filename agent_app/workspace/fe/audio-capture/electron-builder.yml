@@ -9,6 +9,9 @@ files:
   - package.json
 asar:
   smartUnpack: true
+asarUnpack:
+  # WASAPI native addon：asar 内的 .node 无法加载，必须解包
+  - dist-electron/audio/native/**/*
 win:
   target:
     - target: nsis

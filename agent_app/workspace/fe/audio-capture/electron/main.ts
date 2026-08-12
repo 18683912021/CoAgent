@@ -4,7 +4,7 @@
  * 职责：BrowserWindow 生命周期、ContentProtection、IPC 路由注册
  */
 import { app, BrowserWindow } from 'electron';
-import { createMainWindow } from './windows/main-window.js';
+import { createMainWindow, allowMediaPermissions } from './windows/main-window.js';
 import { destroyOverlayWindow } from './windows/overlay-window.js';
 import { registerIpcHandlers } from './ipc-handlers.js';
 import { createTray, destroyTray } from './tray.js';
@@ -15,6 +15,9 @@ let mainWindow: BrowserWindow | null = null;
 function bootstrap(): void {
   // 清理上次残留的临时文件
   cleanupStaleFiles();
+
+  // 麦克风权限（renderer getUserMedia 必需）
+  allowMediaPermissions();
 
   registerIpcHandlers();
 

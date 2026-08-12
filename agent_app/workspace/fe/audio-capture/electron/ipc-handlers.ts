@@ -52,13 +52,24 @@ export function registerIpcHandlers(): void {
     mainWindow?.webContents.send('audio:transcription', data);
   });
   audioCapture.on('llmStart', (data: unknown) => {
-    mainWindow?.webContents.send('audio:llm-chunk', { type: 'llm_start', ...(data as object) });
+    mainWindow?.webContents.send('audio:llm-start', data);
   });
   audioCapture.on('llmChunk', (data: unknown) => {
     mainWindow?.webContents.send('audio:llm-chunk', data);
   });
   audioCapture.on('llmDone', (data: unknown) => {
     mainWindow?.webContents.send('audio:llm-done', data);
+  });
+  audioCapture.on('streamState', (data: unknown) => {
+    mainWindow?.webContents.send('audio:stream-state', data);
+  });
+  audioCapture.on('levels', (data: unknown) => {
+    mainWindow?.webContents.send('audio:levels', data);
+  });
+  // 采集/推流错误必须上屏：addon 缺失、声卡异常、PCM 转换失败等
+  // 否则用户看到"已连接·转录中"却全程无声，无从诊断
+  audioCapture.on('error', (data: unknown) => {
+    mainWindow?.webContents.send('audio:error', data);
   });
 
   // ── 存储 ──
@@ -234,15 +245,15 @@ export function registerIpcHandlers(): void {
     return result.filePath;
   });
 
-  // ── 音频采集 ──
+  // ── 音频采集（主进程统一推流：采集 + WS 都在主进程） ──
   let audioSessionId: string | null = null;
 
-  ipcMain.handle('audio:start-capture', async (_e, opts: { source?: string }) => {
+  ipcMain.handle('audio:start-capture', async (_e, opts: { source?: string; streamUrl?: string }) => {
     audioSessionId = crypto.randomUUID();
-    return audioCapture.start(
-      (opts?.source as 'mic' | 'system' | 'both') || 'both',
-      audioSessionId,
-    );
+    const source = (opts?.source as 'mic' | 'system' | 'both') || 'both';
+    // 主进程直连后端（renderer 的 Vite proxy 只对浏览器生效）
+    const streamUrl = opts?.streamUrl || 'ws://192.168.7.149:8010/api/ws/audio/stream';
+    return audioCapture.start(source, audioSessionId, streamUrl);
   });
 
   ipcMain.handle('audio:stop-capture', async () => {
@@ -253,5 +264,19 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle('audio:get-snapshot', async () => {
     return audioCapture.getSnapshot();
+  });
+
+  // 渲染进程控制消息（llm_query / config / track_end 等）直接透传
+  ipcMain.handle('audio:send-control', (_e, msg: unknown) => {
+    if (msg && typeof msg === 'object') {
+      audioCapture.sendControl(msg as object);
+      return { ok: true };
+    }
+    return { ok: false, error: 'E_CONTROL_MESSAGE' };
+  });
+
+  // 渲染进程麦克风 PCM16 帧（16kHz mono，AudioContext 已归一化）→ 主进程统一推流
+  ipcMain.on('audio:mic-frame', (_e, data: Uint8Array | ArrayBuffer) => {
+    audioCapture.pushMicFrame(Buffer.from(data as any));
   });
 }

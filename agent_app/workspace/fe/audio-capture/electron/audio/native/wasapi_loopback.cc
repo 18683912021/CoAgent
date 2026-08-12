@@ -7,6 +7,7 @@
 #include <napi.h>
 #include <audioclient.h>
 #include <mmdeviceapi.h>
+#include <ksmedia.h>
 #include <functiondiscoverykeys_devpkey.h>
 #include <windows.h>
 #include <vector>
@@ -28,6 +29,10 @@ public:
 private:
   Napi::Value Start(const Napi::CallbackInfo& info);
   Napi::Value Stop(const Napi::CallbackInfo& info);
+  Napi::Value GetSampleRate(const Napi::CallbackInfo& info);
+  Napi::Value GetChannels(const Napi::CallbackInfo& info);
+  Napi::Value GetBitsPerSample(const Napi::CallbackInfo& info);
+  Napi::Value GetIsFloat(const Napi::CallbackInfo& info);
 
   void CaptureLoop();
 
@@ -39,8 +44,10 @@ private:
 
   std::thread _captureThread;
   std::atomic<bool> _running{false};
+  std::atomic<bool> _threadDone{false};
   Napi::ThreadSafeFunction _tsfn;
   UINT32 _bufferFrames = 0;
+  bool _comInitialized = false; // 主线程 COM 是否由本对象初始化（配对 Uninitialize 用）
 };
 
 // ── 模块注册 ──
@@ -48,21 +55,55 @@ Napi::Object WasapiLoopback::Init(Napi::Env env, Napi::Object exports) {
   Napi::Function func = DefineClass(env, "WasapiLoopback", {
     InstanceMethod("start", &WasapiLoopback::Start),
     InstanceMethod("stop", &WasapiLoopback::Stop),
+    InstanceAccessor("sampleRate", &WasapiLoopback::GetSampleRate, nullptr),
+    InstanceAccessor("channels", &WasapiLoopback::GetChannels, nullptr),
+    InstanceAccessor("bitsPerSample", &WasapiLoopback::GetBitsPerSample, nullptr),
+    InstanceAccessor("isFloat", &WasapiLoopback::GetIsFloat, nullptr),
   });
   exports.Set("WasapiLoopback", func);
   return exports;
+}
+
+// ── 格式属性（JS 侧据此做 PCM 归一化） ──
+Napi::Value WasapiLoopback::GetSampleRate(const Napi::CallbackInfo& info) {
+  return Napi::Number::New(info.Env(), _waveFormat ? _waveFormat->nSamplesPerSec : 48000);
+}
+
+Napi::Value WasapiLoopback::GetChannels(const Napi::CallbackInfo& info) {
+  return Napi::Number::New(info.Env(), _waveFormat ? _waveFormat->nChannels : 2);
+}
+
+Napi::Value WasapiLoopback::GetBitsPerSample(const Napi::CallbackInfo& info) {
+  return Napi::Number::New(info.Env(), _waveFormat ? _waveFormat->wBitsPerSample : 16);
+}
+
+Napi::Value WasapiLoopback::GetIsFloat(const Napi::CallbackInfo& info) {
+  bool isFloat = false;
+  if (_waveFormat) {
+    if (_waveFormat->wFormatTag == WAVE_FORMAT_IEEE_FLOAT) {
+      isFloat = true;
+    } else if (_waveFormat->wFormatTag == WAVE_FORMAT_EXTENSIBLE) {
+      // WAVEFORMATEXTENSIBLE 的 SubFormat 指向真实类型
+      const WAVEFORMATEXTENSIBLE* ext = reinterpret_cast<const WAVEFORMATEXTENSIBLE*>(_waveFormat);
+      isFloat = (ext->SubFormat == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT);
+    }
+  }
+  return Napi::Boolean::New(info.Env(), isFloat);
 }
 
 // ── 构造函数 ──
 WasapiLoopback::WasapiLoopback(const Napi::CallbackInfo& info) : Napi::ObjectWrap<WasapiLoopback>(info) {
   Napi::Env env = info.Env();
 
-  // 初始化 COM
+  // 初始化 COM。注意：Electron 主进程（Chromium UI 线程）已是 STA，MTA 初始化
+  // 会返回 RPC_E_CHANGED_MODE —— 此时复用现有线程模型继续，属正常路径；
+  // WASAPI 的 MMDeviceEnumerator/IAudioClient 均为 free-threaded，跨公寓调用安全。
   HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-  if (FAILED(hr)) {
+  if (FAILED(hr) && hr != RPC_E_CHANGED_MODE) {
     Napi::Error::New(env, "CoInitializeEx failed").ThrowAsJavaScriptException();
     return;
   }
+  _comInitialized = (hr == S_OK); // RPC_E_CHANGED_MODE 时 COM 归 Chromium 管，不得 Uninitialize
 
   // 创建设备枚举器
   hr = CoCreateInstance(
@@ -171,6 +212,15 @@ void WasapiLoopback::CaptureLoop() {
   DWORD flags = 0;
   HRESULT hr;
 
+  // 采集线程独立初始化 COM（MTA，新线程不会 RPC_E_CHANGED_MODE）；
+  // 跨公寓（主线程 STA → 本线程 MTA）调用依赖对象 free-threaded 特性
+  hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+  if (FAILED(hr)) {
+    _threadDone = true;
+    _tsfn.Release();
+    return;
+  }
+
   while (_running) {
     // 等待下一批数据（10ms 超时）
     Sleep(10);
@@ -202,6 +252,9 @@ void WasapiLoopback::CaptureLoop() {
     }
   }
 
+  CoUninitialize(); // 线程 COM 与主线程公寓独立，互不影响
+
+  _threadDone = true;
   _tsfn.Release();
 }
 
@@ -209,8 +262,19 @@ void WasapiLoopback::CaptureLoop() {
 Napi::Value WasapiLoopback::Stop(const Napi::CallbackInfo& info) {
   _running = false;
 
+  // 不能直接 join：采集线程可能正阻塞在 ThreadSafeFunction.BlockingCall 等待 JS
+  // 回调，主线程 join 会与回调执行互相等待造成死锁。先短等待线程自行退出
+  // （_running=false 后循环检查跳出），超时再 detach 兜底（避免进程退出时
+  // detach 线程访问已销毁的 v8/napi 状态导致崩溃）。
   if (_captureThread.joinable()) {
-    _captureThread.join();
+    for (int i = 0; i < 100 && !_threadDone.load(); i++) {
+      Sleep(1);
+    }
+    if (_threadDone.load()) {
+      _captureThread.join();
+    } else {
+      _captureThread.detach();
+    }
   }
 
   if (_client) {
@@ -228,7 +292,10 @@ Napi::Value WasapiLoopback::Stop(const Napi::CallbackInfo& info) {
     _waveFormat = nullptr;
   }
 
-  CoUninitialize();
+  // 仅撤销本对象成功发起的初始化；RPC_E_CHANGED_MODE 路径不动 Chromium 的 COM 状态
+  if (_comInitialized) {
+    CoUninitialize();
+  }
 
   return Napi::Boolean::New(info.Env(), true);
 }

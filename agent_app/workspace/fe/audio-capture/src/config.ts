@@ -4,7 +4,10 @@
  * 开发模式 (localhost:5173)：Vite 代理 /api → 后端，API_BASE 用空串
  * 生产模式 (Electron file://)：直连后端
  */
-const API_HOST = import.meta.env.VITE_API_HOST || '192.168.7.149';
+export const API_HOST: string = import.meta.env.VITE_API_HOST || '192.168.7.149';
+
+/** 主进程直连后端的 WS 地址（不走 Vite proxy，proxy 只对浏览器生效） */
+export const MAIN_STREAM_URL: string = `ws://${API_HOST}:8010/api/ws/audio/stream`;
 
 export const API_BASE: string = import.meta.env.DEV
   ? ''  // Vite proxy handles /api

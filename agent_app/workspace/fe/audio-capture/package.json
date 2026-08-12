@@ -8,9 +8,10 @@
   },
   "main": "dist-electron/main.js",
   "scripts": {
+    "predev": "node scripts/copy-native.cjs",
     "dev": "concurrently \"vite\" \"tsc -p electron/tsconfig.json --watch\" \"wait-on http://localhost:5173 && electron .\"",
-    "build": "vite build && tsc -p electron/tsconfig.json && electron-builder",
-    "typecheck": "tsc --noEmit",
+    "build": "vite build && tsc -p electron/tsconfig.json && node scripts/copy-native.cjs && electron-builder",
+    "typecheck": "tsc --noEmit && tsc -p electron/tsconfig.json --noEmit",
     "test": "vitest run",
     "lint": "eslint src/ electron/"
   },
@@ -20,13 +21,15 @@
     "lucide-react": "^1.28.0",
     "react": "19.0.0",
     "react-dom": "19.0.0",
-    "react-router-dom": "7.1.1"
+    "react-router-dom": "7.1.1",
+    "ws": "^8.21.3"
   },
   "devDependencies": {
     "@eslint/js": "9.16.0",
     "@types/node": "22.10.0",
     "@types/react": "19.0.2",
     "@types/react-dom": "19.0.2",
+    "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "4.4.1",
     "autoprefixer": "10.4.20",
     "concurrently": "9.1.2",

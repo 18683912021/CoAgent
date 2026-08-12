@@ -3,7 +3,7 @@
  *
  * 三栏布局的 React 渲染进程宿主。整个窗口应用 ContentProtection 防止面试官截屏看到 AI 答案。
  */
-import { BrowserWindow, app } from 'electron';
+import { BrowserWindow, app, session } from 'electron';
 import path from 'path';
 
 const isDev = !app.isPackaged;
@@ -49,4 +49,21 @@ export function createMainWindow(): BrowserWindow {
   }
 
   return win;
+}
+
+/**
+ * 允许渲染进程使用麦克风（面试录音必需）。
+ * Electron 默认拒绝 media 权限，不设置则 getUserMedia 永远失败。
+ *
+ * 大厂主流做法：两个 handler 都实现——
+ *  - setPermissionCheckHandler：同步检查阶段（getUserMedia 的规范路径），
+ *    只设 request handler 时此处会以默认拒绝收场，导致麦克风静默不可用；
+ *  - setPermissionRequestHandler：异步请求阶段。
+ * 本地单窗口应用无多 origin 威胁面，'media' 一律放行即可。
+ */
+export function allowMediaPermissions(): void {
+  session.defaultSession.setPermissionCheckHandler((_wc, permission) => permission === 'media');
+  session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
+    callback(permission === 'media');
+  });
 }

@@ -2,13 +2,19 @@
 
 interface ElectronAPI {
   audio: {
-    startCapture(opts: unknown): Promise<unknown>;
+    startCapture(opts: { source?: 'mic' | 'system' | 'both'; streamUrl?: string }): Promise<unknown>;
     stopCapture(): Promise<void>;
     getSnapshot(): Promise<unknown>;
+    sendControl(msg: unknown): Promise<unknown>;
+    sendMicFrame(frame: Uint8Array): void;
     onState(cb: (data: unknown) => void): () => void;
     onTranscription(cb: (data: unknown) => void): () => void;
+    onLLMStart(cb: (data: unknown) => void): () => void;
     onLLMChunk(cb: (data: unknown) => void): () => void;
     onLLMDone(cb: (data: unknown) => void): () => void;
+    onStreamState(cb: (data: unknown) => void): () => void;
+    onLevels(cb: (data: unknown) => void): () => void;
+    onError(cb: (data: unknown) => void): () => void;
   };
   fileConvert: {
     getLibreOfficeStatus(): Promise<{ available: boolean }>;
