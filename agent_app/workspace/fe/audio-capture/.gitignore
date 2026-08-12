@@ -8,3 +8,5 @@ coverage/
 .env.local
 .DS_Store
 Thumbs.db
+# pnpm 项目，npm 的锁文件不纳入版本管理
+package-lock.json

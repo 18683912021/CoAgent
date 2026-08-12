@@ -16,5 +16,5 @@ if (fs.existsSync(SRC)) {
   fs.copyFileSync(SRC, path.join(DEST_DIR, 'wasapi_loopback.node'));
   console.log('[copy-native] addon 已拷贝到 dist-electron/audio/native/build/Release/');
 } else {
-  console.warn('[copy-native] 未找到 addon（未编译）。先执行: cd electron/audio/native && npx node-gyp rebuild --target=32.3.2 --dist-url=https://electronjs.org/headers');
+  console.warn('[copy-native] 未找到 addon（未编译）。先执行: cd electron/audio/native && npx node-gyp rebuild --target=43.4.0 --dist-url=https://electronjs.org/headers');
 }
