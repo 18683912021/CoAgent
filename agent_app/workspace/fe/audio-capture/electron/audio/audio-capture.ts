@@ -109,8 +109,10 @@ export class AudioCaptureManager extends EventEmitter {
       this.tracks.set(s, { accum, seq: 0, offsetBytes: 0, rmsSum: 0, rmsCount: 0 });
     }
 
-    // ── 3. system 轨：WASAPI Loopback addon ──
-    if (needs.system) {
+    // ── 3. system 轨 ──
+    // Windows：WASAPI Loopback addon（主进程采集）
+    // macOS：渲染进程 getDisplayMedia（SCK 系统选择器）采集后经 audio:system-frame 送入
+    if (needs.system && process.platform === 'win32') {
       try {
         const { WasapiLoopback } = require('./native/build/Release/wasapi_loopback.node');
         this.wasapi = new WasapiLoopback();
@@ -153,6 +155,13 @@ export class AudioCaptureManager extends EventEmitter {
     if (!this.tracks.has('mic')) return;
     // 已是 16kHz mono int16：sourceStep = 1，无插值开销
     this.pushNorm('mic', normalizePcm(buffer, 16000, 1));
+  }
+
+  /** renderer 系统音频帧（macOS getDisplayMedia 16kHz mono int16，经 IPC 送入） */
+  pushSystemFrame(buffer: Buffer): void {
+    if (this.state !== 'capturing') return;
+    if (!this.tracks.has('system')) return;
+    this.pushNorm('system', normalizePcm(buffer, 16000, 1));
   }
 
   /** 发送 JSON 控制消息（llm_query / config 等） */

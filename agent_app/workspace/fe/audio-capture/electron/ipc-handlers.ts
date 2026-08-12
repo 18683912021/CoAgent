@@ -42,34 +42,42 @@ export function checkPort(port: number): Promise<boolean> {
 }
 
 export function registerIpcHandlers(): void {
+  // 窗口可能已销毁（用户关闭/重建窗口时 mainWindow 仍指向旧实例），
+  // webContents.send 会抛 "Object has been destroyed" 导致主进程崩溃
+  const sendToMain = (channel: string, data: unknown): void => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send(channel, data);
+    }
+  };
+
   // ═══════════════════════════════════════════════════════════
   // 音频事件桥接 —— 把 AudioCaptureManager 事件推到渲染进程
   // ═══════════════════════════════════════════════════════════
   audioCapture.on('captureState', (data: unknown) => {
-    mainWindow?.webContents.send('audio:state', data);
+    sendToMain('audio:state', data);
   });
   audioCapture.on('transcription', (data: unknown) => {
-    mainWindow?.webContents.send('audio:transcription', data);
+    sendToMain('audio:transcription', data);
   });
   audioCapture.on('llmStart', (data: unknown) => {
-    mainWindow?.webContents.send('audio:llm-start', data);
+    sendToMain('audio:llm-start', data);
   });
   audioCapture.on('llmChunk', (data: unknown) => {
-    mainWindow?.webContents.send('audio:llm-chunk', data);
+    sendToMain('audio:llm-chunk', data);
   });
   audioCapture.on('llmDone', (data: unknown) => {
-    mainWindow?.webContents.send('audio:llm-done', data);
+    sendToMain('audio:llm-done', data);
   });
   audioCapture.on('streamState', (data: unknown) => {
-    mainWindow?.webContents.send('audio:stream-state', data);
+    sendToMain('audio:stream-state', data);
   });
   audioCapture.on('levels', (data: unknown) => {
-    mainWindow?.webContents.send('audio:levels', data);
+    sendToMain('audio:levels', data);
   });
   // 采集/推流错误必须上屏：addon 缺失、声卡异常、PCM 转换失败等
   // 否则用户看到"已连接·转录中"却全程无声，无从诊断
   audioCapture.on('error', (data: unknown) => {
-    mainWindow?.webContents.send('audio:error', data);
+    sendToMain('audio:error', data);
   });
 
   // ── 存储 ──
@@ -252,7 +260,8 @@ export function registerIpcHandlers(): void {
     audioSessionId = crypto.randomUUID();
     const source = (opts?.source as 'mic' | 'system' | 'both') || 'both';
     // 主进程直连后端（renderer 的 Vite proxy 只对浏览器生效）
-    const streamUrl = opts?.streamUrl || 'ws://192.168.7.149:8010/api/ws/audio/stream';
+    const streamUrl = opts?.streamUrl || 'ws://47.108.205.102:8010/api/ws/audio/stream';
+    console.log(`[audio] start-capture: source=${source} streamUrl=${streamUrl}`);
     return audioCapture.start(source, audioSessionId, streamUrl);
   });
 
@@ -278,5 +287,10 @@ export function registerIpcHandlers(): void {
   // 渲染进程麦克风 PCM16 帧（16kHz mono，AudioContext 已归一化）→ 主进程统一推流
   ipcMain.on('audio:mic-frame', (_e, data: Uint8Array | ArrayBuffer) => {
     audioCapture.pushMicFrame(Buffer.from(data as any));
+  });
+
+  // 渲染进程系统音频 PCM16 帧（macOS getDisplayMedia/SCK 采集）→ 主进程统一推流
+  ipcMain.on('audio:system-frame', (_e, data: Uint8Array | ArrayBuffer) => {
+    audioCapture.pushSystemFrame(Buffer.from(data as any));
   });
 }

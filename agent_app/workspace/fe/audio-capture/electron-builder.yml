@@ -27,6 +27,10 @@ mac:
         - arm64
   icon: assets/icon.icns
   category: public.app-category.productivity
+  # 打包后 macOS 强制要求麦克风 usage description，否则 getUserMedia 直接崩溃
+  # （屏幕录制 TCC 无对应 Info.plist key，系统选择器自带授权文案）
+  extendInfo:
+    NSMicrophoneUsageDescription: 需要访问麦克风以采集您的声音用于实时转写
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true

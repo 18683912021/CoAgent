@@ -22,6 +22,7 @@ export function useAudioCapture() {
   const [state, dispatch] = useReducer(interviewReducer, INITIAL_STATE);
   const api = window.electronAPI?.audio;
   const micRef = useRef<MicHandle | null>(null);
+  const sysRef = useRef<MicHandle | null>(null);
 
   // ── 事件订阅（主进程 → IPC → reducer，对齐移动端事件流） ──
   useEffect(() => {
@@ -70,6 +71,20 @@ export function useAudioCapture() {
     }).catch(() => {});
   }, [api]);
 
+  // ── worklet float32 帧 → clamp int16 → 指定 IPC 通道（mic/system 共用） ──
+  const makeFrameSender = useCallback(
+    (send: (frame: Uint8Array) => void) => (e: MessageEvent) => {
+      const samples = new Float32Array(e.data as ArrayBuffer);
+      const out = new Int16Array(samples.length);
+      for (let i = 0; i < samples.length; i++) {
+        const v = Math.max(-1, Math.min(1, samples[i] ?? 0));
+        out[i] = Math.round(v * 32767);
+      }
+      send(new Uint8Array(out.buffer));
+    },
+    [],
+  );
+
   // ── 麦克风采集：AudioWorklet 16kHz mono float32 → int16 → IPC 帧 ──
   const startMic = useCallback(async (): Promise<void> => {
     if (!api || micRef.current) return;
@@ -88,21 +103,13 @@ export function useAudioCapture() {
         numberOfOutputs: 0,
       });
       // worklet 每 40ms 转移一个 640 样本的 ArrayBuffer；主线程仅做 int16 转换（微秒级）
-      node.port.onmessage = (e) => {
-        const samples = new Float32Array(e.data as ArrayBuffer);
-        const out = new Int16Array(samples.length);
-        for (let i = 0; i < samples.length; i++) {
-          const v = Math.max(-1, Math.min(1, samples[i] ?? 0));
-          out[i] = Math.round(v * 32767);
-        }
-        api.sendMicFrame(new Uint8Array(out.buffer));
-      };
+      node.port.onmessage = makeFrameSender((frame) => api.sendMicFrame(frame));
       source.connect(node);
       micRef.current = { ctx, stream, node };
     } catch (e: any) {
       dispatch({ type: 'error', value: { code: 'E_MIC', stage: 'capture', message: e?.message || '麦克风不可用，请检查权限', recoverable: true } });
     }
-  }, [api]);
+  }, [api, makeFrameSender]);
 
   const stopMic = useCallback((): void => {
     const mic = micRef.current;
@@ -112,6 +119,50 @@ export function useAudioCapture() {
     mic.node.disconnect();
     mic.ctx.close().catch(() => {});
     micRef.current = null;
+  }, []);
+
+  // ── macOS 系统音频采集：getDisplayMedia（SCK 系统选择器）→ 同 mic 管线 → audio:system-frame ──
+  // Windows 上系统音频由主进程 WASAPI 采集，此处直接跳过
+  const startSystemCapture = useCallback(async (): Promise<void> => {
+    if (!api || sysRef.current) return;
+    if (!/Mac/i.test(navigator.userAgent)) return;
+    try {
+      // SCK 音频随视频源一起授权（音频仅对窗口/App 源可用）；
+      // 只消费音频轨，视频轨保留引用但不渲染
+      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+      if (stream.getAudioTracks().length === 0) {
+        stream.getTracks().forEach(t => t.stop());
+        throw new Error('所选来源无音频（请选择面试通话窗口，而不是整个屏幕）');
+      }
+      const ctx = new AudioContext({ sampleRate: 16000 });
+      await ctx.audioWorklet.addModule('./mic-processor.js');
+      const source = ctx.createMediaStreamSource(stream);
+      const node = new AudioWorkletNode(ctx, 'mic-capture-processor', {
+        numberOfInputs: 1,
+        numberOfOutputs: 0,
+      });
+      node.port.onmessage = makeFrameSender((frame) => api.sendSystemFrame(frame));
+      source.connect(node);
+      sysRef.current = { ctx, stream, node };
+    } catch (e: any) {
+      // 系统音频失败不阻断整体流程（麦克风继续），错误上屏提示
+      const reason = e?.name === 'NotAllowedError'
+        ? '系统音频权限被拒绝，请到 系统设置 → 隐私与安全性 → 屏幕录制 授权后重试'
+        : e?.name === 'AbortError'
+          ? '已取消系统音频选择，仅采集麦克风'
+          : (e?.message || '系统音频采集失败');
+      dispatch({ type: 'error', value: { code: 'E_SYSTEM', stage: 'capture', message: reason, recoverable: true } });
+    }
+  }, [api, makeFrameSender]);
+
+  const stopSystemCapture = useCallback((): void => {
+    const sys = sysRef.current;
+    if (!sys) return;
+    sys.stream.getTracks().forEach(t => t.stop());
+    sys.node.port.onmessage = null;
+    sys.node.disconnect();
+    sys.ctx.close().catch(() => {});
+    sysRef.current = null;
   }, []);
 
   // ── Start（对齐移动端：连接 → 会话 → 采集；主进程统一执行） ──
@@ -128,27 +179,30 @@ export function useAudioCapture() {
       // 初始赛道配置（对齐移动端 start 流程）
       await api.sendControl({ type: 'config', llm: {}, track: getProgLang().toLowerCase() });
       await startMic();
+      // macOS 系统音频：等待用户完成系统选择器（失败不阻断，内部已 dispatch 错误）
+      await startSystemCapture();
     } catch (e: any) {
       dispatch({ type: 'captureState', value: 'idle' });
       dispatch({ type: 'error', value: { code: 'E_START', stage: 'connect', message: e?.message || '连接失败', recoverable: true } });
     }
-  }, [api, startMic]);
+  }, [api, startMic, startSystemCapture]);
 
   // ── Stop（收尾顺序在主进程：flush isFinal → track_end → session_stopped → 断连） ──
   const stop = useCallback(async () => {
     stopMic();
+    stopSystemCapture();
     if (api) {
       try { await api.stopCapture(); } catch { /* ignore */ }
     }
     dispatch({ type: 'captureState', value: 'idle' });
     dispatch({ type: 'streamState', value: 'idle' });
     dispatch({ type: 'reset' });
-  }, [api, stopMic]);
+  }, [api, stopMic, stopSystemCapture]);
 
-  // 卸载兜底：只停麦克风，不主动结束会话（结束由用户操作触发）
+  // 卸载兜底：只停本地采集，不主动结束会话（结束由用户操作触发）
   useEffect(() => {
-    return () => { stopMic(); };
-  }, [stopMic]);
+    return () => { stopMic(); stopSystemCapture(); };
+  }, [stopMic, stopSystemCapture]);
 
   // ── 发送 LLM 查询（点击气泡触发） ──
   const sendLLMQuery = useCallback((bubbleId: string) => {

@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getSnapshot: () => ipcRenderer.invoke('audio:get-snapshot'),
     sendControl: (msg: unknown) => ipcRenderer.invoke('audio:send-control', msg),
     sendMicFrame: (frame: Uint8Array) => ipcRenderer.send('audio:mic-frame', frame),
+    sendSystemFrame: (frame: Uint8Array) => ipcRenderer.send('audio:system-frame', frame),
     onState: (cb: (data: unknown) => void) => {
       const listener = (_: unknown, data: unknown) => cb(data);
       ipcRenderer.on('audio:state', listener);

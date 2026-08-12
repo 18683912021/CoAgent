@@ -7,6 +7,7 @@ interface ElectronAPI {
     getSnapshot(): Promise<unknown>;
     sendControl(msg: unknown): Promise<unknown>;
     sendMicFrame(frame: Uint8Array): void;
+    sendSystemFrame(frame: Uint8Array): void;
     onState(cb: (data: unknown) => void): () => void;
     onTranscription(cb: (data: unknown) => void): () => void;
     onLLMStart(cb: (data: unknown) => void): () => void;

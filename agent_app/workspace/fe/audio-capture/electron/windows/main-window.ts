@@ -63,7 +63,15 @@ export function createMainWindow(): BrowserWindow {
  */
 export function allowMediaPermissions(): void {
   session.defaultSession.setPermissionCheckHandler((_wc, permission) => permission === 'media');
+  // display-capture：macOS 系统音频 getDisplayMedia 请求（SCK 选择器）放行
   session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
-    callback(permission === 'media');
+    callback(permission === 'media' || permission === 'display-capture');
   });
+
+  // macOS 系统音频：渲染进程 getDisplayMedia 走 ScreenCaptureKit 系统选择器（macOS 15+）。
+  // useSystemPicker=true 时 handler 不会被调用，空回调兜底 macOS 15 以下（授予空流，渲染进程侧报错提示）
+  session.defaultSession.setDisplayMediaRequestHandler(
+    (_req, callback) => callback({}),
+    { useSystemPicker: true },
+  );
 }
