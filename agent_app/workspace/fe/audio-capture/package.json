@@ -8,9 +8,10 @@
   },
   "main": "dist-electron/main.js",
   "scripts": {
-    "predev": "node scripts/copy-native.cjs",
+    "predev": "node scripts/ensure-native.cjs",
     "dev": "concurrently \"vite\" \"tsc -p electron/tsconfig.json --watch\" \"node scripts/launch-electron.cjs\"",
-    "build": "vite build && tsc -p electron/tsconfig.json && node scripts/copy-native.cjs && electron-builder",
+    "build": "vite build && tsc -p electron/tsconfig.json && node scripts/ensure-native.cjs && electron-builder",
+    "ensure:native": "node scripts/ensure-native.cjs",
     "typecheck": "tsc --noEmit && tsc -p electron/tsconfig.json --noEmit",
     "test": "vitest run",
     "lint": "eslint src/ electron/"

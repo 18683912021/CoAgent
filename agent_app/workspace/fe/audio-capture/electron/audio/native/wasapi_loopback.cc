@@ -2,7 +2,9 @@
  * WASAPI Loopback 音频采集 —— Node.js N-API addon
  *
  * 捕获 Windows 系统混音输出，不受 VoIP App 限制。
- * 编译：cd electron/audio/native && npx node-gyp rebuild
+ * 编译：仓库根目录执行 pnpm ensure:native（自动对当前 Electron 版本编译 + 冒烟验证）。
+ * 手动编译必须带 Electron 目标，否则拿系统 Node 头文件编译、任何 Electron 都加载不了：
+ *   cd electron/audio/native && npx node-gyp rebuild --target=<electron 版本> --dist-url=https://electronjs.org/headers
  */
 #include <napi.h>
 #include <audioclient.h>
@@ -45,6 +47,7 @@ private:
   std::thread _captureThread;
   std::atomic<bool> _running{false};
   std::atomic<bool> _threadDone{false};
+  std::atomic<bool> _tsfnCreated{false}; // TSFN 生命周期归主线程 Stop 管理，防止重复 Release
   Napi::ThreadSafeFunction _tsfn;
   UINT32 _bufferFrames = 0;
   bool _comInitialized = false; // 主线程 COM 是否由本对象初始化（配对 Uninitialize 用）
@@ -181,14 +184,15 @@ Napi::Value WasapiLoopback::Start(const Napi::CallbackInfo& info) {
     return Napi::Boolean::New(env, false);
   }
 
-  // 创建 ThreadSafeFunction 用于回调
+  // 创建 ThreadSafeFunction 用于回调（NonBlockingCall 模式，队列满 64 帧时丢弃最新帧）
   _tsfn = Napi::ThreadSafeFunction::New(
     env,
     info[0].As<Napi::Function>(),
     "WASAPI Callback",
-    0,  // unlimited queue
-    1   // single thread
+    64, // max queue size（40ms/帧 ≈ 2.5s 积压兜底）
+    1   // single thread（保证帧序）
   );
+  _tsfnCreated = true;
 
   // 启动音频客户端
   hr = _client->Start();
@@ -217,7 +221,10 @@ void WasapiLoopback::CaptureLoop() {
   hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
   if (FAILED(hr)) {
     _threadDone = true;
-    _tsfn.Release();
+    // exchange 守卫与 Stop 里的 Release 互斥，全程序只会 Release 一次
+    if (_tsfnCreated.exchange(false)) {
+      _tsfn.Release();
+    }
     return;
   }
 
@@ -235,13 +242,18 @@ void WasapiLoopback::CaptureLoop() {
       if (framesAvailable > 0 && !(flags & AUDCLNT_BUFFERFLAGS_SILENT)) {
         UINT32 bytesToCopy = framesAvailable * _waveFormat->nBlockAlign;
 
-        // 通过 ThreadSafeFunction 回调到 JS
-        auto callback = [bytesToCopy, data](Napi::Env env, Napi::Function jsCallback) {
-          Napi::Buffer<uint8_t> buf = Napi::Buffer<uint8_t>::Copy(env, data, bytesToCopy);
+        // 先在本线程拷贝数据：NonBlockingCall 异步执行，data 指向的 WASAPI
+        // 缓冲在 ReleaseBuffer 后即失效，不能直接传指针
+        std::vector<uint8_t> pcm(data, data + bytesToCopy);
+
+        auto callback = [pcm = std::move(pcm)](Napi::Env env, Napi::Function jsCallback) {
+          Napi::Buffer<uint8_t> buf = Napi::Buffer<uint8_t>::Copy(env, pcm.data(), pcm.size());
           jsCallback.Call({ env.Null(), buf });
         };
 
-        _tsfn.BlockingCall(callback);
+        // NonBlockingCall：不阻塞采集线程等待 JS，Stop() 才能安全 join；
+        // 队列满时丢弃本帧（返回 napi_queue_full，40ms 音频可接受）
+        _tsfn.NonBlockingCall(callback);
       }
 
       hr = _captureClient->ReleaseBuffer(framesAvailable);
@@ -255,30 +267,30 @@ void WasapiLoopback::CaptureLoop() {
   CoUninitialize(); // 线程 COM 与主线程公寓独立，互不影响
 
   _threadDone = true;
-  _tsfn.Release();
+  // 不在这里 Release：TSFN 归主线程 Stop 管理。采集线程 Release 会与
+  // 主线程 Stop 的 join/退出时序竞态，环境销毁时可能仍有回调在途 → napi_fatal_error
 }
 
 // ── Stop ──
 Napi::Value WasapiLoopback::Stop(const Napi::CallbackInfo& info) {
   _running = false;
 
-  // 不能直接 join：采集线程可能正阻塞在 ThreadSafeFunction.BlockingCall 等待 JS
-  // 回调，主线程 join 会与回调执行互相等待造成死锁。先短等待线程自行退出
-  // （_running=false 后循环检查跳出），超时再 detach 兜底（避免进程退出时
-  // detach 线程访问已销毁的 v8/napi 状态导致崩溃）。
-  if (_captureThread.joinable()) {
-    for (int i = 0; i < 100 && !_threadDone.load(); i++) {
-      Sleep(1);
-    }
-    if (_threadDone.load()) {
-      _captureThread.join();
-    } else {
-      _captureThread.detach();
-    }
-  }
-
+  // 先停 IAudioClient：系统无声时采集线程会阻塞在 GetBuffer 等数据
+  // （loopback 无渲染流就不产生包），必须先 Stop 唤醒它，join 才可能返回
   if (_client) {
     _client->Stop();
+  }
+
+  // join 采集线程：帧回调已是 NonBlockingCall（不等待 JS），线程在 10ms
+  // 轮询内即可退出，无死锁风险，也无需 detach 兜底
+  if (_captureThread.joinable()) {
+    _captureThread.join();
+  }
+
+  // 线程退出后不会再入队，此时 Release：node 丢弃未执行的队列项（call_js
+  // 收到空环境只做数据清理），杜绝环境销毁时仍回调 JS 的 napi_fatal_error
+  if (_tsfnCreated.exchange(false)) {
+    _tsfn.Release();
   }
 
   // 清理
@@ -295,6 +307,7 @@ Napi::Value WasapiLoopback::Stop(const Napi::CallbackInfo& info) {
   // 仅撤销本对象成功发起的初始化；RPC_E_CHANGED_MODE 路径不动 Chromium 的 COM 状态
   if (_comInitialized) {
     CoUninitialize();
+    _comInitialized = false; // 防重复 stop 时二次 CoUninitialize
   }
 
   return Napi::Boolean::New(info.Env(), true);
