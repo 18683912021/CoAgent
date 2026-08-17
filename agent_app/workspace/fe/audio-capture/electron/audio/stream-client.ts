@@ -50,6 +50,7 @@ export class StreamClient extends EventEmitter {
 
     let ws: WebSocket;
     try {
+      console.log(`[ws] 连接 ${this.url}`);
       ws = new WebSocket(this.url);
     } catch (e: any) {
       this._settle(new Error(`WebSocket 创建失败: ${e.message}`));
@@ -60,6 +61,7 @@ export class StreamClient extends EventEmitter {
 
     this.connectTimeoutTimer = setTimeout(() => {
       if (gen !== this.generation) return;
+      console.log('[ws] 握手超时（10s 未收到 ready）');
       this._settle(new Error('WebSocket 握手超时（10s 未收到 ready）'));
       this.emit('streamState', 'degraded' as StreamState, '握手超时');
       ws.terminate();
@@ -69,6 +71,7 @@ export class StreamClient extends EventEmitter {
 
     ws.on('open', () => {
       if (gen !== this.generation) return;
+      console.log('[ws] TCP+WS 已连接');
       // 首条消息必须是 client_hello（后端协议要求）
       ws.send(JSON.stringify({
         type: 'client_hello',
@@ -86,13 +89,15 @@ export class StreamClient extends EventEmitter {
       }
     });
 
-    ws.on('error', () => {
+    ws.on('error', (e: Error) => {
       if (gen !== this.generation) return;
-      // error 后必跟 close，交给 close 处理重连
+      // error 后必跟 close，交给 close 处理重连；这里仅记录，便于诊断网络层问题
+      console.log(`[ws] error: ${e?.message}`);
     });
 
-    ws.on('close', (code: number) => {
+    ws.on('close', (code: number, reason: Buffer) => {
       if (gen !== this.generation) return;
+      console.log(`[ws] close: code=${code} reason=${reason?.toString() || ''}`);
       if (this.connectTimeoutTimer) { clearTimeout(this.connectTimeoutTimer); this.connectTimeoutTimer = null; }
       this.ws = null;
       if (code === 1000) {
@@ -174,6 +179,7 @@ export class StreamClient extends EventEmitter {
 
     switch (msg.type) {
       case 'ready':
+        console.log('[ws] 收到 ready，握手完成');
         if (this.connectTimeoutTimer) { clearTimeout(this.connectTimeoutTimer); this.connectTimeoutTimer = null; }
         this._settle(null);
         this.emit('streamState', 'ready' as StreamState);

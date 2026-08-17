@@ -182,6 +182,8 @@ export function useAudioCapture() {
       // macOS 系统音频：等待用户完成系统选择器（失败不阻断，内部已 dispatch 错误）
       await startSystemCapture();
     } catch (e: any) {
+      // 用户主动停止导致的中断：不是错误，不污染界面
+      if (e?.message === '主动断开') return;
       dispatch({ type: 'captureState', value: 'idle' });
       dispatch({ type: 'error', value: { code: 'E_START', stage: 'connect', message: e?.message || '连接失败', recoverable: true } });
     }

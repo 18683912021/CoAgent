@@ -87,6 +87,9 @@ export class AudioCaptureManager extends EventEmitter {
     try {
       await this.stream.connect(streamUrl);
     } catch (e: any) {
+      // 用户主动停止（stop() → disconnect() 结掉 pending 连接）：不是错误，
+      // 状态已由 stop() 管理，原样上抛让渲染进程静默处理
+      if (e?.message === '主动断开') throw e;
       this.state = 'idle';
       const err = { code: 'E_STREAM_CONNECT', stage: 'connect', message: e?.message || '音频流连接失败', recoverable: true };
       this.emit('error', err);
