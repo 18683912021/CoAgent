@@ -62,7 +62,7 @@ async def generate_intro(resume_text: str, track_key: str | None = None) -> str:
     full_text: str = ""
 
     async for chunk, is_final in llm.stream_answer(
-        prompt, model="deepseek-chat", max_tokens=800, language="zh",
+        prompt, model="deepseek-v4-flash", max_tokens=800, language="zh",
     ):
         full_text += chunk
 

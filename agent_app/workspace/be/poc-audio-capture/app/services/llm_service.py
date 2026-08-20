@@ -94,7 +94,7 @@ class LLMService:
     async def stream_answer(
         self,
         question: str,
-        model: str = "deepseek-chat",
+        model: str = "deepseek-v4-flash",
         max_tokens: int = 300,
         language: str = "zh",
         track: str | None = None,

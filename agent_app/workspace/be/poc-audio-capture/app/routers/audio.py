@@ -451,7 +451,7 @@ async def _llm_single(
         llm_chunk  → FE 追加 delta 到当前 AI 气泡
         llm_done   → FE 标记 done（含取消/失败场景）
     """
-    model: str = llm_config.get("model") or "deepseek-chat"
+    model: str = llm_config.get("model") or "deepseek-v4-flash"
     max_tokens: int = llm_config.get("max_tokens") or LLM_MAX_TOKENS
     ts = int(_time.time() * 1000)
     full_answer: str = ""

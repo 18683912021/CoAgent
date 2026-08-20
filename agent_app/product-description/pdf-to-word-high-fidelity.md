@@ -261,7 +261,7 @@ def analyze_layout_with_ai(spans: list[dict], page_width: float) -> dict:
     
     # 2. 调 DeepSeek（复用现有 API）
     response = deepseek_client.chat(
-        model="deepseek-v4-pro",
+        model="deepseek-v4-flash",
         messages=[{"role": "user", "content": prompt}],
         response_format={"type": "json_object"},
     )

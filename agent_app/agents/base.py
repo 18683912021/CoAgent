@@ -19,7 +19,7 @@ _client = Anthropic(
     timeout=1440.0,     # 单次 HTTP 请求超时：24 分钟
     max_retries=4,       # SDK 层重试 4 次
 )
-DEFAULT_MODEL = os.environ.get("ANTHROPIC_MODEL", "deepseek-v4-pro")
+DEFAULT_MODEL = os.environ.get("ANTHROPIC_MODEL", "deepseek-v4-flash")
 AGENT_TIMEOUT = 1440     # Agent 整体执行超时（秒）
 
 # 线程安全的事件循环：在 ThreadPoolExecutor 子线程中复用同一个 loop，

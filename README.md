@@ -24,7 +24,7 @@ python main.py
 ```env
 ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic
 ANTHROPIC_API_KEY=sk-your-key
-ANTHROPIC_MODEL=deepseek-v4-pro
+ANTHROPIC_MODEL=deepseek-v4-flash
 
 # 可选：启用联网搜索（免费 1000 次/月，专为 AI Agent 设计，https://tavily.com/）
 TAVILY_API_KEY=
