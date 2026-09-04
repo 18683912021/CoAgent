@@ -170,7 +170,7 @@ def read_file(workspace: str, rel_path: str) -> str:
     """读取文件。当路径未命中时自动尝试常见前缀（workspace/、workspace/be/、workspace/fe/ 等）。
 
     背景：Agent 的 list_dir 和 read_file 使用了不同的根目录，导致 list_dir 列出
-    "poc-audio-capture/" 但 read_file 需要完整的 "workspace/be/poc-audio-capture/"。
+    "my-service/" 但 read_file 需要完整的 "workspace/be/my-service/"。
     自动回退消除了这个认知负担。
     """
     try:
