@@ -4,10 +4,11 @@ const TEST_HOSTS = {
   company:  '192.168.7.149',  // 公司 WiFi
   local:    'localhost',      // 本机
   android:  '10.0.2.2',      // Android 模拟器
+  server:   '47.108.205.102', // 已部署服务器（agent_app/workspace/.env VITE_API_HOST）
 } as const;
 
 /** 联调时在这里选一个环境 */
-const ACTIVE_HOST: string = TEST_HOSTS.company;
+const ACTIVE_HOST: string = TEST_HOSTS.server;
 
 export const STREAM_URL: string = `ws://${ACTIVE_HOST}:8010/api/ws/audio/stream`;
 
