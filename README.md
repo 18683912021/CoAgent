@@ -290,16 +290,13 @@ CoAgent/
 │   │   ├── notes-{fe,be,pm}.md        #   精选笔记（L1 持久记忆，Markdown）
 │   │   └── daily/                     #   每日工作日志
 │   │
-│   ├── workspace/                     # Agent 代码产出
-│   │   ├── fe/                        #   前端项目（Agent 生成代码+测试桩）
-│   │   ├── be/                        #   后端项目（poc-audio-capture: FastAPI + 7 路由 + 12 服务）
-│   │   └── shared/                    #   共享文件（STATUS.md + tasks/）
+│   ├── workspace/                     # Agent 代码产出（面试助手项目已迁出，当前为空）
+│   │   └── shared/                    #   共享文件（STATUS.md + tasks/，运行时自动重建）
 │   │
 │   ├── tests/                         # 单元测试（70 个）
 │   └── logs/                          # 失败任务日志
 │
-└── fe-app/                            # 独立前端应用
-    └── audio-capture/                 #   React Native 0.78.3 音频采集 App
+# （原 fe-app/ 独立前端应用已迁出：2026-09-04 面试助手三端迁至 F:\interview-assistant 独立仓库）
 ```
 
 ---
@@ -308,6 +305,7 @@ CoAgent/
 
 | 提交 | 内容 |
 |------|------|
+| `24d3cd2` | **chore**: 面试助手项目迁出（→ `F:\interview-assistant` 独立仓库）+ agent 团队记忆清空重置，详见 [MIGRATION_PLAN.md](MIGRATION_PLAN.md) |
 | `1ca30d5` | **fix**: FE/BE 写文件路径修正 + list_dir 防嵌套逻辑修复 |
 | `40ad40e` | **perf**: Prompt Cache + 稳定结构 + Lazy Context + 异步 LLM 摘要 |
 | `1aba424` | **feat**: WebSocket 断线重连（指数退避）+ 子进程异常重启 |
